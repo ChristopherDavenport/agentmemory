@@ -1,0 +1,16 @@
+{
+  "entries": [
+    {
+      "scope": "user",
+      "name": "editor",
+      "hash": "sha256:f54e6aca1b43d6291149f0f040beb5ab945c595f7349da92066ca68fdc2c161c",
+      "bytes": 40
+    },
+    {
+      "scope": "project",
+      "name": "build",
+      "hash": "sha256:96243118a1733ea95bb0bb54a1678cc52d062f9e561d6cd6ea32f3d5666d6db6",
+      "bytes": 46
+    }
+  ]
+}

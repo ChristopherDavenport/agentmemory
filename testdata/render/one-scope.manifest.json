@@ -1,0 +1,16 @@
+{
+  "entries": [
+    {
+      "scope": "user",
+      "name": "style",
+      "hash": "sha256:abf0abb100cc69f49dc3d457a5e096e4035bc59895a125adf313a9d2be771f18",
+      "bytes": 28
+    },
+    {
+      "scope": "user",
+      "name": "timezone",
+      "hash": "sha256:d851b36dde76214585b560d5bb8517e5a0072f6054f04ddc01717336d46aaa5d",
+      "bytes": 13
+    }
+  ]
+}

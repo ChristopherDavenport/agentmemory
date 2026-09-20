@@ -1,0 +1,42 @@
+{
+  "entries": [
+    {
+      "scope": "user",
+      "name": "a",
+      "hash": "sha256:e719308a15ee693cd0d7b15d9736a89049bacbd1714d12b56babe4f6656a4937",
+      "bytes": 256
+    },
+    {
+      "scope": "user",
+      "name": "b",
+      "hash": "sha256:acc98c7e5e9590218b3aac6b946af6174a0a145ec4ff5ded32ffff0c1999c904",
+      "bytes": 256
+    },
+    {
+      "scope": "user",
+      "name": "c",
+      "hash": "sha256:6e31a0a4d71275c76558934c19df3b18fe409bec1de6bbfe9c675475423fb9b7",
+      "bytes": 256
+    }
+  ],
+  "omitted": [
+    {
+      "scope": "user",
+      "name": "d",
+      "hash": "sha256:a85925fad1a09d03fd954919e308be08659d60cb87b610943f116a16fb04089f",
+      "bytes": 256
+    },
+    {
+      "scope": "user",
+      "name": "e",
+      "hash": "sha256:66415057a6c126614a20a46771ffa0165a8527e65d350221f6e685ec1ba34f1c",
+      "bytes": 100
+    },
+    {
+      "scope": "project",
+      "name": "build",
+      "hash": "sha256:d064dfa48b8d12f6adf6815dfae7d3431ad44943c11091bcc8b53891c8b5ea26",
+      "bytes": 11
+    }
+  ]
+}
