@@ -153,7 +153,10 @@ memory/
 
 Writes are atomic and serialised by a lock file that names its
 holder, is taken over when the holder is dead on the same host, and is
-waited for only so long (`ErrLocked`, `LockHolder`, `BreakLock`).
+waited for only so long (`ErrLocked`, `LockHolder`, `BreakLock`). The
+takeover is exclusive: one writer of the several that find a dead
+holder's lock removes it, so no two writers hold the store and take the
+same sequence number.
 `Reconcile` journals what a person changed by hand. `sqlite.Open(path)`
 keeps the same rows and the same journal lines in one database and
 searches an FTS5 index in relevance order. `NewMemStore()` is the

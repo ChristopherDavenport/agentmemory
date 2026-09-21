@@ -87,7 +87,11 @@ func Open(path string, opts ...Option) (*Store, error) {
 		opt(s)
 	}
 	pragmas := url.Values{}
-	for _, p := range []string{"journal_mode(WAL)", "synchronous(NORMAL)", "busy_timeout(5000)"} {
+	// The busy timeout comes first: journal_mode takes a lock on the
+	// database, so a connection that sets it while another process is
+	// writing has to wait rather than fail, and a connection that fails
+	// there never sets the timeout at all.
+	for _, p := range []string{"busy_timeout(5000)", "journal_mode(WAL)", "synchronous(NORMAL)"} {
 		pragmas.Add("_pragma", p)
 	}
 	dsn := "file:" + path + "?" + pragmas.Encode()
@@ -102,13 +106,32 @@ func Open(path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("sqlite: open reader: %w", err)
 	}
 	r.SetMaxOpenConns(4 * runtime.NumCPU())
-	if _, err := w.Exec(schema); err != nil {
+	// The schema goes in through the writer pool's immediate
+	// transaction, so two processes opening one database at once queue
+	// on the database's write lock under the busy timeout instead of
+	// one of them failing with SQLITE_BUSY.
+	if err := applySchema(w); err != nil {
 		w.Close()
 		r.Close()
-		return nil, fmt.Errorf("sqlite: apply schema: %w", err)
+		return nil, err
 	}
 	s.w, s.r = w, r
 	return s, nil
+}
+
+func applySchema(w *sql.DB) error {
+	tx, err := w.Begin()
+	if err != nil {
+		return fmt.Errorf("sqlite: begin: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(schema); err != nil {
+		return fmt.Errorf("sqlite: apply schema: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: apply schema: %w", err)
+	}
+	return nil
 }
 
 // Close runs PRAGMA optimize and closes both pools.

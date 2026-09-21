@@ -217,8 +217,10 @@ The lock is specified, mirroring `agentsession/jsonl`: the file holds
 the holder's PID, host and start time; a writer waits for a live
 holder, bounded by the caller's context and a store-level timeout, and
 then returns a typed `ErrLocked` naming the holder rather than waiting
-forever; a lock whose PID is dead on the same host is taken over; a
-lock from another host is never taken over silently, and `BreakLock`
+forever; a lock whose PID is dead on the same host is taken over,
+exclusively, so that of several writers finding one dead holder's lock
+exactly one removes it and the others wait for the lock it then holds;
+a lock from another host is never taken over silently, and `BreakLock`
 is the deliberate way. That is a second implementation of the same
 lock, tested against the same cases, because this package cannot
 import `agentsession`.
