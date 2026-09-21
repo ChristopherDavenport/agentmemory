@@ -405,6 +405,9 @@ func testJournal(t *testing.T, opts Options) {
 		if c.At.IsZero() {
 			t.Errorf("record %d: At is zero", i)
 		}
+		if c.Source != "" {
+			t.Errorf("record %d: Source = %q; a write through the store has none", i, c.Source)
+		}
 		if i > 0 && c.At.Before(changes[i-1].At) {
 			t.Errorf("record %d: At %v before record %d: %v", i, c.At, i-1, changes[i-1].At)
 		}
