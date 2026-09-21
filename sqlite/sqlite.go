@@ -243,25 +243,25 @@ func (s *Store) List(ctx context.Context, scope agentmemory.Scope) ([]agentmemor
 // the stored entry, checks the bound and the precondition against it,
 // writes the row, refreshes the search index and appends the journal
 // record with the next sequence number.
-func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemory.PutOption) error {
+func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemory.PutOption) (*agentmemory.Change, error) {
 	o := agentmemory.ResolvePutOptions(opts...)
 	if err := agentmemory.CheckEntry(e, 0, nil); err != nil {
-		return err
+		return nil, err
 	}
 	tx, err := s.w.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("sqlite: begin: %w", err)
+		return nil, fmt.Errorf("sqlite: begin: %w", err)
 	}
 	defer tx.Rollback()
 	stored, err := get(ctx, tx, e.Scope, e.Name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := agentmemory.CheckEntry(e, s.max, stored); err != nil {
-		return err
+		return nil, err
 	}
 	if err := o.Check(e.Scope, e.Name, stored); err != nil {
-		return err
+		return nil, err
 	}
 	now := s.now()
 	e.Hash = agentmemory.Hash(e.Content)
@@ -274,7 +274,7 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	if e.Meta != nil {
 		data, err := json.Marshal(e.Meta)
 		if err != nil {
-			return fmt.Errorf("sqlite: encode meta: %w", err)
+			return nil, fmt.Errorf("sqlite: encode meta: %w", err)
 		}
 		meta = string(data)
 	}
@@ -282,60 +282,62 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 		ON CONFLICT (scope, name) DO UPDATE SET content = excluded.content, meta = excluded.meta, hash = excluded.hash, updated = excluded.updated`,
 		string(e.Scope), e.Name, e.Content, meta, e.Hash, stamp(now))
 	if err != nil {
-		return fmt.Errorf("sqlite: write %s/%s: %w", e.Scope, e.Name, err)
+		return nil, fmt.Errorf("sqlite: write %s/%s: %w", e.Scope, e.Name, err)
 	}
 	if err := reindex(ctx, tx, e.Scope, e.Name, &e); err != nil {
-		return err
+		return nil, err
 	}
 	replaced := ""
 	if stored != nil {
 		replaced = stored.Hash
 	}
-	if err := record(ctx, tx, agentmemory.Change{Entry: e, Prev: o.BaseFor(stored), Replaced: replaced,
-		Session: agentmemory.SessionFrom(ctx), At: now}); err != nil {
-		return err
+	c, err := record(ctx, tx, agentmemory.Change{Entry: e, Prev: o.BaseFor(stored), Replaced: replaced,
+		Session: agentmemory.SessionFrom(ctx), At: now})
+	if err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("sqlite: commit: %w", err)
+		return nil, fmt.Errorf("sqlite: commit: %w", err)
 	}
-	return nil
+	return c, nil
 }
 
 // Forget implements agentmemory.Store.
-func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string) error {
+func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string) (*agentmemory.Change, error) {
 	if err := check(scope, name); err != nil {
-		return err
+		return nil, err
 	}
 	tx, err := s.w.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("sqlite: begin: %w", err)
+		return nil, fmt.Errorf("sqlite: begin: %w", err)
 	}
 	defer tx.Rollback()
 	stored, err := get(ctx, tx, scope, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if stored == nil {
-		return fmt.Errorf("%w: %s/%s", agentmemory.ErrNotFound, scope, name)
+		return nil, fmt.Errorf("%w: %s/%s", agentmemory.ErrNotFound, scope, name)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM entries WHERE scope = ? AND name = ?`, string(scope), name); err != nil {
-		return fmt.Errorf("sqlite: remove %s/%s: %w", scope, name, err)
+		return nil, fmt.Errorf("sqlite: remove %s/%s: %w", scope, name, err)
 	}
 	if err := reindex(ctx, tx, scope, name, nil); err != nil {
-		return err
+		return nil, err
 	}
 	now := s.now()
 	e := *stored
 	e.Deleted = true
 	e.Updated = now
-	if err := record(ctx, tx, agentmemory.Change{Entry: e, Prev: stored.Hash, Replaced: stored.Hash,
-		Session: agentmemory.SessionFrom(ctx), At: now}); err != nil {
-		return err
+	c, err := record(ctx, tx, agentmemory.Change{Entry: e, Prev: stored.Hash, Replaced: stored.Hash,
+		Session: agentmemory.SessionFrom(ctx), At: now})
+	if err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("sqlite: commit: %w", err)
+		return nil, fmt.Errorf("sqlite: commit: %w", err)
 	}
-	return nil
+	return c, nil
 }
 
 // reindex replaces the named entry's row in the search index with e,
@@ -359,24 +361,24 @@ func reindex(ctx context.Context, tx *sql.Tx, scope agentmemory.Scope, name stri
 	return nil
 }
 
-// record appends c to the journal with the next sequence number. The
-// line holds the whole record, sequence included, as filestore writes
-// it.
-func record(ctx context.Context, tx *sql.Tx, c agentmemory.Change) error {
+// record appends c to the journal with the next sequence number and
+// returns it. The line holds the whole record, sequence included, as
+// filestore writes it.
+func record(ctx context.Context, tx *sql.Tx, c agentmemory.Change) (*agentmemory.Change, error) {
 	var last sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM journal`).Scan(&last); err != nil {
-		return fmt.Errorf("sqlite: journal sequence: %w", err)
+		return nil, fmt.Errorf("sqlite: journal sequence: %w", err)
 	}
 	c.Seq = uint64(last.Int64) + 1
 	line, err := json.Marshal(c)
 	if err != nil {
-		return fmt.Errorf("sqlite: encode journal record: %w", err)
+		return nil, fmt.Errorf("sqlite: encode journal record: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO journal (seq, scope, name, line) VALUES (?, ?, ?, ?)`,
 		int64(c.Seq), string(c.Entry.Scope), c.Entry.Name, string(line)); err != nil {
-		return fmt.Errorf("sqlite: append journal: %w", err)
+		return nil, fmt.Errorf("sqlite: append journal: %w", err)
 	}
-	return nil
+	return &c, nil
 }
 
 // Search implements agentmemory.Store over the FTS5 index: every word

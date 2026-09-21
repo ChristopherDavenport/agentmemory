@@ -40,8 +40,8 @@ holds entries and a journal of every change:
 type Store interface {
 	Get(ctx context.Context, scope Scope, name string) (*Entry, error)
 	List(ctx context.Context, scope Scope) ([]Entry, error)
-	Put(ctx context.Context, e Entry, opts ...PutOption) error
-	Forget(ctx context.Context, scope Scope, name string) error
+	Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error)
+	Forget(ctx context.Context, scope Scope, name string) (*Change, error)
 	Search(ctx context.Context, scopes []Scope, query string, limit int) ([]Entry, error)
 	Journal(ctx context.Context, after uint64) iter.Seq2[Change, error]
 	MaxEntryBytes() int
@@ -49,7 +49,9 @@ type Store interface {
 ```
 
 `Put` creates or replaces the whole entry and is the store's only
-write, so the journal is a list of full states, each with its hash.
+write, so the journal is a list of full states, each with its hash. It
+returns the journal record it appended, so a write can be recorded
+beside the call that made it.
 `IfHash(h)` makes a `Put` conditional on the stored hash, `""` meaning
 the entry must not exist, so a write built on a stale read fails with
 `ErrConflict` instead of clobbering. `Forget` writes a tombstone that
@@ -136,6 +138,12 @@ and a call that omits the scope uses the first.
 | `memory_patch` | `scope`, `name`, `old_text`, `new_text` | replace one exact occurrence |
 | `memory_forget` | `scope`, `name` | write a tombstone |
 | `memory_search` | `query`, `scopes`, `limit` | find entries the block omits |
+
+Each write's result carries the journal record it produced as
+`WriteRecord` in `agenttool.Result.Details`, which the model never
+sees and a recorder writes beside the call under `WriteNS`
+(`agentmemory:write`), so a session says which write produced the
+memory and with what sequence number, hash and session.
 
 `memory_patch` is the tool the model is told to prefer for an edit: the
 call is the size of the change, and the edit is anchored in the stored

@@ -84,6 +84,20 @@ func TestRunUnderAgentturn(t *testing.T) {
 			if te.Name != step.tool || te.Err != nil {
 				t.Fatalf("ToolEnd = %+v", te)
 			}
+			// A write's result reaches the loop with the journal record
+			// on it, which is what a recorder writes between the
+			// dispatch and the output without knowing the type.
+			rec, err := agenttool.RecordOf(te.Result.Details)
+			if err != nil {
+				t.Fatalf("RecordOf: %v", err)
+			}
+			if step.tool == agentmemory.SearchTool {
+				if rec != nil {
+					t.Errorf("a search recorded %s", rec.Data)
+				}
+			} else if rec == nil || rec.NS != agentmemory.WriteNS || !strings.Contains(string(rec.Data), `"tool":"`+step.tool+`"`) {
+				t.Errorf("%s recorded %+v", step.tool, rec)
+			}
 			if got := te.Result.Output.String(); !strings.HasPrefix(got, step.output) {
 				t.Errorf("tool output = %q, want prefix %q", got, step.output)
 			}

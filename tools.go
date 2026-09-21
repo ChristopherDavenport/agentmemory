@@ -33,6 +33,32 @@ const (
 // an edit whose conditional write lost to another writer.
 const patchAttempts = 4
 
+// WriteNS is the namespace a memory write is recorded under, so a
+// reader of a session recognises one without knowing the product that
+// wrote it. It is [WriteRecord]'s [agenttool.Recordable] namespace.
+const WriteNS = "agentmemory:write"
+
+// WriteRecord is what a memory tool knows and the line it returns to
+// the model does not: the journal record the write produced, with the
+// sequence number it took, the hashes it was built on and replaced, and
+// the session it was attributed to. The tools set it as the Details of
+// their [agenttool.Result], where it is never sent to the model, and a
+// recorder that does not know the type writes it beside the call as a
+// namespaced entry, which is what joins a session to the store's
+// journal without re-reading a journal that may since have been
+// compacted or moved.
+type WriteRecord struct {
+	// Tool is the tool that made the write.
+	Tool string `json:"tool"`
+	// Change is the record the store appended.
+	Change Change `json:"change"`
+}
+
+// RecordNS implements [agenttool.Recordable].
+func (WriteRecord) RecordNS() string { return WriteNS }
+
+var _ agenttool.Recordable = WriteRecord{}
+
 // ToolOption configures [Tools].
 type ToolOption func(*toolOptions)
 
@@ -86,9 +112,11 @@ type searchArgs struct {
 // scope outside the list is an error the model sees; a call that
 // omits the scope uses the first. Every write is a function call in
 // the transcript, and the store's journal records it under the
-// session on the context, see [WithSession]. Tools panics with no
-// scopes, since a tool set that can reach nothing is a programming
-// error.
+// session on the context, see [WithSession]. A write's result carries
+// that journal record as [WriteRecord] in its Details, which a
+// recorder writes beside the call under [WriteNS] and the model never
+// sees. Tools panics with no scopes, since a tool set that can reach
+// nothing is a programming error.
 func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	if len(scopes) == 0 {
 		panic("agentmemory.Tools: no scopes")
@@ -163,72 +191,84 @@ func (t *toolset) scope(s string) (Scope, error) {
 	return "", fmt.Errorf("scope %q is not available; %s", s, t.scopeList())
 }
 
-func (t *toolset) save(ctx context.Context, a saveArgs) (string, error) {
-	scope, err := t.scope(a.Scope)
-	if err != nil {
-		return "", err
+// wrote builds a write's result: the line the model reads, and the
+// journal record beside it as details only a recorder sees.
+func wrote(tool string, c *Change, format string, args ...any) (agenttool.Result, error) {
+	res := agenttool.Text(fmt.Sprintf(format, args...))
+	if c != nil {
+		res.Details = WriteRecord{Tool: tool, Change: *c}
 	}
-	e := Entry{Scope: scope, Name: a.Name, Content: a.Content, Meta: a.Meta}
-	if err := t.store.Put(ctx, e); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Saved %s/%s (%d of %d bytes) %s", scope, a.Name, len(a.Content), t.store.MaxEntryBytes(), Hash(a.Content)), nil
+	return res, nil
 }
 
-func (t *toolset) patch(ctx context.Context, a patchArgs) (string, error) {
+func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error) {
 	scope, err := t.scope(a.Scope)
 	if err != nil {
-		return "", err
+		return agenttool.Result{}, err
+	}
+	e := Entry{Scope: scope, Name: a.Name, Content: a.Content, Meta: a.Meta}
+	c, err := t.store.Put(ctx, e)
+	if err != nil {
+		return agenttool.Result{}, err
+	}
+	return wrote(SaveTool, c, "Saved %s/%s (%d of %d bytes) %s", scope, a.Name, len(a.Content), t.store.MaxEntryBytes(), Hash(a.Content))
+}
+
+func (t *toolset) patch(ctx context.Context, a patchArgs) (agenttool.Result, error) {
+	scope, err := t.scope(a.Scope)
+	if err != nil {
+		return agenttool.Result{}, err
 	}
 	if a.OldText == "" {
-		return "", errors.New("old_text is empty; give the exact text to replace, or use memory_save to write the entry whole")
+		return agenttool.Result{}, errors.New("old_text is empty; give the exact text to replace, or use memory_save to write the entry whole")
 	}
 	var lastErr error
 	for attempt := 0; attempt < patchAttempts; attempt++ {
 		cur, err := t.store.Get(ctx, scope, a.Name)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return "", fmt.Errorf("%w; memory_save creates an entry", err)
+				return agenttool.Result{}, fmt.Errorf("%w; memory_save creates an entry", err)
 			}
-			return "", err
+			return agenttool.Result{}, err
 		}
 		switch n := strings.Count(cur.Content, a.OldText); {
 		case n == 0:
-			return "", fmt.Errorf("old_text does not appear in %s/%s; read the entry with memory_search and copy the text exactly", scope, a.Name)
+			return agenttool.Result{}, fmt.Errorf("old_text does not appear in %s/%s; read the entry with memory_search and copy the text exactly", scope, a.Name)
 		case n > 1:
-			return "", fmt.Errorf("old_text appears %d times in %s/%s; include more of the surrounding text so it appears once", n, scope, a.Name)
+			return agenttool.Result{}, fmt.Errorf("old_text appears %d times in %s/%s; include more of the surrounding text so it appears once", n, scope, a.Name)
 		}
 		next := *cur
 		next.Content = strings.Replace(cur.Content, a.OldText, a.NewText, 1)
-		err = t.store.Put(ctx, next, IfHash(cur.Hash))
+		c, err := t.store.Put(ctx, next, IfHash(cur.Hash))
 		if err == nil {
-			return fmt.Sprintf("Patched %s/%s (%d of %d bytes) %s", scope, a.Name, len(next.Content), t.store.MaxEntryBytes(), Hash(next.Content)), nil
+			return wrote(PatchTool, c, "Patched %s/%s (%d of %d bytes) %s", scope, a.Name, len(next.Content), t.store.MaxEntryBytes(), Hash(next.Content))
 		}
 		if !errors.Is(err, ErrConflict) {
-			return "", err
+			return agenttool.Result{}, err
 		}
 		// Another writer changed the entry between the read and the
 		// write. The edit is anchored in old_text, so apply it to the
 		// new content.
 		lastErr = err
 	}
-	return "", fmt.Errorf("%w after %d attempts; another session keeps changing it, try again", lastErr, patchAttempts)
+	return agenttool.Result{}, fmt.Errorf("%w after %d attempts; another session keeps changing it, try again", lastErr, patchAttempts)
 }
 
-func (t *toolset) forget(ctx context.Context, a forgetArgs) (string, error) {
+func (t *toolset) forget(ctx context.Context, a forgetArgs) (agenttool.Result, error) {
 	scope, err := t.scope(a.Scope)
 	if err != nil {
-		return "", err
+		return agenttool.Result{}, err
 	}
-	if err := t.store.Forget(ctx, scope, a.Name); err != nil {
-		return "", err
+	c, err := t.store.Forget(ctx, scope, a.Name)
+	if err != nil {
+		return agenttool.Result{}, err
 	}
-	return fmt.Sprintf("Forgot %s/%s", scope, a.Name), nil
+	return wrote(ForgetTool, c, "Forgot %s/%s", scope, a.Name)
 }
 
-func (t *toolset) search(ctx context.Context, a searchArgs) (string, error) {
+func (t *toolset) search(ctx context.Context, a searchArgs) (agenttool.Result, error) {
 	if strings.TrimSpace(a.Query) == "" {
-		return "", errors.New("query is empty; give one or more words")
+		return agenttool.Result{}, errors.New("query is empty; give one or more words")
 	}
 	scopes := t.scopes
 	if len(a.Scopes) > 0 {
@@ -236,7 +276,7 @@ func (t *toolset) search(ctx context.Context, a searchArgs) (string, error) {
 		for _, s := range a.Scopes {
 			scope, err := t.scope(s)
 			if err != nil {
-				return "", err
+				return agenttool.Result{}, err
 			}
 			scopes = append(scopes, scope)
 		}
@@ -247,14 +287,15 @@ func (t *toolset) search(ctx context.Context, a searchArgs) (string, error) {
 	}
 	found, err := t.store.Search(ctx, scopes, a.Query, limit)
 	if err != nil {
-		return "", err
+		return agenttool.Result{}, err
 	}
 	names := make([]string, 0, len(scopes))
 	for _, s := range scopes {
 		names = append(names, string(s))
 	}
 	if len(found) == 0 {
-		return fmt.Sprintf("No entries in %s match %q.", strings.Join(names, ", "), a.Query), nil
+		// A search writes nothing, so its result carries no record.
+		return agenttool.Text(fmt.Sprintf("No entries in %s match %q.", strings.Join(names, ", "), a.Query)), nil
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d %s in %s for %q.\n", len(found), plural(len(found), "match", "matches"), strings.Join(names, ", "), a.Query)
@@ -280,7 +321,7 @@ func (t *toolset) search(ctx context.Context, a searchArgs) (string, error) {
 	if len(unshown) > 0 {
 		fmt.Fprintf(&b, "\nNot shown, over the %d byte result limit; search for them by name: %s\n", t.opts.searchBytes, strings.Join(unshown, ", "))
 	}
-	return b.String(), nil
+	return agenttool.Text(b.String()), nil
 }
 
 func plural(n int, one, many string) string {

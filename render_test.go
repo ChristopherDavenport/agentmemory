@@ -97,7 +97,7 @@ func TestRenderGolden(t *testing.T) {
 			}
 			store := NewMemStore(opts...)
 			for _, e := range tc.entries {
-				if err := store.Put(ctx, e); err != nil {
+				if _, err := store.Put(ctx, e); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -170,7 +170,7 @@ func TestRenderBudget(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
 	for i := 0; i < 9; i++ {
-		if err := store.Put(ctx, Entry{Scope: "user", Name: "note-" + string(rune('a'+i)), Content: filler(DefaultMaxEntryBytes, byte('a'+i))}); err != nil {
+		if _, err := store.Put(ctx, Entry{Scope: "user", Name: "note-" + string(rune('a'+i)), Content: filler(DefaultMaxEntryBytes, byte('a'+i))}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -200,11 +200,11 @@ func TestRenderPacksTheBudget(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
 	for i := 0; i < 12; i++ {
-		if err := store.Put(ctx, Entry{Scope: "user", Name: fmt.Sprintf("note-%02d", i), Content: filler(3000, 'n')}); err != nil {
+		if _, err := store.Put(ctx, Entry{Scope: "user", Name: fmt.Sprintf("note-%02d", i), Content: filler(3000, 'n')}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := store.Put(ctx, Entry{Scope: "user", Name: "zz-passport", Content: "In the top drawer.\n"}); err != nil {
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "zz-passport", Content: "In the top drawer.\n"}); err != nil {
 		t.Fatal(err)
 	}
 	block, man, err := Render(ctx, store, []Scope{"user"})
@@ -235,7 +235,7 @@ func TestRenderCountsTheBlock(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
 	for i := 0; i < 600; i++ {
-		if err := store.Put(ctx, Entry{
+		if _, err := store.Put(ctx, Entry{
 			Scope:   "user",
 			Name:    fmt.Sprintf("note-%03d", i),
 			Content: filler(20, 'x'),
@@ -266,7 +266,7 @@ func TestRenderTinyBound(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
 	for i := 0; i < 8; i++ {
-		if err := store.Put(ctx, Entry{Scope: "user", Name: fmt.Sprintf("note-%d", i), Content: filler(200, 'x')}); err != nil {
+		if _, err := store.Put(ctx, Entry{Scope: "user", Name: fmt.Sprintf("note-%d", i), Content: filler(200, 'x')}); err != nil {
 			t.Fatal(err)
 		}
 	}

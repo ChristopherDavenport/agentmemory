@@ -29,8 +29,23 @@ versions may break the API.
   longer hides the smaller ones that sort after it. Block order is
   still list order (#8).
 
+- `Store.Put` and `Store.Forget` return the journal record they
+  appended, `(*Change, error)`, so a caller records a write without
+  reading the journal back. A refused write returns nil. Every store
+  and any store elsewhere takes the new signature, and `storetest`
+  checks that the record returned is the record the journal holds (#6).
+- The four tools return an `agenttool.Result` rather than a string, so
+  a write can carry its record; the text the model sees is unchanged
+  (#6).
+- The module requires `agenttool` v0.0.5 for `Recordable` (#6).
+
 ### Added
 
+- `WriteRecord` and `WriteNS` (`agentmemory:write`): a memory write's
+  result carries the journal record it produced as
+  `agenttool.Result.Details`, which implements `agenttool.Recordable`,
+  so a recorder writes it beside the call under a namespace a reader
+  recognises and the model never sees it (#6).
 - `ManifestEntry.Reason` on an omitted entry, with the `OmitBudget`
   constant, so a session can record why the model was not given an
   entry (#3, #8).

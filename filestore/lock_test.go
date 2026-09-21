@@ -71,7 +71,7 @@ func raceRounds(t *testing.T, rounds, writers int, planted bool) (dupRounds, dup
 					errs <- err
 					return
 				}
-				if err := s.Put(agentmemory.WithSession(ctx, fmt.Sprintf("w%d", w)),
+				if _, err := s.Put(agentmemory.WithSession(ctx, fmt.Sprintf("w%d", w)),
 					agentmemory.Entry{Scope: "user", Name: fmt.Sprintf("n-%d", w), Content: "x"}); err != nil {
 					errs <- fmt.Errorf("writer %d: %w", w, err)
 				}
@@ -172,7 +172,7 @@ func TestTakeoverIsExclusive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := other.Put(context.Background(), agentmemory.Entry{Scope: "user", Name: "a", Content: "x"}); err == nil {
+	if _, err := other.Put(context.Background(), agentmemory.Entry{Scope: "user", Name: "a", Content: "x"}); err == nil {
 		t.Error("a second writer took over a live holder's lock")
 	}
 	release()

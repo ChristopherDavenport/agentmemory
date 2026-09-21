@@ -73,10 +73,10 @@ func TestLayout(t *testing.T) {
 	ctx := agentmemory.WithSession(context.Background(), "sess-1")
 	s := open(t)
 	e := agentmemory.Entry{Scope: "user", Name: "style", Content: "Short answers.\n", Meta: map[string]string{"type": "feedback", "description": "How to answer"}}
-	if err := s.Put(ctx, e); err != nil {
+	if _, err := s.Put(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "bare", Content: "no newline"}); err != nil {
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "bare", Content: "no newline"}); err != nil {
 		t.Fatal(err)
 	}
 	wantEntry := "---\nname: style\nupdated: 2026-09-20T10:00:00.123456789Z\ndescription: How to answer\ntype: feedback\n---\nShort answers.\n"
@@ -105,7 +105,7 @@ func TestLayout(t *testing.T) {
 	if _, err := os.Stat(s.lockPath()); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("lock left behind: %v", err)
 	}
-	if err := s.Forget(ctx, "user", "style"); err != nil {
+	if _, err := s.Forget(ctx, "user", "style"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(s.Dir(), "user", "style.md")); !errors.Is(err, os.ErrNotExist) {
@@ -114,7 +114,7 @@ func TestLayout(t *testing.T) {
 	if got := readFile(t, filepath.Join(s.Dir(), "user", "INDEX.md")); got != "# user\n\n- [bare](bare.md)\n" {
 		t.Errorf("INDEX.md after Forget =\n%s", got)
 	}
-	if err := s.Forget(ctx, "user", "bare"); err != nil {
+	if _, err := s.Forget(ctx, "user", "bare"); err != nil {
 		t.Fatal(err)
 	}
 	if got := readFile(t, filepath.Join(s.Dir(), "user", "INDEX.md")); got != "# user\n\nNo entries.\n" {
@@ -200,11 +200,11 @@ func TestReconcile(t *testing.T) {
 		{Scope: "user", Name: "same", Content: "same"},
 		{Scope: "project", Name: "forgotten", Content: "x"},
 	} {
-		if err := s.Put(ctx, e); err != nil {
+		if _, err := s.Put(ctx, e); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.Forget(ctx, "project", "forgotten"); err != nil {
+	if _, err := s.Forget(ctx, "project", "forgotten"); err != nil {
 		t.Fatal(err)
 	}
 	// Nothing changed outside: nothing to reconcile.
@@ -257,7 +257,7 @@ func TestReconcile(t *testing.T) {
 		t.Errorf("INDEX.md after Reconcile =\n%s", got)
 	}
 	// The store's own writes continue the sequence.
-	if err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "next", Content: "n"}); err != nil {
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "next", Content: "n"}); err != nil {
 		t.Fatal(err)
 	}
 	var last agentmemory.Change
@@ -279,7 +279,7 @@ func TestJournalDamage(t *testing.T) {
 	ctx := context.Background()
 	s := open(t)
 	for i := 0; i < 3; i++ {
-		if err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: fmt.Sprintf("n%d", i), Content: "c"}); err != nil {
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: fmt.Sprintf("n%d", i), Content: "c"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -306,7 +306,7 @@ func TestJournalDamage(t *testing.T) {
 		t.Errorf("seqs = %v, want [1 3]", seqs)
 	}
 	// The next write follows the last complete record.
-	if err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "after", Content: "c"}); err != nil {
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "after", Content: "c"}); err != nil {
 		t.Fatal(err)
 	}
 	seq, err := s.lastSeq()
@@ -385,7 +385,7 @@ func TestLock(t *testing.T) {
 		s := open(t, WithLockTimeout(50*time.Millisecond))
 		// A PID this host will not have: the max on Linux is 4194304.
 		writeLock(t, s, LockInfo{PID: 4194303 + 1<<20, Host: host, Since: time.Now()})
-		if err := s.Put(ctx, e); err != nil {
+		if _, err := s.Put(ctx, e); err != nil {
 			t.Fatalf("Put over a dead holder's lock: %v", err)
 		}
 		if h, _ := s.LockHolder(); h != nil {
@@ -397,7 +397,7 @@ func TestLock(t *testing.T) {
 		since := time.Now().UTC().Round(time.Second)
 		writeLock(t, s, LockInfo{PID: os.Getpid(), Host: host, Since: since})
 		start := time.Now()
-		err := s.Put(ctx, e)
+		_, err := s.Put(ctx, e)
 		if !errors.Is(err, ErrLocked) {
 			t.Fatalf("Put under a live lock = %v, want ErrLocked", err)
 		}
@@ -414,14 +414,14 @@ func TestLock(t *testing.T) {
 		if err := s.BreakLock(); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.Put(ctx, e); err != nil {
+		if _, err := s.Put(ctx, e); err != nil {
 			t.Errorf("Put after BreakLock: %v", err)
 		}
 	})
 	t.Run("another host is never stale", func(t *testing.T) {
 		s := open(t, WithLockTimeout(20*time.Millisecond))
 		writeLock(t, s, LockInfo{PID: 1, Host: "elsewhere", Since: time.Now()})
-		if err := s.Put(ctx, e); !errors.Is(err, ErrLocked) {
+		if _, err := s.Put(ctx, e); !errors.Is(err, ErrLocked) {
 			t.Errorf("Put under another host's lock = %v, want ErrLocked", err)
 		}
 	})
@@ -430,7 +430,7 @@ func TestLock(t *testing.T) {
 		if err := os.WriteFile(s.lockPath(), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		err := s.Put(ctx, e)
+		_, err := s.Put(ctx, e)
 		if !errors.Is(err, ErrLocked) || !strings.Contains(err.Error(), "unreadable lock") {
 			t.Errorf("Put under an empty lock = %v", err)
 		}
@@ -440,7 +440,7 @@ func TestLock(t *testing.T) {
 		writeLock(t, s, LockInfo{PID: os.Getpid(), Host: host, Since: time.Now()})
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
 		defer cancel()
-		if err := s.Put(ctx, e); !errors.Is(err, context.DeadlineExceeded) {
+		if _, err := s.Put(ctx, e); !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("Put with a cancelled context = %v, want DeadlineExceeded", err)
 		}
 	})
@@ -470,7 +470,7 @@ func TestTwoProcesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "shared", Content: "facts:"}); err != nil {
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "shared", Content: "facts:"}); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestChildProcess$", "-test.v")
@@ -549,7 +549,7 @@ func childWork(dir, who string) error {
 	}
 	ctx := agentmemory.WithSession(context.Background(), who)
 	for i := 0; i < childWrites; i++ {
-		if err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: fmt.Sprintf("%s-%d", who, i), Content: who}); err != nil {
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: fmt.Sprintf("%s-%d", who, i), Content: who}); err != nil {
 			return err
 		}
 		fact := fmt.Sprintf(" %s-%d", who, i)
@@ -560,7 +560,7 @@ func childWork(dir, who string) error {
 			}
 			next := *cur
 			next.Content += fact
-			err = s.Put(ctx, next, agentmemory.IfHash(cur.Hash))
+			_, err = s.Put(ctx, next, agentmemory.IfHash(cur.Hash))
 			if err == nil {
 				break
 			}

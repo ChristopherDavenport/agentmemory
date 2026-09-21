@@ -84,7 +84,7 @@ func TestToolsFailures(t *testing.T) {
 	store := NewMemStore(WithMaxEntryBytes(256))
 	tools := Tools(store, []Scope{"user", "project"}, WithSearchLimit(2), WithSearchBytes(300))
 	ctx := context.Background()
-	if err := store.Put(ctx, Entry{Scope: "user", Name: "style", Content: "Short answers. Short code.", Meta: map[string]string{"description": "How to answer"}}); err != nil {
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "style", Content: "Short answers. Short code.", Meta: map[string]string{"description": "How to answer"}}); err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {
@@ -217,11 +217,11 @@ func TestPatchRace(t *testing.T) {
 	store := NewMemStore()
 	tools := Tools(store, []Scope{"user"})
 	ctx := context.Background()
-	if err := store.Put(ctx, Entry{Scope: "user", Name: "profile", Content: "Chris. Timezone Europe/London. Editor: unknown. Language: unknown."}); err != nil {
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "profile", Content: "Chris. Timezone Europe/London. Editor: unknown. Language: unknown."}); err != nil {
 		t.Fatal(err)
 	}
 	for round := 0; round < 20; round++ {
-		if err := store.Put(ctx, Entry{Scope: "user", Name: "profile", Content: "Chris. Timezone Europe/London. Editor: unknown. Language: unknown."}); err != nil {
+		if _, err := store.Put(ctx, Entry{Scope: "user", Name: "profile", Content: "Chris. Timezone Europe/London. Editor: unknown. Language: unknown."}); err != nil {
 			t.Fatal(err)
 		}
 		var wg sync.WaitGroup
@@ -261,17 +261,17 @@ type conflicting struct {
 	fails int
 }
 
-func (c *conflicting) Put(ctx context.Context, e Entry, opts ...PutOption) error {
+func (c *conflicting) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error) {
 	if c.fails > 0 {
 		c.fails--
-		return &ConflictError{Scope: e.Scope, Name: e.Name, Want: "sha256:want", Have: "sha256:have"}
+		return nil, &ConflictError{Scope: e.Scope, Name: e.Name, Want: "sha256:want", Have: "sha256:have"}
 	}
 	return c.MemStore.Put(ctx, e, opts...)
 }
 
 func TestPatchGivesUp(t *testing.T) {
 	store := &conflicting{MemStore: NewMemStore(), fails: patchAttempts}
-	if err := store.MemStore.Put(context.Background(), Entry{Scope: "user", Name: "a", Content: "x y"}); err != nil {
+	if _, err := store.MemStore.Put(context.Background(), Entry{Scope: "user", Name: "a", Content: "x y"}); err != nil {
 		t.Fatal(err)
 	}
 	tools := Tools(store, []Scope{"user"})
@@ -282,6 +282,83 @@ func TestPatchGivesUp(t *testing.T) {
 	store.fails = patchAttempts - 1
 	if out, err := call(t, tools, PatchTool, `{"name":"a","old_text":"x","new_text":"z"}`); err != nil || !strings.HasPrefix(out, "Patched user/a") {
 		t.Errorf("patch under a passing conflict = %q, %v", out, err)
+	}
+}
+
+// TestWriteRecordDetails checks the seam a recorder reads: every write
+// carries the journal record it produced as Recordable details, under
+// one namespace, and a search carries none because it writes nothing.
+func TestWriteRecordDetails(t *testing.T) {
+	store := NewMemStore()
+	tools := Tools(store, []Scope{"user"})
+	ctx := WithSession(context.Background(), "sess-w")
+	run := func(name, args string) agenttool.Result {
+		t.Helper()
+		for _, tool := range tools {
+			if tool.Name() != name {
+				continue
+			}
+			res, err := tool.Execute(ctx, agenttool.Call{ID: "call_1", Args: json.RawMessage(args)})
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			return res
+		}
+		t.Fatalf("no tool %q", name)
+		return agenttool.Result{}
+	}
+	steps := []struct {
+		tool string
+		args string
+		seq  uint64
+	}{
+		{SaveTool, `{"name":"style","content":"Short answers.\n"}`, 1},
+		{PatchTool, `{"name":"style","old_text":"Short","new_text":"Long"}`, 2},
+		{ForgetTool, `{"name":"style"}`, 3},
+	}
+	for _, step := range steps {
+		res := run(step.tool, step.args)
+		rec, ok := res.Details.(WriteRecord)
+		if !ok {
+			t.Fatalf("%s: Details = %#v, want a WriteRecord", step.tool, res.Details)
+		}
+		if rec.Tool != step.tool || rec.Change.Seq != step.seq || rec.Change.Session != "sess-w" || rec.Change.Entry.Name != "style" {
+			t.Errorf("%s: record = %+v", step.tool, rec)
+		}
+		// What a recorder writes beside the call, without knowing the
+		// type: the namespace this module exports and the record's JSON.
+		r, err := agenttool.RecordOf(res.Details)
+		if err != nil || r == nil {
+			t.Fatalf("%s: RecordOf = %v, %v", step.tool, r, err)
+		}
+		if r.NS != WriteNS || WriteNS != "agentmemory:write" {
+			t.Errorf("%s: namespace = %q", step.tool, r.NS)
+		}
+		var back WriteRecord
+		if err := json.Unmarshal(r.Data, &back); err != nil {
+			t.Fatalf("%s: %v", step.tool, err)
+		}
+		if back.Tool != step.tool || back.Change.Seq != step.seq || back.Change.Entry.Hash != rec.Change.Entry.Hash {
+			t.Errorf("%s: recorded %s", step.tool, r.Data)
+		}
+		// The model sees the line and nothing else.
+		if res.Output.String() == "" || strings.Contains(res.Output.String(), "\"seq\"") {
+			t.Errorf("%s: output = %q", step.tool, res.Output.String())
+		}
+	}
+	if _, err := call(t, tools, SaveTool, `{"name":"other","content":"x"}`); err != nil {
+		t.Fatal(err)
+	}
+	res := run(SearchTool, `{"query":"other"}`)
+	if res.Details != nil {
+		t.Errorf("a search carries details: %#v", res.Details)
+	}
+	if r, err := agenttool.RecordOf(res.Details); err != nil || r != nil {
+		t.Errorf("RecordOf(search) = %v, %v", r, err)
+	}
+	// A failed write records nothing.
+	if _, err := call(t, tools, ForgetTool, `{"name":"missing"}`); err == nil {
+		t.Error("forget of a missing entry succeeded")
 	}
 }
 

@@ -52,7 +52,7 @@ func TestSearchRanking(t *testing.T) {
 		{Scope: "user", Name: "path", Content: "Timezone Europe/London; editor: nvim-qt"},
 	}
 	for _, e := range puts {
-		if err := s.Put(ctx, e); err != nil {
+		if _, err := s.Put(ctx, e); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -79,10 +79,10 @@ func TestSearchRanking(t *testing.T) {
 		}
 	}
 	// The index follows a replace and a tombstone.
-	if err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "focus", Content: "Rust now."}); err != nil {
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "focus", Content: "Rust now."}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Forget(ctx, "user", "mention"); err != nil {
+	if _, err := s.Forget(ctx, "user", "mention"); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.Search(ctx, []agentmemory.Scope{"user"}, "go", 0); len(got) != 0 {
@@ -113,7 +113,7 @@ func names(es []agentmemory.Entry) []string {
 func TestSearchOddQueries(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t, filepath.Join(t.TempDir(), "memory.db"))
-	if err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "a", Content: "C++ and 日本語 notes; see a-b."}); err != nil {
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "a", Content: "C++ and 日本語 notes; see a-b."}); err != nil {
 		t.Fatal(err)
 	}
 	for q, want := range map[string]int{"...": 0, "\"\"": 0, "*": 0, "c++": 1, "日本語": 1, "a-b": 1, "notes;": 1, "AND": 1, "NOT": 1, "(": 0} {
@@ -148,7 +148,7 @@ func TestConcurrentHandlesSequence(t *testing.T) {
 			s := openStore(t, path)
 			wctx := agentmemory.WithSession(ctx, fmt.Sprintf("w%d", w))
 			for i := 0; i < each; i++ {
-				if err := s.Put(wctx, agentmemory.Entry{
+				if _, err := s.Put(wctx, agentmemory.Entry{
 					Scope: "user", Name: fmt.Sprintf("n-%d-%d", w, i), Content: "x"}); err != nil {
 					errs <- fmt.Errorf("writer %d: %w", w, err)
 					return

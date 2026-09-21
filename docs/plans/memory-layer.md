@@ -79,8 +79,8 @@ type Entry struct {
 type Store interface {
     Get(ctx context.Context, scope Scope, name string) (*Entry, error)
     List(ctx context.Context, scope Scope) ([]Entry, error)          // live entries, by name
-    Put(ctx context.Context, e Entry, opts ...PutOption) error        // create or replace; appends to the journal
-    Forget(ctx context.Context, scope Scope, name string) error       // writes a tombstone
+    Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error)  // create or replace; appends and returns the record
+    Forget(ctx context.Context, scope Scope, name string) (*Change, error) // writes a tombstone, returns the record
     Search(ctx context.Context, scopes []Scope, query string, limit int) ([]Entry, error)
     Journal(ctx context.Context, after uint64) iter.Seq2[Change, error] // records with Seq > after
     MaxEntryBytes() int                                              // the bound Put enforces
@@ -181,6 +181,12 @@ Built with `agenttool.New`, four tools, names prefixed `memory_`:
 `Tools(store, scopes)` returns the four restricted to the scopes the
 product allows; a scope outside the list is an error the model sees,
 and a call that omits the scope uses the first one listed.
+
+Each tool returns an `agenttool.Result`. A write sets `Details` to a
+`WriteRecord`, the journal record the write produced, which implements
+`agenttool.Recordable` under `WriteNS`, so a recorder writes it beside
+the call without knowing the type and a session joins to the store's
+journal without re-reading it. The model sees the output line alone.
 
 ### Rendering
 

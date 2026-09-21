@@ -117,11 +117,16 @@ type Store interface {
 	// [ErrTooLarge], and, under [IfHash], a stored hash other than the
 	// one expected with [ErrConflict]. Hash and Updated on e are
 	// ignored and set by the store.
-	Put(ctx context.Context, e Entry, opts ...PutOption) error
+	//
+	// It returns the record it appended, the caller's own copy, so a
+	// write can be recorded beside the call that made it without
+	// reading the journal back. A failed Put returns nil and writes
+	// nothing.
+	Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error)
 	// Forget writes a tombstone: the entry leaves Get and List, and
-	// the journal keeps its last content. A missing entry is
-	// [ErrNotFound].
-	Forget(ctx context.Context, scope Scope, name string) error
+	// the journal keeps its last content, and returns that record. A
+	// missing entry is [ErrNotFound].
+	Forget(ctx context.Context, scope Scope, name string) (*Change, error)
 	// Search returns the live entries of the scopes that match query,
 	// at most limit of them when limit is positive. What matches and
 	// in what order is the store's; the reference stores use [Match]

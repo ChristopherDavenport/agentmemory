@@ -207,27 +207,27 @@ func (s *Store) list(scope agentmemory.Scope) ([]agentmemory.Entry, error) {
 // Put implements agentmemory.Store: the entry file is written whole
 // and renamed into place, the scope's index is rewritten, and the
 // change is appended to the journal, all under the lock.
-func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemory.PutOption) error {
+func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemory.PutOption) (*agentmemory.Change, error) {
 	o := agentmemory.ResolvePutOptions(opts...)
 	// Validate before taking the lock, so a bad entry never waits; the
 	// size check is repeated under the lock with the stored size.
 	if err := agentmemory.CheckEntry(e, 0, nil); err != nil {
-		return err
+		return nil, err
 	}
 	release, err := s.acquire(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer release()
 	stored, err := s.read(e.Scope, e.Name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := agentmemory.CheckEntry(e, s.max, stored); err != nil {
-		return err
+		return nil, err
 	}
 	if err := o.Check(e.Scope, e.Name, stored); err != nil {
-		return err
+		return nil, err
 	}
 	now := s.now()
 	e.Hash = agentmemory.Hash(e.Content)
@@ -237,10 +237,10 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 		e.Meta = nil
 	}
 	if err := writeAtomic(s.entryPath(e.Scope, e.Name), encode(e)); err != nil {
-		return err
+		return nil, err
 	}
 	if err := s.reindex(e.Scope); err != nil {
-		return err
+		return nil, err
 	}
 	replaced := ""
 	if stored != nil {
@@ -252,27 +252,27 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 // Forget implements agentmemory.Store: the file is removed, the index
 // rewritten, and a tombstone with the last content appended to the
 // journal.
-func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string) error {
+func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string) (*agentmemory.Change, error) {
 	if err := check(scope, name); err != nil {
-		return err
+		return nil, err
 	}
 	release, err := s.acquire(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer release()
 	stored, err := s.read(scope, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if stored == nil {
-		return fmt.Errorf("%w: %s/%s", agentmemory.ErrNotFound, scope, name)
+		return nil, fmt.Errorf("%w: %s/%s", agentmemory.ErrNotFound, scope, name)
 	}
 	if err := os.Remove(s.entryPath(scope, name)); err != nil {
-		return fmt.Errorf("filestore: remove %s/%s: %w", scope, name, err)
+		return nil, fmt.Errorf("filestore: remove %s/%s: %w", scope, name, err)
 	}
 	if err := s.reindex(scope); err != nil {
-		return err
+		return nil, err
 	}
 	now := s.now()
 	e := *stored
@@ -281,21 +281,25 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	return s.record(ctx, e, stored.Hash, stored.Hash, now)
 }
 
-// record appends the change with the next sequence number. The caller
-// holds the lock.
-func (s *Store) record(ctx context.Context, e agentmemory.Entry, prev, replaced string, at time.Time) error {
+// record appends the change with the next sequence number and returns
+// it. The caller holds the lock.
+func (s *Store) record(ctx context.Context, e agentmemory.Entry, prev, replaced string, at time.Time) (*agentmemory.Change, error) {
 	seq, err := s.lastSeq()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return s.appendJournal(agentmemory.Change{
+	c := agentmemory.Change{
 		Seq:      seq + 1,
 		Entry:    e,
 		Prev:     prev,
 		Replaced: replaced,
 		Session:  agentmemory.SessionFrom(ctx),
 		At:       at,
-	})
+	}
+	if err := s.appendJournal(c); err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 // Search implements agentmemory.Store with [agentmemory.Match],
