@@ -143,12 +143,47 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	}
 	t := &toolset{store: store, scopes: scopes, opts: o}
 	return []agenttool.Tool{
-		agenttool.New(SaveTool, t.saveDescription(), t.save, agenttool.WithParameters(scopeSchema[saveArgs](scopes))),
-		agenttool.New(PatchTool, t.patchDescription(), t.patch, agenttool.WithParameters(scopeSchema[patchArgs](scopes))),
-		agenttool.New(ForgetTool, t.forgetDescription(), t.forget, agenttool.WithParameters(scopeSchema[forgetArgs](scopes))),
-		agenttool.New(SearchTool, t.searchDescription(), t.search, agenttool.WithParameters(scopeSchema[searchArgs](scopes))),
+		tool(SaveTool, t.saveDescription(), t.save, scopes),
+		tool(PatchTool, t.patchDescription(), t.patch, scopes),
+		tool(ForgetTool, t.forgetDescription(), t.forget, scopes),
+		tool(SearchTool, t.searchDescription(), t.search, scopes),
 	}
 }
+
+// tool builds one memory tool over a schema that names the scopes, and
+// checks a call against that schema before it runs.
+func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes []Scope) agenttool.Tool {
+	tree, schema := scopeSchema[Args](scopes)
+	return checked{
+		Tool: agenttool.New(name, description, fn, agenttool.WithParameters(schema)),
+		tree: tree,
+	}
+}
+
+// checked is a tool that validates a call's arguments against its own
+// schema. agenttool validates against the schema it reflected, and
+// skips it for a schema given through WithParameters, since it cannot
+// know what that schema promises; these tools build their own schema
+// to name the scopes, so they check it themselves. Without it every
+// required property and every enum is advice: a memory_patch that
+// omits new_text would decode to the empty string and delete old_text
+// rather than come back as an error the model can read.
+type checked struct {
+	agenttool.Tool
+	tree *agenttool.Schema
+}
+
+func (c checked) Execute(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+	if err := c.tree.ValidateJSON(call.Args); err != nil {
+		return agenttool.Result{}, err
+	}
+	return c.Tool.Execute(ctx, call)
+}
+
+// Strict and Sequential keep the wrapped tool's answers, which an
+// embedded interface does not promote.
+func (c checked) Strict() bool     { return agenttool.IsStrict(c.Tool) }
+func (c checked) Sequential() bool { return agenttool.IsSequential(c.Tool) }
 
 // scopeSchema reflects an argument type and writes the scopes a
 // product allows into the schema: an enum on scope, and on the items of
@@ -159,10 +194,12 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 // here because the allowed scopes are chosen at this call and a struct
 // tag cannot carry them.
 //
-// A schema given this way is not what agenttool validates a call
-// against, so the call-time check in scope stays: it is the one a model
-// that ignores the schema meets.
-func scopeSchema[Args any](scopes []Scope) json.RawMessage {
+// It returns the tree as well as the JSON, because a schema given
+// through WithParameters is not one agenttool validates against: the
+// tools check it themselves, see [checked]. The call-time check in
+// scope stays too, for a caller that reaches a tool function another
+// way.
+func scopeSchema[Args any](scopes []Scope) (*agenttool.Schema, json.RawMessage) {
 	var zero Args
 	tree, err := agenttool.Reflect(reflect.TypeOf(&zero).Elem())
 	if err != nil {
@@ -190,7 +227,7 @@ func scopeSchema[Args any](scopes []Scope) json.RawMessage {
 	if err != nil {
 		panic(fmt.Sprintf("agentmemory.Tools: %v", err))
 	}
-	return data
+	return tree, data
 }
 
 type toolset struct {

@@ -28,7 +28,10 @@ versions may break the API.
   headings with their descriptions and the list of what was left out
   are all counted, and the header reports the block's own size as
   `Block: n of m bytes (k free)` rather than the content total as
-  `Used:`. A store of many short entries rendered several times its
+  `Used:`. The free count is written at the width of the bound, padded
+  with spaces, so that the header's width depends on the size it
+  reports and on nothing else and the size it states is the block's own
+  length. A store of many short entries rendered several times its
   budget before; the same store now renders inside it and shows fewer
   entries (#3).
 - `Render` skips an entry that does not fit and goes on to the next
@@ -40,7 +43,10 @@ versions may break the API.
   when there is more than one: a call that omits it is now an error
   naming the choices rather than a write into the first scope listed,
   which under the README's own split is the widest. With one scope the
-  argument may still be left out (#5).
+  argument may still be left out. A call is checked against that schema
+  before it runs, so a missing required argument is an error the model
+  can read rather than an empty string: a `memory_patch` without
+  `new_text` used to delete `old_text` (#5).
 - `memory_save` keeps the entry's metadata when the call leaves `meta`
   out, instead of deleting the description the rendered block, the
   index and `Search` use; `{}` clears it. The tool reads the entry
@@ -52,13 +58,16 @@ versions may break the API.
   before every render stops paying for the store's whole history on
   every turn: reading a 4,000 record journal took 9.6 ms and reading
   from the cursor takes 44 µs, whatever the journal holds, and a run
-  with nothing to do writes nothing. The file is derived: a missing,
-  damaged or stale one is rebuilt from the journal (#7).
+  with nothing to do writes nothing. The file is derived: a missing or
+  damaged one, one whose offset is past the journal's end, and one
+  written against another journal, which it tells by the hash of the
+  journal's first line, are all rebuilt from the journal (#7).
 - A write through `filestore` records a person's edit to the entry it
   is about to replace, as a change by nobody with
   `Source: "reconciled"`, so nothing a person wrote is lost when the
   agent writes before anything reconciles, and the journal no longer
-  ends up with a `Prev` naming a hash no record holds (#7).
+  ends up with a `Prev` naming a hash no record holds. The record waits
+  for the entry file, so a write that fails still writes nothing (#7).
 
 ### Added
 
@@ -93,7 +102,11 @@ versions may break the API.
   linked the lock it inspected before removing it, so two writers that
   find one dead holder's lock no longer both take it over, both read
   the same next sequence number from the journal's tail and both append
-  it. `BreakLock` also removes a claim a taker left behind (#2).
+  it. `BreakLock` also removes a claim a taker left behind. A file
+  system that gives no links, or a directory this process may not
+  write, comes back as `ErrLocked` naming the holder rather than as an
+  error about a file the caller never asked for, and a writer releases
+  only a lock it can prove is its own (#2).
 - `sqlite`: `Open` sets the busy timeout before the pragma that takes a
   lock on the database and applies the schema inside the writer's
   immediate transaction, so two processes opening one database at once

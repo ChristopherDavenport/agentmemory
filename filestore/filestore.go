@@ -246,16 +246,17 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	if err != nil {
 		return nil, err
 	}
-	// A person's edit to this file that the journal has not seen is
-	// recorded before the write lands on top of it; afterwards the file
-	// and the journal agree and there is nothing left to record.
-	if err := s.noteOutside(st, e.Scope, e.Name, stored, now); err != nil {
-		return nil, err
-	}
 	if err := writeAtomic(s.entryPath(e.Scope, e.Name), encode(e)); err != nil {
 		return nil, err
 	}
 	if err := s.reindex(e.Scope); err != nil {
+		return nil, err
+	}
+	// A person's edit to this file that the journal has not seen goes
+	// in before the record of the write that replaced it, so the chain
+	// holds; both are written after the file, so a write that fails
+	// leaves the journal as it was.
+	if err := s.noteOutside(st, e.Scope, e.Name, stored, now); err != nil {
 		return nil, err
 	}
 	replaced := ""
@@ -314,13 +315,13 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	if err != nil {
 		return nil, err
 	}
-	if err := s.noteOutside(st, scope, name, stored, now); err != nil {
-		return nil, err
-	}
 	if err := os.Remove(s.entryPath(scope, name)); err != nil {
 		return nil, fmt.Errorf("filestore: remove %s/%s: %w", scope, name, err)
 	}
 	if err := s.reindex(scope); err != nil {
+		return nil, err
+	}
+	if err := s.noteOutside(st, scope, name, stored, now); err != nil {
 		return nil, err
 	}
 	e := *stored

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -222,16 +223,12 @@ func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) 
 	// The header reports the block's own size, so settling it is a
 	// fixed point: the reservation above is as wide as the header can
 	// be, and writing the size into it narrows it, which narrows the
-	// size, so the passes below descend to the width it keeps. Every
-	// pass is inside the bound, since none is wider than the
-	// reservation.
-	//
-	// A fixed point does not always exist: a step that takes the size
-	// below a power of ten takes the free count above one, and the
-	// header is then one byte wider for the smaller size than for the
-	// larger. Where the two sizes swap like that, the larger is
-	// reported and the header is padded to it, so the number is the
-	// block's own length either way.
+	// size, so the passes below descend to the width the header keeps.
+	// Only the size's own digits move that width, because the free
+	// count is written at the width of the bound, so each pass is no
+	// wider than the one before and a few of them reach the width that
+	// holds. Every pass is inside the bound, since none is wider than
+	// the reservation.
 	shown, left := len(man.Entries), len(man.Omitted)
 	size := fixed + spent
 	head := ""
@@ -241,23 +238,9 @@ func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) 
 		if n == size {
 			break
 		}
-		if n > size {
-			size = n
-			head = pad(header(shown, left, size, o.maxTotal-size, o.maxTotal, limit), size-body.Len())
-			break
-		}
 		size = n
 	}
 	return head + body.String(), man, nil
-}
-
-// pad widens the header's last line to n bytes with spaces, for the
-// sizes no header width is a fixed point of.
-func pad(head string, n int) string {
-	if len(head) >= n {
-		return head
-	}
-	return strings.TrimSuffix(head, "\n") + strings.Repeat(" ", n-len(head)) + "\n"
 }
 
 const (
@@ -346,9 +329,16 @@ func omitLine(dropped []Entry, room int) string {
 }
 
 // header is the block's first lines: what it holds and what it cost.
+//
+// The free count is written at the width of the bound, padded with
+// spaces, so that the header's own width depends on the size it reports
+// and on nothing else. Let it shrink as the size shrinks and the two
+// swap at a power of ten: the header is then wider for the smaller
+// size than for the larger, no width is a fixed point of the size it
+// states, and the block reports a length it does not have.
 func header(shown, omitted, size, free, max, limit int) string {
-	return fmt.Sprintf("# Memory\n\nEntries: %d shown, %d omitted. Block: %d of %d bytes (%d free). Entry limit: %d bytes.\n",
-		shown, omitted, size, max, free, limit)
+	return fmt.Sprintf("# Memory\n\nEntries: %d shown, %d omitted. Block: %d of %d bytes (%*d free). Entry limit: %d bytes.\n",
+		shown, omitted, size, max, len(strconv.Itoa(max)), free, limit)
 }
 
 // entryBlock renders one entry as the block holds it.

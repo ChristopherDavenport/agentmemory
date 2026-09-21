@@ -1,6 +1,6 @@
 # Memory
 
-Entries: 4 shown, 2 omitted. Block: 967 of 1000 bytes (33 free). Entry limit: 256 bytes.
+Entries: 4 shown, 2 omitted. Block: 969 of 1000 bytes (  31 free). Entry limit: 256 bytes.
 
 ## user
 

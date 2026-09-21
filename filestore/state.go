@@ -33,6 +33,12 @@ type journalState struct {
 	// Off is where the next record starts in the journal, so catching
 	// up reads what was appended and not the file.
 	Off int64 `json:"off"`
+	// Head is the hash of the journal's first line, which says the
+	// offset belongs to this journal and not to one that replaced it.
+	// A journal restored from a backup, merged, or written again is a
+	// different file whose records are at other offsets, and resuming
+	// in the middle of one reads nothing that is there.
+	Head string `json:"head,omitempty"`
 	// Entries is the last state of every live entry, by "scope/name".
 	// A tombstoned name is absent, which is what a name the store has
 	// never seen looks like, and both mean the next write to it is a
@@ -115,6 +121,16 @@ func (s *Store) loadState() (*journalState, error) {
 	default:
 		return nil, fmt.Errorf("filestore: read %s: %w", s.statePath(), err)
 	}
+	head, err := s.headLine()
+	if err != nil {
+		return nil, err
+	}
+	if st.Head != agentmemory.Hash(string(head)) {
+		// A journal the cursor was not written against: its offsets
+		// point into a file that is gone, and the hashes it holds are
+		// about records that may not be in this one.
+		return s.rebuildState()
+	}
 	off, err := s.scanJournal(st.Off, func(c agentmemory.Change, err error) bool {
 		if err != nil {
 			return true // damaged lines belong to the journal's readers
@@ -127,8 +143,8 @@ func (s *Store) loadState() (*journalState, error) {
 		return nil, err
 	}
 	if off < st.Off {
-		// The journal was replaced or truncated behind the store, so
-		// what the cursor holds is about a file that is gone.
+		// Truncated behind the store, so what the cursor holds is about
+		// a file that is gone.
 		return s.rebuildState()
 	}
 	st.Off = off
@@ -147,7 +163,11 @@ func (s *Store) rebuildState() (*journalState, error) {
 	if err != nil {
 		return nil, err
 	}
-	st.Off = off
+	head, err := s.headLine()
+	if err != nil {
+		return nil, err
+	}
+	st.Off, st.Head = off, agentmemory.Hash(string(head))
 	return st, nil
 }
 
@@ -191,6 +211,14 @@ func (s *Store) appendChange(st *journalState, c agentmemory.Change) (*agentmemo
 	st.Seq = c.Seq
 	st.Off = off
 	st.note(c.Entry)
+	if st.Head == agentmemory.Hash("") {
+		// The journal had no first line to hash before this record.
+		head, err := s.headLine()
+		if err != nil {
+			return nil, err
+		}
+		st.Head = agentmemory.Hash(string(head))
+	}
 	return &c, nil
 }
 

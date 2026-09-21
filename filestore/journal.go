@@ -59,6 +59,32 @@ func (s *Store) appendJournal(c agentmemory.Change) (int64, error) {
 	return end, nil
 }
 
+// headLine returns the journal's first line, up to the first newline
+// and at most headLimit bytes, which identifies the file a cursor's
+// offsets belong to. A journal replaced by another of the same length
+// or longer would otherwise be resumed at an offset that is not where
+// a record starts.
+func (s *Store) headLine() ([]byte, error) {
+	f, err := os.Open(s.journalPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("filestore: open journal: %w", err)
+	}
+	defer f.Close()
+	line, err := bufio.NewReader(io.LimitReader(f, headLimit)).ReadBytes('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("filestore: read journal: %w", err)
+	}
+	return line, nil
+}
+
+// headLimit bounds the first line a cursor is identified by, so a
+// journal whose first record is enormous is read in part rather than
+// whole.
+const headLimit = 64 << 10
+
 // lastSeq returns the Seq of the journal's last record, or 0 for no
 // journal. It reads the file's tail rather than the whole file, since
 // the journal is unbounded and a write needs one number from it.

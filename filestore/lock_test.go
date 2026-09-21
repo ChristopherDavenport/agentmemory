@@ -3,6 +3,7 @@ package filestore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -142,6 +143,96 @@ func TestTakeoverRaceControl(t *testing.T) {
 		rounds, writers, records, dupRounds, dupSeqs)
 	if dupRounds != 0 {
 		t.Errorf("%d of %d rounds repeated a sequence number (%d records)", dupRounds, rounds, dupSeqs)
+	}
+}
+
+// TestTakeoverCannotClaim is the file system that gives no links, or
+// the directory this process may not write: a stale lock cannot be
+// taken over there, and a writer must be told so as ErrLocked, which
+// names the holder and points at BreakLock, rather than with an error
+// about a file it never asked for.
+func TestTakeoverCannotClaim(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a read-only directory")
+	}
+	dir := filepath.Join(t.TempDir(), "memory")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pid := deadPID(t)
+	plantStaleLock(t, dir, pid)
+	s, err := Open(dir, WithLockTimeout(30*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	_, err = s.Put(context.Background(), agentmemory.Entry{Scope: "user", Name: "a", Content: "x"})
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("Put over a lock that cannot be claimed = %v, want ErrLocked", err)
+	}
+	for _, want := range []string{fmt.Sprintf("pid %d", pid), "BreakLock"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestReleaseKeepsAnotherHolder checks that a writer releases only a
+// lock it can prove is its own: one taken over while it held it, or
+// one another writer is part way through creating, belongs to that
+// writer, and removing it would let two writers write at once.
+func TestReleaseKeepsAnotherHolder(t *testing.T) {
+	host, _ := os.Hostname()
+	other := LockInfo{PID: os.Getpid(), Host: host, Since: time.Now().UTC().Add(-time.Minute)}
+	tests := []struct {
+		name  string
+		write func(t *testing.T, path string)
+	}{
+		{"taken over while we held it", func(t *testing.T, path string) {
+			data, err := json.Marshal(other)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"half written by its new holder", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := open(t)
+			release, err := s.acquire(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.write(t, s.lockPath())
+			release()
+			if _, err := os.Stat(s.lockPath()); err != nil {
+				t.Errorf("the release removed another holder's lock: %v", err)
+			}
+			if err := s.BreakLock(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	// A lock that is still ours is removed, as every other test relies
+	// on.
+	s := open(t)
+	release, err := s.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if h, _ := s.LockHolder(); h != nil {
+		t.Errorf("the release left our own lock behind: %+v", h)
 	}
 }
 

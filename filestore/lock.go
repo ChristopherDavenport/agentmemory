@@ -162,7 +162,14 @@ func takeover(path string, holder LockInfo) (bool, error) {
 		case errors.Is(err, os.ErrNotExist):
 			return true, nil // released or taken over between the read and the link
 		}
-		return false, fmt.Errorf("filestore: claim stale lock %s: %w", path, err)
+		// A file system with no links to give, or a directory this
+		// process may not write: the lock cannot be taken over here,
+		// and a writer that cannot take it over is a writer waiting on
+		// a holder it will never outlive. Say so as [ErrLocked], which
+		// names the holder and points at BreakLock, rather than as an
+		// error about a file the caller did not ask for.
+		return false, fmt.Errorf("%w: %s held by pid %d on %s since %s, which no longer runs, and the lock cannot be claimed (%v); BreakLock removes it",
+			ErrLocked, path, holder.PID, holder.Host, holder.Since.Format(time.RFC3339), err)
 	}
 	// The claim names whatever the lock named at the moment of the
 	// link. When that is not the holder read a moment ago, a faster
@@ -182,11 +189,15 @@ func takeover(path string, holder LockInfo) (bool, error) {
 	return true, nil
 }
 
-// releaseLock removes the lock when it is still this holder's. A lock
-// taken over while this process held it belongs to its new holder, and
-// removing it would let two writers write at once.
+// releaseLock removes the lock when it is still, provably, this
+// holder's. A lock taken over while this process held it belongs to
+// its new holder, and one being written by a new holder reads as
+// empty; removing either would let two writers write at once. A lock
+// this writer cannot prove is its own is left to go stale, which the
+// next writer on this host takes over.
 func releaseLock(path string, mine LockInfo) {
-	if info, err := readLock(path); err == nil && !info.same(mine) {
+	info, err := readLock(path)
+	if err != nil || !info.same(mine) {
 		return
 	}
 	os.Remove(path)

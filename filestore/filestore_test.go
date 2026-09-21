@@ -360,7 +360,7 @@ func TestReconcileClosesTheGap(t *testing.T) {
 func TestReconcileReadsFromItsCursor(t *testing.T) {
 	ctx := context.Background()
 	s := open(t)
-	for _, name := range []string{"one", "two"} {
+	for _, name := range []string{"one", "two", "three"} {
 		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: name, Content: name + "\n"}); err != nil {
 			t.Fatal(err)
 		}
@@ -371,14 +371,13 @@ func TestReconcileReadsFromItsCursor(t *testing.T) {
 	if _, err := os.Stat(s.statePath()); err != nil {
 		t.Fatalf("no cursor beside the journal: %v", err)
 	}
-	// Damage the first record in place, keeping the file's length so
-	// the offsets after it still hold.
+	// Damage the second record in place, keeping the file's length so
+	// the offsets after it still hold and the first line, which the
+	// cursor is identified by, is untouched.
 	data := []byte(readFile(t, s.journalPath()))
-	end := bytes.IndexByte(data, '\n')
-	if end < 0 {
-		t.Fatal("no journal")
-	}
-	copy(data[:end], bytes.Repeat([]byte("x"), end))
+	first := bytes.IndexByte(data, '\n') + 1
+	second := first + bytes.IndexByte(data[first:], '\n')
+	copy(data[first:second], bytes.Repeat([]byte("x"), second-first))
 	if err := os.WriteFile(s.journalPath(), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +410,7 @@ func TestReconcileReadsFromItsCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changes) != 1 || changes[0].Entry.Name != "one" || changes[0].Source != agentmemory.SourceReconciled {
+	if len(changes) != 1 || changes[0].Entry.Name != "two" || changes[0].Source != agentmemory.SourceReconciled {
 		t.Errorf("Reconcile without a cursor = %+v", changes)
 	}
 	// And a cursor it had to rebuild is written back, whatever it
@@ -427,6 +426,127 @@ func TestReconcileReadsFromItsCursor(t *testing.T) {
 	}
 	if _, err := os.Stat(s.statePath()); err != nil {
 		t.Errorf("a rebuild that found nothing wrote no cursor: %v", err)
+	}
+}
+
+// TestFailedWriteJournalsNothing holds Put and Forget to what the
+// contract says: a write that fails writes nothing. The record of a
+// person's edit is part of the write, so it waits for the entry file
+// to land; a scope directory this process cannot write is the failure
+// that used to leave the journal a record longer.
+func TestFailedWriteJournalsNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a read-only directory")
+	}
+	ctx := agentmemory.WithSession(context.Background(), "sess-agent")
+	s := open(t)
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "profile", Content: "Chris.\n"}); err != nil {
+		t.Fatal(err)
+	}
+	// A person edits the file, so the next write has that to record.
+	if err := os.WriteFile(filepath.Join(s.Dir(), "user", "profile.md"), []byte("---\nname: profile\n---\nChris. Prefers Go.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scope := filepath.Join(s.Dir(), "user")
+	if err := os.Chmod(scope, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(scope, 0o755) })
+	before := len(journalOf(t, s))
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "profile", Content: "Chris. Lives in Bristol.\n"}); err == nil {
+		t.Fatal("Put into a directory this process cannot write succeeded")
+	}
+	if after := len(journalOf(t, s)); after != before {
+		t.Errorf("a failed Put grew the journal from %d records to %d", before, after)
+	}
+	if _, err := s.Forget(ctx, "user", "profile"); err == nil {
+		t.Fatal("Forget from a directory this process cannot write succeeded")
+	}
+	if after := len(journalOf(t, s)); after != before {
+		t.Errorf("a failed Forget grew the journal from %d records to %d", before, after)
+	}
+	// With the directory writable again, the person's edit is still
+	// there to be recorded.
+	if err := os.Chmod(scope, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "profile", Content: "Chris. Lives in Bristol.\n"}); err != nil {
+		t.Fatal(err)
+	}
+	changes := journalOf(t, s)
+	if len(changes) != before+2 {
+		t.Fatalf("journal = %d records, want the person's version and the write", len(changes))
+	}
+	if person := changes[before]; person.Source != agentmemory.SourceReconciled || person.Entry.Content != "Chris. Prefers Go.\n" {
+		t.Errorf("the person's version = %+v", person)
+	}
+	if lost, err := agentmemory.LostUpdates(ctx, s, 0); err != nil || len(lost) != 0 {
+		t.Errorf("LostUpdates = %+v, %v", lost, err)
+	}
+}
+
+// TestCursorNoticesANewJournal replaces the journal with another one
+// that is no shorter, as a backup restored over it or a merge would.
+// The cursor's offset then points into the middle of a record that is
+// not the one it was written for, and the hashes it holds are about
+// records this journal does not have, so it has to be rebuilt: the
+// cursor names the journal's first line for exactly this.
+func TestCursorNoticesANewJournal(t *testing.T) {
+	ctx := context.Background()
+	mine := open(t)
+	for _, name := range []string{"a-one", "a-two"} {
+		if _, err := mine.Put(ctx, agentmemory.Entry{Scope: "user", Name: name, Content: name + "\n"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if changes, err := mine.Reconcile(ctx); err != nil || len(changes) != 0 {
+		t.Fatalf("Reconcile on a clean store = %v, %v", changes, err)
+	}
+	// Another store's journal, longer than this one's and about other
+	// entries.
+	other := open(t)
+	for _, name := range []string{"b-one", "b-two", "b-three", "b-four"} {
+		if _, err := other.Put(ctx, agentmemory.Entry{Scope: "user", Name: name, Content: strings.Repeat(name+" ", 8)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replacement := []byte(readFile(t, other.journalPath()))
+	if mineLen := len(readFile(t, mine.journalPath())); len(replacement) < mineLen {
+		t.Fatalf("the replacement journal is %d bytes, shorter than %d", len(replacement), mineLen)
+	}
+	if err := os.WriteFile(mine.journalPath(), replacement, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := mine.Reconcile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Four names the new journal knows and no file holds, and two files
+	// it does not know.
+	var tombstones, created int
+	for _, c := range changes {
+		if c.Source != agentmemory.SourceReconciled {
+			t.Errorf("%s/%s: Source = %q", c.Entry.Scope, c.Entry.Name, c.Source)
+		}
+		if c.Entry.Deleted {
+			tombstones++
+		} else {
+			created++
+		}
+	}
+	if tombstones != 4 || created != 2 {
+		t.Errorf("Reconcile after the journal was replaced = %d tombstones, %d creates; want 4 and 2", tombstones, created)
+	}
+	// The sequence continues the journal that is there, not the one the
+	// cursor remembered.
+	last := journalOf(t, mine)
+	for i, c := range last {
+		if c.Seq != uint64(i+1) {
+			t.Fatalf("record %d has Seq %d", i, c.Seq)
+		}
+	}
+	if len(last) != 4+6 {
+		t.Errorf("journal = %d records, want the four it was replaced with and six more", len(last))
 	}
 }
 

@@ -132,26 +132,36 @@ func TestToolsFailures(t *testing.T) {
 		args string
 		want string // a substring of the error the model sees
 	}{
-		{"save: other scope", SaveTool, `{"scope":"secret","name":"a","content":"x"}`, `scope "secret" is not available; Scopes: user, project; name one on every call.`},
-		{"save: no scope", SaveTool, `{"name":"a","content":"x"}`, `scope is required; name one of: user, project`},
+		// The scopes are in the schema, so a scope outside them and a
+		// call that omits one come back as schema errors the model can
+		// read and retry on.
+		{"save: other scope", SaveTool, `{"scope":"secret","name":"a","content":"x"}`, `invalid arguments: scope: expected one of ["user", "project"], got "secret"`},
+		{"save: no scope", SaveTool, `{"name":"a","content":"x"}`, `invalid arguments: missing required property "scope"`},
 		{"save: bad name", SaveTool, `{"scope":"user","name":"Not Kebab","content":"x"}`, `name "Not Kebab" is not kebab-case`},
 		{"save: empty content", SaveTool, `{"scope":"user","name":"a","content":""}`, `has no content`},
 		{"save: over the bound, new", SaveTool, `{"scope":"user","name":"big","content":"` + strings.Repeat("x", 257) + `"}`, `entry user/big is 257 bytes, over the 256 byte limit; split it or trim it`},
 		{"save: over the bound, existing", SaveTool, `{"scope":"user","name":"style","content":"` + strings.Repeat("x", 300) + `"}`, `entry user/style is 300 bytes, over the 256 byte limit; it holds 26 bytes now`},
 		{"save: bad meta", SaveTool, `{"scope":"user","name":"a","content":"x","meta":{"Type":"y"}}`, `meta key "Type" is not kebab-case`},
-		{"save: missing content", SaveTool, `{"scope":"user","name":"a"}`, `content`},
+
 		{"patch: missing entry", PatchTool, `{"scope":"user","name":"nope","old_text":"a","new_text":"b"}`, `no such entry: user/nope; memory_save creates an entry`},
 		{"patch: absent text", PatchTool, `{"scope":"user","name":"style","old_text":"Long","new_text":"b"}`, `old_text does not appear in user/style`},
 		{"patch: repeated text", PatchTool, `{"scope":"user","name":"style","old_text":"Short","new_text":"Long"}`, `old_text appears 2 times in user/style; include more of the surrounding text`},
 		{"patch: empty old", PatchTool, `{"scope":"user","name":"style","old_text":"","new_text":"b"}`, `old_text is empty`},
 		{"patch: to empty", PatchTool, `{"scope":"user","name":"style","old_text":"Short answers. Short code.","new_text":""}`, `has no content; use forget`},
-		{"patch: other scope", PatchTool, `{"scope":"secret","name":"style","old_text":"a","new_text":"b"}`, `scope "secret" is not available`},
-		{"patch: no scope", PatchTool, `{"name":"style","old_text":"a","new_text":"b"}`, `scope is required; name one of: user, project`},
+		{"patch: other scope", PatchTool, `{"scope":"secret","name":"style","old_text":"a","new_text":"b"}`, `invalid arguments: scope: expected one of ["user", "project"], got "secret"`},
+		{"patch: no scope", PatchTool, `{"name":"style","old_text":"a","new_text":"b"}`, `invalid arguments: missing required property "scope"`},
+		// An omitted new_text would decode to the empty string and
+		// delete old_text, so the schema has to be the one that answers.
+		{"patch: no new_text", PatchTool, `{"scope":"user","name":"style","old_text":"Short"}`, `invalid arguments: missing required property "new_text"`},
+		{"patch: no old_text", PatchTool, `{"scope":"user","name":"style","new_text":"Long"}`, `invalid arguments: missing required property "old_text"`},
+		{"save: no content", SaveTool, `{"scope":"user","name":"style"}`, `invalid arguments: missing required property "content"`},
+		{"search: no query", SearchTool, `{"scopes":["user"]}`, `invalid arguments: missing required property "query"`},
+		{"search: scope outside the enum", SearchTool, `{"query":"x","scopes":["user","secret"]}`, `invalid arguments: scopes[1]: expected one of ["user", "project"], got "secret"`},
+		{"save: wrong type", SaveTool, `{"scope":"user","name":"style","content":5}`, `invalid arguments: content: expected string, got 5`},
 		{"forget: missing", ForgetTool, `{"scope":"user","name":"nope"}`, `no such entry: user/nope`},
-		{"forget: other scope", ForgetTool, `{"scope":"secret","name":"style"}`, `scope "secret" is not available`},
-		{"forget: no scope", ForgetTool, `{"name":"style"}`, `scope is required; name one of: user, project`},
+		{"forget: other scope", ForgetTool, `{"scope":"secret","name":"style"}`, `invalid arguments: scope: expected one of ["user", "project"], got "secret"`},
+		{"forget: no scope", ForgetTool, `{"name":"style"}`, `invalid arguments: missing required property "scope"`},
 		{"search: empty query", SearchTool, `{"query":"  "}`, `query is empty`},
-		{"search: other scope", SearchTool, `{"query":"x","scopes":["user","secret"]}`, `scope "secret" is not available`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -7,8 +7,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -145,7 +147,7 @@ func TestRenderGolden(t *testing.T) {
 			if len(block) > max {
 				t.Errorf("block is %d bytes, over the %d byte bound", len(block), max)
 			}
-			if !strings.Contains(block, fmt.Sprintf("Block: %d of %d bytes (%d free).", len(block), max, max-len(block))) {
+			if !strings.Contains(block, blockLine(len(block), max)) {
 				t.Errorf("the header does not state the block's own size (%d of %d):\n%s", len(block), max, firstLines(block, 3))
 			}
 			for _, me := range man.Omitted {
@@ -184,7 +186,7 @@ func TestRenderBudget(t *testing.T) {
 	if len(block) > DefaultMaxTotalBytes {
 		t.Errorf("block is %d bytes, over the %d byte bound", len(block), DefaultMaxTotalBytes)
 	}
-	if !strings.Contains(block, fmt.Sprintf("Entries: 7 shown, 2 omitted. Block: %d of 32768 bytes (%d free). Entry limit: 4096 bytes.", len(block), DefaultMaxTotalBytes-len(block))) {
+	if !strings.Contains(block, "Entries: 7 shown, 2 omitted. "+blockLine(len(block), DefaultMaxTotalBytes)+" Entry limit: 4096 bytes.") {
 		t.Errorf("header: %s", firstLines(block, 3))
 	}
 	if !strings.Contains(block, "Not shown, over the block budget; fetch with memory_search: note-h (4096 bytes), note-i (4096 bytes)") {
@@ -283,6 +285,14 @@ func TestRenderTinyBound(t *testing.T) {
 	if !strings.Contains(block, "Not shown, over the block budget: 8 entries.") {
 		t.Errorf("the block does not count what it could not name:\n%s", block)
 	}
+}
+
+// blockLine is the header's sentence about the block's own size. The
+// free count is written at the width of the bound, so that the
+// header's width depends on the size alone and the size it states
+// settles; see header.
+func blockLine(size, max int) string {
+	return fmt.Sprintf("Block: %d of %d bytes (%*d free).", size, max, len(strconv.Itoa(max)), max-size)
 }
 
 func sortedNames(names []string) bool {
@@ -385,6 +395,52 @@ func TestManifestIdentity(t *testing.T) {
 	}
 }
 
+// TestRenderHeaderSettles is the case the header's width could not
+// settle on: at 243 bytes the block's size and its free count cross a
+// power of ten in opposite directions, so a header whose free count
+// shrinks with the size is wider for the smaller size than for the
+// larger and states a length the block does not have. The sweep is the
+// same question asked at random.
+func TestRenderHeaderSettles(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore(WithMaxEntryBytes(4096))
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "a", Content: strings.Repeat("x", 9) + "\n"}); err != nil {
+		t.Fatal(err)
+	}
+	block, _, err := Render(ctx, store, []Scope{"user"}, WithMaxTotalBytes(243))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := blockLine(len(block), 243); !strings.Contains(block, want) {
+		t.Errorf("the block is %d bytes and does not say %q:\n%s", len(block), want, firstLines(block, 3))
+	}
+
+	rng := rand.New(rand.NewSource(1))
+	for i := 0; i < 20000; i++ {
+		max := 120 + rng.Intn(4000)
+		st := NewMemStore(WithMaxEntryBytes(4096))
+		for j := 0; j < 1+rng.Intn(4); j++ {
+			e := Entry{Scope: "user", Name: fmt.Sprintf("e%d", j), Content: strings.Repeat("x", 1+rng.Intn(300))}
+			if rng.Intn(2) == 0 {
+				e.Meta = map[string]string{"description": strings.Repeat("d", rng.Intn(40))}
+			}
+			if _, err := st.Put(ctx, e); err != nil {
+				t.Fatal(err)
+			}
+		}
+		block, _, err := Render(ctx, st, []Scope{"user"}, WithMaxTotalBytes(max))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(block) > max {
+			t.Fatalf("bound %d: block is %d bytes", max, len(block))
+		}
+		if want := blockLine(len(block), max); !strings.Contains(block, want) {
+			t.Fatalf("bound %d: the block is %d bytes and does not say %q:\n%s", max, len(block), want, firstLines(block, 3))
+		}
+	}
+}
+
 // TestRenderHeaderIsExact sweeps the block's size across the digit
 // boundaries where the size it reports and the free count it reports
 // move in opposite directions, and holds the header to the block's
@@ -408,7 +464,7 @@ func TestRenderHeaderIsExact(t *testing.T) {
 			if len(block) > max {
 				t.Fatalf("max %d, entry %d: block is %d bytes", max, n, len(block))
 			}
-			want := fmt.Sprintf("Block: %d of %d bytes (%d free).", len(block), max, max-len(block))
+			want := blockLine(len(block), max)
 			if !strings.Contains(block, want) {
 				t.Fatalf("max %d, entry %d: header does not say %q:\n%s", max, n, want, firstLines(block, 3))
 			}
