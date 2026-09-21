@@ -219,21 +219,45 @@ func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) 
 			spent += len(line)
 		}
 	}
-	// The header reports the block's own size, so settling it is a fixed
-	// point: the reservation above is at least as wide as the header can
+	// The header reports the block's own size, so settling it is a
+	// fixed point: the reservation above is as wide as the header can
 	// be, and writing the size into it narrows it, which narrows the
-	// size. A few passes reach the width it keeps, and every pass is
-	// inside the bound because none is wider than the reservation.
+	// size, so the passes below descend to the width it keeps. Every
+	// pass is inside the bound, since none is wider than the
+	// reservation.
+	//
+	// A fixed point does not always exist: a step that takes the size
+	// below a power of ten takes the free count above one, and the
+	// header is then one byte wider for the smaller size than for the
+	// larger. Where the two sizes swap like that, the larger is
+	// reported and the header is padded to it, so the number is the
+	// block's own length either way.
 	shown, left := len(man.Entries), len(man.Omitted)
 	size := fixed + spent
+	head := ""
 	for range 8 {
-		next := len(header(shown, left, size, o.maxTotal-size, o.maxTotal, limit)) + body.Len()
-		if next == size {
+		head = header(shown, left, size, o.maxTotal-size, o.maxTotal, limit)
+		n := len(head) + body.Len()
+		if n == size {
 			break
 		}
-		size = next
+		if n > size {
+			size = n
+			head = pad(header(shown, left, size, o.maxTotal-size, o.maxTotal, limit), size-body.Len())
+			break
+		}
+		size = n
 	}
-	return header(shown, left, size, o.maxTotal-size, o.maxTotal, limit) + body.String(), man, nil
+	return head + body.String(), man, nil
+}
+
+// pad widens the header's last line to n bytes with spaces, for the
+// sizes no header width is a fixed point of.
+func pad(head string, n int) string {
+	if len(head) >= n {
+		return head
+	}
+	return strings.TrimSuffix(head, "\n") + strings.Repeat(" ", n-len(head)) + "\n"
 }
 
 const (

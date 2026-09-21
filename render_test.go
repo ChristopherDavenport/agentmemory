@@ -385,6 +385,37 @@ func TestManifestIdentity(t *testing.T) {
 	}
 }
 
+// TestRenderHeaderIsExact sweeps the block's size across the digit
+// boundaries where the size it reports and the free count it reports
+// move in opposite directions, and holds the header to the block's
+// true length at every one of them. The bound is on the block, so it
+// is checked here too.
+func TestRenderHeaderIsExact(t *testing.T) {
+	ctx := context.Background()
+	for _, max := range []int{400, 1000, 2000, 11000, DefaultMaxTotalBytes} {
+		for n := 1; n <= max; n += 7 {
+			store := NewMemStore(WithMaxEntryBytes(max))
+			if _, err := store.Put(ctx, Entry{Scope: "user", Name: "a", Content: filler(n, 'a')}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Put(ctx, Entry{Scope: "user", Name: "b", Content: "b\n"}); err != nil {
+				t.Fatal(err)
+			}
+			block, _, err := Render(ctx, store, []Scope{"user"}, WithMaxTotalBytes(max))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(block) > max {
+				t.Fatalf("max %d, entry %d: block is %d bytes", max, n, len(block))
+			}
+			want := fmt.Sprintf("Block: %d of %d bytes (%d free).", len(block), max, max-len(block))
+			if !strings.Contains(block, want) {
+				t.Fatalf("max %d, entry %d: header does not say %q:\n%s", max, n, want, firstLines(block, 3))
+			}
+		}
+	}
+}
+
 func TestRenderErrors(t *testing.T) {
 	ctx := context.Background()
 	if _, _, err := Render(ctx, NewMemStore(), []Scope{"user", "Bad"}); !errors.Is(err, ErrInvalid) {

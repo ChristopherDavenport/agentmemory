@@ -9,13 +9,20 @@ versions may break the API.
 
 ### Breaking
 
+- `Store.Put` and `Store.Forget` return the journal record they
+  appended, `(*Change, error)`, so a caller records a write without
+  reading the journal back. A refused write returns nil. Every store,
+  here or elsewhere, takes the new signature, and `storetest` checks
+  that the record returned is the record the journal holds (#6).
+- The four tools return an `agenttool.Result` rather than a string, so
+  a write can carry that record; the text the model sees is unchanged.
+  The module requires `agenttool` v0.0.5 for `Recordable` (#6).
 - `Change.Prev` is now the hash the write was built on, not the hash the
   store held: the base the caller named with `IfHash` or the new
   `BasedOn`, or, when the caller named none, the stored hash, which is
   what it was before. The hash a change replaced moved to the new
   `Change.Replaced`, which is what records chain through, so a reader
   that walked `Prev` to chain the journal reads `Replaced` now (#1).
-
 - `Render`'s `MaxTotalBytes` bounds the block, not the content of the
   entries it holds: the header, the scope headings, the per-entry
   headings with their descriptions and the list of what was left out
@@ -28,17 +35,6 @@ versions may break the API.
   instead of omitting it and everything after it, so a large entry no
   longer hides the smaller ones that sort after it. Block order is
   still list order (#8).
-
-- `Store.Put` and `Store.Forget` return the journal record they
-  appended, `(*Change, error)`, so a caller records a write without
-  reading the journal back. A refused write returns nil. Every store
-  and any store elsewhere takes the new signature, and `storetest`
-  checks that the record returned is the record the journal holds (#6).
-- The four tools return an `agenttool.Result` rather than a string, so
-  a write can carry its record; the text the model sees is unchanged
-  (#6).
-- The module requires `agenttool` v0.0.5 for `Recordable` (#6).
-
 - The scopes a product allows are in each tool's JSON Schema as an
   enum, not only in the description, and `scope` is a required argument
   when there is more than one: a call that omits it is now an error
@@ -51,7 +47,6 @@ versions may break the API.
   first and anchors the write with `BasedOn`, so the result says what
   it replaced and what became of the metadata, and the journal shows a
   save that landed on another channel's write (#4).
-
 - `filestore.Reconcile` reads the journal from a cursor kept beside it
   in `.state.json` rather than whole, so a product that reconciles
   before every render stops paying for the store's whole history on
