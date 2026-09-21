@@ -38,7 +38,7 @@ func TestRunUnderAgentturn(t *testing.T) {
 	}{
 		{agentmemory.SaveTool, "Saved user/favourite-editor (16 of 4096 bytes) ", "No entries."},
 		{agentmemory.PatchTool, "Patched user/favourite-editor (16 of 4096 bytes) ", "### favourite-editor (16 of 4096 bytes)\n\nfavourite-editor\n"},
-		{agentmemory.SearchTool, "1 match in user, project for \"favourite-editor\".\n\nuser/favourite-editor (16 bytes)\nfavourite-editor\n", "Entries: 1 shown, 0 omitted. Used: 16 of 32768 bytes"},
+		{agentmemory.SearchTool, "1 match in user, project for \"favourite-editor\".\n\nuser/favourite-editor (16 bytes)\nfavourite-editor\n", "Entries: 1 shown, 0 omitted. Block: 197 of 32768 bytes"},
 		{agentmemory.ForgetTool, "Forgot user/favourite-editor", "### favourite-editor"},
 	}
 	for _, step := range steps {

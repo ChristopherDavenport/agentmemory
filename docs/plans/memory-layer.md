@@ -139,13 +139,17 @@ A store has `MaxEntryBytes` (default 4 KiB) and `Render` has
 with the attempted size, the limit and the size the entry holds now,
 so the model is told to split or trim rather than have its write
 silently cut, and the trim is arithmetic rather than a guess. `Render`
-includes entries in index order until the total bound and then lists
-what it left out, so the model knows what it can fetch. The bound is
-rendered as well as enforced: each entry's heading carries its size
-and the limit, and the block's header states the total budget and what
-remains, so the model can see the wall before it hits it. The bound
-counts the content of the included entries; the headings are not
-counted.
+includes entries in index order while they fit, skipping one that does
+not and going on to the next, and lists what it left out, so the model
+knows what it can fetch and one large entry cannot hide the small ones
+after it. The bound is rendered as well as enforced: each entry's
+heading carries its size and the limit, and the block's header states
+the total budget and what remains, so the model can see the wall before
+it hits it. The bound is on the block and not on the content it holds:
+the header, the headings, the descriptions and the list of omissions
+are counted, because the window pays for them, and the header reports
+the block's own size. The manifest's omissions carry the reason, so a
+session can record what the model was not given.
 
 ### The tools
 
@@ -188,7 +192,7 @@ func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) 
 // Manifest lists what Render included, for the session's provenance.
 type Manifest struct {
     Entries []ManifestEntry // scope, name, hash, bytes
-    Omitted []ManifestEntry // left out by the total bound, same fields
+    Omitted []ManifestEntry // left out, same fields plus the reason
 }
 ```
 

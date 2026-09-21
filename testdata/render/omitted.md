@@ -1,6 +1,6 @@
 # Memory
 
-Entries: 3 shown, 3 omitted. Used: 768 of 1000 bytes (232 free). Entry limit: 256 bytes.
+Entries: 4 shown, 2 omitted. Block: 967 of 1000 bytes (33 free). Entry limit: 256 bytes.
 
 ## user
 
@@ -12,15 +12,17 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
-### c (256 of 256 bytes) — The last one shown
+### e (100 of 256 bytes)
 
-ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 
-Not shown, over the total budget; fetch with memory_search: d (256 bytes), e (100 bytes)
+Not shown, over the block budget; fetch with memory_search: c (256 bytes), d (256 bytes)
 
 ## project
 
-Not shown, over the total budget; fetch with memory_search: build (11 bytes)
+### build (11 of 256 bytes)
+
+make check
 
 ## empty
 

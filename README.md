@@ -94,19 +94,22 @@ ctx = agentmemory.WithSession(ctx, sessionID) // attributes the journal
 
 `Render` produces the block: a header with the counts and the budget,
 one section per scope, one heading per entry with its size and the
-limit and its description, then the content verbatim. Entries are
-included in list order until the next would take the content total
-over `MaxTotalBytes` (32 KiB by default); the rest are listed under
-their scope so the model knows what `memory_search` can fetch. The
-output is determined by the store's state and the bounds alone, so an
-unchanged store renders the same bytes, and the `Manifest` lists what
-the block held and omitted, by scope, name, hash and size, for the
+limit and its description, then the content verbatim. `MaxTotalBytes`
+(32 KiB by default) bounds the block itself, header and headings and
+descriptions included, and the header reports the block's own size. An
+entry whose rendered form does not fit is skipped and the next is
+still considered, so one large entry cannot hide the small ones after
+it; what was left out is listed under its scope so the model knows what
+`memory_search` can fetch. The output is determined by the store's
+state and the bounds alone, so an unchanged store renders the same
+bytes, and the `Manifest` lists what the block held and omitted, by
+scope, name, hash, size and, for an omission, the reason, for the
 session's provenance.
 
 ```
 # Memory
 
-Entries: 2 shown, 0 omitted. Used: 41 of 32768 bytes (32727 free). Entry limit: 4096 bytes.
+Entries: 2 shown, 0 omitted. Block: 251 of 32768 bytes (32517 free). Entry limit: 4096 bytes.
 
 ## user
 

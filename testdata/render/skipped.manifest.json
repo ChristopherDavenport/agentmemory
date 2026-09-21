@@ -1,0 +1,31 @@
+{
+  "entries": [
+    {
+      "scope": "user",
+      "name": "architecture-notes",
+      "hash": "sha256:332f58b3c56a2e9efc769a34fcd0ca2dc351081735ac615be0e11adf60c3b47f",
+      "bytes": 512
+    },
+    {
+      "scope": "user",
+      "name": "bristol",
+      "hash": "sha256:ad12d6f585e08fded727901a6c6a2ea1f99db604ede2bbdaadd09318c8adff49",
+      "bytes": 18
+    },
+    {
+      "scope": "user",
+      "name": "zz-passport",
+      "hash": "sha256:ee3ca3c04c9b233a981bc2470daa591d23c288b4e0ceff38165aa2b5f0a4a46d",
+      "bytes": 19
+    }
+  ],
+  "omitted": [
+    {
+      "scope": "user",
+      "name": "more-notes",
+      "hash": "sha256:e0b9a1824393c8fda15593181a947660356a2b9d74d80820f86538914a0dbba8",
+      "bytes": 500,
+      "reason": "budget"
+    }
+  ]
+}

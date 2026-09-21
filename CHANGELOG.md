@@ -16,8 +16,24 @@ versions may break the API.
   `Change.Replaced`, which is what records chain through, so a reader
   that walked `Prev` to chain the journal reads `Replaced` now (#1).
 
+- `Render`'s `MaxTotalBytes` bounds the block, not the content of the
+  entries it holds: the header, the scope headings, the per-entry
+  headings with their descriptions and the list of what was left out
+  are all counted, and the header reports the block's own size as
+  `Block: n of m bytes (k free)` rather than the content total as
+  `Used:`. A store of many short entries rendered several times its
+  budget before; the same store now renders inside it and shows fewer
+  entries (#3).
+- `Render` skips an entry that does not fit and goes on to the next
+  instead of omitting it and everything after it, so a large entry no
+  longer hides the smaller ones that sort after it. Block order is
+  still list order (#8).
+
 ### Added
 
+- `ManifestEntry.Reason` on an omitted entry, with the `OmitBudget`
+  constant, so a session can record why the model was not given an
+  entry (#3, #8).
 - `BasedOn(hash)`, a `PutOption` that records the hash a write was
   built on without making it a precondition, and
   `PutOptions.BaseFor(stored)` for a store to resolve it (#1).

@@ -11,18 +11,22 @@
       "name": "b",
       "hash": "sha256:acc98c7e5e9590218b3aac6b946af6174a0a145ec4ff5ded32ffff0c1999c904",
       "bytes": 256
-    },
+    }
+  ],
+  "omitted": [
     {
       "scope": "user",
       "name": "c",
       "hash": "sha256:6e31a0a4d71275c76558934c19df3b18fe409bec1de6bbfe9c675475423fb9b7",
-      "bytes": 256
+      "bytes": 256,
+      "reason": "budget"
     },
     {
       "scope": "user",
       "name": "d",
       "hash": "sha256:a85925fad1a09d03fd954919e308be08659d60cb87b610943f116a16fb04089f",
-      "bytes": 256
+      "bytes": 256,
+      "reason": "budget"
     }
   ]
 }
