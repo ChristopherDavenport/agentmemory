@@ -39,6 +39,13 @@ versions may break the API.
   (#6).
 - The module requires `agenttool` v0.0.5 for `Recordable` (#6).
 
+- `memory_save` keeps the entry's metadata when the call leaves `meta`
+  out, instead of deleting the description the rendered block, the
+  index and `Search` use; `{}` clears it. The tool reads the entry
+  first and anchors the write with `BasedOn`, so the result says what
+  it replaced and what became of the metadata, and the journal shows a
+  save that landed on another channel's write (#4).
+
 ### Added
 
 - `Manifest.Hash`, `ManifestNS` (`agentmemory:render`) and

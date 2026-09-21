@@ -157,8 +157,15 @@ Built with `agenttool.New`, four tools, names prefixed `memory_`:
 
 - `memory_save` takes scope, name, content and optional meta, and
   creates or replaces the whole entry. It returns the stored hash and
-  size. Over-bound content is an error naming the limit and the stored
-  size.
+  size, what it replaced and what became of the metadata. Over-bound
+  content is an error naming the limit and the stored size. The tool
+  reads the entry first: meta left out of the call keeps what the entry
+  has, since a model rewriting the content is not saying to drop the
+  description, and `{}` is how it clears it; and the write is anchored
+  with `BasedOn` in what it read, so the journal shows a save that
+  landed on another channel's write. The merge is the tool's: `Put`
+  stays a replace of the whole entry, or the journal is no longer a
+  list of full states.
 - `memory_patch` takes scope, name, `old_text` and `new_text`, and
   replaces one exact occurrence of `old_text` in the stored content.
   It refuses when `old_text` is absent or appears more than once and

@@ -161,6 +161,13 @@ sees and a recorder writes beside the call under `WriteNS`
 (`agentmemory:write`), so a session says which write produced the
 memory and with what sequence number, hash and session.
 
+`memory_save` replaces the entry, but a call that leaves `meta` out
+keeps the metadata the entry has rather than deleting the description
+the block and the index show; `{}` clears it, and the result says which
+happened, what it replaced and what the write was built on. Its write
+is anchored with `BasedOn`, so two channels that save one entry from
+one state leave a journal `LostUpdates` can report.
+
 `memory_patch` is the tool the model is told to prefer for an edit: the
 call is the size of the change, and the edit is anchored in the stored
 text, so an edit whose anchor another session removed fails out loud

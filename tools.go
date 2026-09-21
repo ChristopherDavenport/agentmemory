@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/ChristopherDavenport/agenttool"
@@ -85,7 +86,7 @@ type saveArgs struct {
 	Scope   string            `json:"scope,omitempty" desc:"Which memory the entry belongs to; see the tool description for the choices and the default"`
 	Name    string            `json:"name" desc:"Kebab-case name, unique within the scope: lowercase letters, digits and hyphens"`
 	Content string            `json:"content" desc:"The whole content of the entry, Markdown"`
-	Meta    map[string]string `json:"meta,omitempty" desc:"Metadata beside the content: a description is shown in the block and the index; keys are kebab-case, values one line"`
+	Meta    map[string]string `json:"meta,omitempty" desc:"Metadata beside the content: a description is shown in the block and the index; keys are kebab-case, values one line. Omit it to keep the metadata the entry has; give {} to clear it"`
 }
 
 type patchArgs struct {
@@ -161,7 +162,7 @@ func (t *toolset) scopeList() string {
 }
 
 func (t *toolset) saveDescription() string {
-	return fmt.Sprintf("Create a memory entry, or replace one whole. To edit an existing entry prefer memory_patch, which sends only the change. Content is Markdown of at most %d bytes; a larger write is refused with the sizes. Give a description in meta so the entry can be found. %s",
+	return fmt.Sprintf("Create a memory entry, or replace one whole. To edit an existing entry prefer memory_patch, which sends only the change. Content is Markdown of at most %d bytes; a larger write is refused with the sizes. Give a description in meta so the entry can be found. meta replaces the entry's metadata when you give it and keeps what is there when you leave it out, so send an empty object to clear it. The result says what the write replaced and what became of the metadata. %s",
 		t.store.MaxEntryBytes(), t.scopeList())
 }
 
@@ -201,17 +202,72 @@ func wrote(tool string, c *Change, format string, args ...any) (agenttool.Result
 	return res, nil
 }
 
+// save writes the whole entry. It reads the stored one first for two
+// reasons: a call that leaves meta out means the content, not the
+// description, so the stored metadata is carried forward rather than
+// deleted in silence; and the write then names the state it was built
+// on, so the journal can show a write that lost another's. Put stays a
+// replace of the whole entry, because a store whose write is sometimes
+// a merge cannot keep the journal a list of full states.
 func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error) {
 	scope, err := t.scope(a.Scope)
 	if err != nil {
 		return agenttool.Result{}, err
 	}
+	stored, err := t.store.Get(ctx, scope, a.Name)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return agenttool.Result{}, err
+	}
+	if errors.Is(err, ErrNotFound) {
+		stored = nil
+	}
 	e := Entry{Scope: scope, Name: a.Name, Content: a.Content, Meta: a.Meta}
-	c, err := t.store.Put(ctx, e)
+	var opts []PutOption
+	if stored != nil {
+		opts = append(opts, BasedOn(stored.Hash))
+		if a.Meta == nil {
+			e.Meta = stored.Meta
+		}
+	}
+	c, err := t.store.Put(ctx, e, opts...)
 	if err != nil {
 		return agenttool.Result{}, err
 	}
-	return wrote(SaveTool, c, "Saved %s/%s (%d of %d bytes) %s", scope, a.Name, len(a.Content), t.store.MaxEntryBytes(), Hash(a.Content))
+	return wrote(SaveTool, c, "Saved %s/%s (%d of %d bytes) %s — %s; %s",
+		scope, a.Name, len(a.Content), t.store.MaxEntryBytes(), Hash(a.Content), savedWhat(stored), metaWhat(stored, a.Meta, e.Meta))
+}
+
+// savedWhat says what the write did to the entry.
+func savedWhat(stored *Entry) string {
+	if stored == nil {
+		return "created"
+	}
+	return fmt.Sprintf("replaced %d bytes", stored.Size())
+}
+
+// metaWhat says what became of the metadata, since a call that leaves
+// it out is the one that used to delete it.
+func metaWhat(stored *Entry, given, final map[string]string) string {
+	switch {
+	case len(final) == 0 && (stored == nil || len(stored.Meta) == 0):
+		return "no meta"
+	case len(final) == 0:
+		return "meta cleared"
+	case given == nil:
+		return "meta kept (" + metaKeys(final) + ")"
+	case stored == nil:
+		return "meta set (" + metaKeys(final) + ")"
+	}
+	return "meta replaced (" + metaKeys(final) + ")"
+}
+
+func metaKeys(meta map[string]string) string {
+	keys := make([]string, 0, len(meta))
+	for k := range meta {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
 }
 
 func (t *toolset) patch(ctx context.Context, a patchArgs) (agenttool.Result, error) {

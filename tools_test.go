@@ -141,7 +141,7 @@ func TestToolsHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "Saved user/style (15 of 4096 bytes) " + Hash("Short answers.\n"); out != want {
+	if want := "Saved user/style (15 of 4096 bytes) " + Hash("Short answers.\n") + " — created; meta set (description, type)"; out != want {
 		t.Errorf("save = %q, want %q", out, want)
 	}
 	if _, err := call(t, tools, SaveTool, `{"scope":"project","name":"build","content":"Run make check.\n"}`); err != nil {
@@ -207,6 +207,128 @@ func TestToolsHappyPath(t *testing.T) {
 	}
 	if _, err := store.Get(context.Background(), "project", "build"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("entry after forget: %v", err)
+	}
+}
+
+// TestSaveMeta covers what a save does to an entry's metadata: a call
+// that leaves meta out keeps what is there, because the model that
+// rewrites the content is not saying to drop the description; an
+// explicit empty object is how it clears it; and the result says which
+// happened.
+func TestSaveMeta(t *testing.T) {
+	store := NewMemStore()
+	tools := Tools(store, []Scope{"user"})
+	ctx := context.Background()
+	steps := []struct {
+		name string
+		args string
+		out  string
+		meta map[string]string
+	}{
+		{"create with meta", `{"name":"style","content":"a","meta":{"description":"How the user likes answers"}}`,
+			"created; meta set (description)", map[string]string{"description": "How the user likes answers"}},
+		{"replace without meta keeps it", `{"name":"style","content":"bb"}`,
+			"replaced 1 bytes; meta kept (description)", map[string]string{"description": "How the user likes answers"}},
+		{"replace with meta replaces it", `{"name":"style","content":"ccc","meta":{"type":"feedback"}}`,
+			"replaced 2 bytes; meta replaced (type)", map[string]string{"type": "feedback"}},
+		{"an empty object clears it", `{"name":"style","content":"dddd","meta":{}}`,
+			"replaced 3 bytes; meta cleared", nil},
+		{"and then there is none to keep", `{"name":"style","content":"eeeee"}`,
+			"replaced 4 bytes; no meta", nil},
+		{"create without meta", `{"name":"bare","content":"x"}`, "created; no meta", nil},
+	}
+	for _, step := range steps {
+		t.Run(step.name, func(t *testing.T) {
+			out, err := call(t, tools, SaveTool, step.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasSuffix(out, " — "+step.out) {
+				t.Errorf("save = %q, want it to end with %q", out, step.out)
+			}
+			name := "style"
+			if strings.Contains(step.args, `"bare"`) {
+				name = "bare"
+			}
+			got, err := store.Get(ctx, "user", name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Meta) != len(step.meta) {
+				t.Fatalf("meta = %v, want %v", got.Meta, step.meta)
+			}
+			for k, v := range step.meta {
+				if got.Meta[k] != v {
+					t.Errorf("meta[%s] = %q, want %q", k, got.Meta[k], v)
+				}
+			}
+		})
+	}
+	// A save is anchored in what it read, so the journal shows a write
+	// that landed on something else.
+	if lost, err := LostUpdates(ctx, store, 0); err != nil || len(lost) != 0 {
+		t.Errorf("LostUpdates over saves that were not overtaken = %+v, %v", lost, err)
+	}
+}
+
+// interposing runs a function between a tool's read and its write,
+// which is where another channel's write lands in the race that used
+// to leave no trace.
+type interposing struct {
+	*MemStore
+	before func()
+}
+
+func (i *interposing) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error) {
+	if i.before != nil {
+		f := i.before
+		i.before = nil
+		f()
+	}
+	return i.MemStore.Put(ctx, e, opts...)
+}
+
+// TestSaveShowsALostUpdate is the round 2 probe's scenario through the
+// tools: two channels save one entry from one state, the later write
+// wins whole, and the journal now says which fact went.
+func TestSaveShowsALostUpdate(t *testing.T) {
+	mem := NewMemStore()
+	store := &interposing{MemStore: mem}
+	tools := Tools(store, []Scope{"user"})
+	ctx := context.Background()
+	if _, err := call(t, tools, SaveTool, `{"name":"profile","content":"Chris. Timezone Europe/London."}`); err != nil {
+		t.Fatal(err)
+	}
+	base, err := mem.Get(ctx, "user", "profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Telegram writes while Slack's save is between its read and its
+	// write.
+	store.before = func() {
+		if _, err := mem.Put(WithSession(ctx, "telegram"),
+			Entry{Scope: "user", Name: "profile", Content: "Chris. Timezone Europe/London. Prefers Go."},
+			BasedOn(base.Hash)); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := call(t, tools, SaveTool, `{"name":"profile","content":"Chris. Timezone Europe/London. Lives in Bristol."}`); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := mem.Get(ctx, "user", "profile"); strings.Contains(got.Content, "Prefers Go") {
+		t.Fatal("the fixture did not overwrite the other channel's write")
+	}
+	lost, err := LostUpdates(ctx, mem, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lost) != 1 {
+		t.Fatalf("LostUpdates = %+v, want the save that landed on Telegram's write", lost)
+	}
+	if lost[0].Change.Seq != 3 || lost[0].Change.Prev != base.Hash ||
+		lost[0].Over != Hash("Chris. Timezone Europe/London. Prefers Go.") ||
+		lost[0].Change.Replaced != lost[0].Over {
+		t.Errorf("LostUpdates[0] = %+v", lost[0])
 	}
 }
 
