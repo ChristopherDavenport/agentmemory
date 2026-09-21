@@ -41,23 +41,62 @@ func TestToolsShape(t *testing.T) {
 		if tool.Name() != want[i] {
 			t.Errorf("tool %d = %s, want %s", i, tool.Name(), want[i])
 		}
-		if !strings.Contains(tool.Description(), "Scopes: user, project; the default is user.") {
+		if !strings.Contains(tool.Description(), "Scopes: user, project; name one on every call.") {
 			t.Errorf("%s description does not name the scopes: %s", tool.Name(), tool.Description())
 		}
 		if agenttool.IsStrict(tool) {
 			t.Errorf("%s is strict; meta is a map", tool.Name())
 		}
 	}
-	// The schema names the arguments the plan gives each tool.
+	// The schema names the arguments the plan gives each tool, and the
+	// scopes the product allows, so the model is steered by what it is
+	// sent and not by prose alone.
 	var schema struct {
-		Required   []string                   `json:"required"`
-		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string `json:"required"`
+		Properties map[string]struct {
+			Enum  []string `json:"enum"`
+			Items struct {
+				Enum []string `json:"enum"`
+			} `json:"items"`
+		} `json:"properties"`
 	}
 	if err := json.Unmarshal(tools[0].Parameters(), &schema); err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(schema.Required) != "[name content]" || len(schema.Properties) != 4 {
+	if fmt.Sprint(schema.Required) != "[scope name content]" || len(schema.Properties) != 4 {
 		t.Errorf("memory_save schema: required %v, %d properties", schema.Required, len(schema.Properties))
+	}
+	if fmt.Sprint(schema.Properties["scope"].Enum) != "[user project]" {
+		t.Errorf("memory_save schema: scope enum %v", schema.Properties["scope"].Enum)
+	}
+	for _, tool := range tools {
+		if err := json.Unmarshal(tool.Parameters(), &schema); err != nil {
+			t.Fatal(err)
+		}
+		if tool.Name() == SearchTool {
+			if fmt.Sprint(schema.Properties["scopes"].Items.Enum) != "[user project]" {
+				t.Errorf("%s schema: scopes items enum %v", tool.Name(), schema.Properties["scopes"].Items.Enum)
+			}
+			continue
+		}
+		if fmt.Sprint(schema.Properties["scope"].Enum) != "[user project]" || schema.Required[0] != "scope" {
+			t.Errorf("%s schema: scope enum %v, required %v", tool.Name(), schema.Properties["scope"].Enum, schema.Required)
+		}
+	}
+	// With one scope there is nothing to choose, so the argument stays
+	// optional and the enum still says what it may be.
+	one := Tools(store, []Scope{"user"})
+	if err := agenttool.Set(one).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(one[0].Parameters(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(schema.Required) != "[name content]" || fmt.Sprint(schema.Properties["scope"].Enum) != "[user]" {
+		t.Errorf("one-scope schema: required %v, scope enum %v", schema.Required, schema.Properties["scope"].Enum)
+	}
+	if !strings.Contains(one[0].Description(), "Scope: user, the only one; the argument may be left out.") {
+		t.Errorf("one-scope description: %s", one[0].Description())
 	}
 	if !strings.Contains(tools[0].Description(), "at most 4096 bytes") {
 		t.Errorf("memory_save description does not name the bound: %s", tools[0].Description())
@@ -93,21 +132,24 @@ func TestToolsFailures(t *testing.T) {
 		args string
 		want string // a substring of the error the model sees
 	}{
-		{"save: other scope", SaveTool, `{"scope":"secret","name":"a","content":"x"}`, `scope "secret" is not available; Scopes: user, project; the default is user.`},
-		{"save: bad name", SaveTool, `{"name":"Not Kebab","content":"x"}`, `name "Not Kebab" is not kebab-case`},
-		{"save: empty content", SaveTool, `{"name":"a","content":""}`, `has no content`},
-		{"save: over the bound, new", SaveTool, `{"name":"big","content":"` + strings.Repeat("x", 257) + `"}`, `entry user/big is 257 bytes, over the 256 byte limit; split it or trim it`},
-		{"save: over the bound, existing", SaveTool, `{"name":"style","content":"` + strings.Repeat("x", 300) + `"}`, `entry user/style is 300 bytes, over the 256 byte limit; it holds 26 bytes now`},
-		{"save: bad meta", SaveTool, `{"name":"a","content":"x","meta":{"Type":"y"}}`, `meta key "Type" is not kebab-case`},
-		{"save: missing content", SaveTool, `{"name":"a"}`, `content`},
-		{"patch: missing entry", PatchTool, `{"name":"nope","old_text":"a","new_text":"b"}`, `no such entry: user/nope; memory_save creates an entry`},
-		{"patch: absent text", PatchTool, `{"name":"style","old_text":"Long","new_text":"b"}`, `old_text does not appear in user/style`},
-		{"patch: repeated text", PatchTool, `{"name":"style","old_text":"Short","new_text":"Long"}`, `old_text appears 2 times in user/style; include more of the surrounding text`},
-		{"patch: empty old", PatchTool, `{"name":"style","old_text":"","new_text":"b"}`, `old_text is empty`},
-		{"patch: to empty", PatchTool, `{"name":"style","old_text":"Short answers. Short code.","new_text":""}`, `has no content; use forget`},
+		{"save: other scope", SaveTool, `{"scope":"secret","name":"a","content":"x"}`, `scope "secret" is not available; Scopes: user, project; name one on every call.`},
+		{"save: no scope", SaveTool, `{"name":"a","content":"x"}`, `scope is required; name one of: user, project`},
+		{"save: bad name", SaveTool, `{"scope":"user","name":"Not Kebab","content":"x"}`, `name "Not Kebab" is not kebab-case`},
+		{"save: empty content", SaveTool, `{"scope":"user","name":"a","content":""}`, `has no content`},
+		{"save: over the bound, new", SaveTool, `{"scope":"user","name":"big","content":"` + strings.Repeat("x", 257) + `"}`, `entry user/big is 257 bytes, over the 256 byte limit; split it or trim it`},
+		{"save: over the bound, existing", SaveTool, `{"scope":"user","name":"style","content":"` + strings.Repeat("x", 300) + `"}`, `entry user/style is 300 bytes, over the 256 byte limit; it holds 26 bytes now`},
+		{"save: bad meta", SaveTool, `{"scope":"user","name":"a","content":"x","meta":{"Type":"y"}}`, `meta key "Type" is not kebab-case`},
+		{"save: missing content", SaveTool, `{"scope":"user","name":"a"}`, `content`},
+		{"patch: missing entry", PatchTool, `{"scope":"user","name":"nope","old_text":"a","new_text":"b"}`, `no such entry: user/nope; memory_save creates an entry`},
+		{"patch: absent text", PatchTool, `{"scope":"user","name":"style","old_text":"Long","new_text":"b"}`, `old_text does not appear in user/style`},
+		{"patch: repeated text", PatchTool, `{"scope":"user","name":"style","old_text":"Short","new_text":"Long"}`, `old_text appears 2 times in user/style; include more of the surrounding text`},
+		{"patch: empty old", PatchTool, `{"scope":"user","name":"style","old_text":"","new_text":"b"}`, `old_text is empty`},
+		{"patch: to empty", PatchTool, `{"scope":"user","name":"style","old_text":"Short answers. Short code.","new_text":""}`, `has no content; use forget`},
 		{"patch: other scope", PatchTool, `{"scope":"secret","name":"style","old_text":"a","new_text":"b"}`, `scope "secret" is not available`},
-		{"forget: missing", ForgetTool, `{"name":"nope"}`, `no such entry: user/nope`},
+		{"patch: no scope", PatchTool, `{"name":"style","old_text":"a","new_text":"b"}`, `scope is required; name one of: user, project`},
+		{"forget: missing", ForgetTool, `{"scope":"user","name":"nope"}`, `no such entry: user/nope`},
 		{"forget: other scope", ForgetTool, `{"scope":"secret","name":"style"}`, `scope "secret" is not available`},
+		{"forget: no scope", ForgetTool, `{"name":"style"}`, `scope is required; name one of: user, project`},
 		{"search: empty query", SearchTool, `{"query":"  "}`, `query is empty`},
 		{"search: other scope", SearchTool, `{"query":"x","scopes":["user","secret"]}`, `scope "secret" is not available`},
 	}
@@ -137,7 +179,7 @@ func TestToolsHappyPath(t *testing.T) {
 	ctx := WithSession(context.Background(), "sess-1")
 	_ = ctx
 
-	out, err := call(t, tools, SaveTool, `{"name":"style","content":"Short answers.\n","meta":{"description":"How to answer","type":"feedback"}}`)
+	out, err := call(t, tools, SaveTool, `{"scope":"user","name":"style","content":"Short answers.\n","meta":{"description":"How to answer","type":"feedback"}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,11 +189,11 @@ func TestToolsHappyPath(t *testing.T) {
 	if _, err := call(t, tools, SaveTool, `{"scope":"project","name":"build","content":"Run make check.\n"}`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := call(t, tools, SaveTool, `{"name":"long","content":"`+strings.Repeat("Prefers Go. ", 8)+`"}`); err != nil {
+	if _, err := call(t, tools, SaveTool, `{"scope":"user","name":"long","content":"`+strings.Repeat("Prefers Go. ", 8)+`"}`); err != nil {
 		t.Fatal(err)
 	}
 
-	out, err = call(t, tools, PatchTool, `{"name":"style","old_text":"Short","new_text":"Long"}`)
+	out, err = call(t, tools, PatchTool, `{"scope":"user","name":"style","old_text":"Short","new_text":"Long"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +220,7 @@ func TestToolsHappyPath(t *testing.T) {
 		t.Errorf("search = %q, want %q", out, want)
 	}
 	// The limit caps the count and the byte bound caps the content.
-	if _, err := call(t, tools, SaveTool, `{"name":"another","content":"Go go go."}`); err != nil {
+	if _, err := call(t, tools, SaveTool, `{"scope":"user","name":"another","content":"Go go go."}`); err != nil {
 		t.Fatal(err)
 	}
 	out, err = call(t, tools, SearchTool, `{"query":"GO","scopes":["user"]}`)

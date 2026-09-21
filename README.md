@@ -145,8 +145,12 @@ Europe/London
 ## The tools
 
 `Tools(store, scopes)` returns four tools restricted to the scopes the
-product allows; a scope outside the list is an error the model sees,
-and a call that omits the scope uses the first.
+product allows. The list is in each tool's schema as an enum on
+`scope`, not only in its description, and with more than one scope
+`scope` is required, so a call that omits it is an error the model can
+read rather than a write into whichever scope the product listed
+first. With one scope there is nothing to choose and the argument may
+be left out. A scope outside the list is an error the model sees.
 
 | tool | arguments | does |
 |---|---|---|

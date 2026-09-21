@@ -186,8 +186,14 @@ Built with `agenttool.New`, four tools, names prefixed `memory_`:
   `agentturn/compact` configured.
 
 `Tools(store, scopes)` returns the four restricted to the scopes the
-product allows; a scope outside the list is an error the model sees,
-and a call that omits the scope uses the first one listed.
+product allows. The scopes are in the schema, as an enum on `scope`
+and on the items of `scopes`, built at the `Tools` call because a
+struct tag cannot carry a value chosen there, and `scope` is required
+when there is more than one, so a call that omits it is an error the
+model can read rather than a fact written into the widest scope. With
+one scope the argument may be left out. A scope outside the list is an
+error the model sees; the call-time check stays, since a model may
+ignore the schema.
 
 Each tool returns an `agenttool.Result`. A write sets `Details` to a
 `WriteRecord`, the journal record the write produced, which implements

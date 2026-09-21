@@ -2,8 +2,10 @@ package agentmemory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -83,35 +85,37 @@ func WithSearchBytes(n int) ToolOption {
 }
 
 type saveArgs struct {
-	Scope   string            `json:"scope,omitempty" desc:"Which memory the entry belongs to; see the tool description for the choices and the default"`
+	Scope   string            `json:"scope,omitempty" desc:"Which memory the entry belongs to"`
 	Name    string            `json:"name" desc:"Kebab-case name, unique within the scope: lowercase letters, digits and hyphens"`
 	Content string            `json:"content" desc:"The whole content of the entry, Markdown"`
 	Meta    map[string]string `json:"meta,omitempty" desc:"Metadata beside the content: a description is shown in the block and the index; keys are kebab-case, values one line. Omit it to keep the metadata the entry has; give {} to clear it"`
 }
 
 type patchArgs struct {
-	Scope   string `json:"scope,omitempty" desc:"Which memory the entry belongs to; see the tool description for the choices and the default"`
+	Scope   string `json:"scope,omitempty" desc:"Which memory the entry belongs to"`
 	Name    string `json:"name" desc:"The entry to edit"`
 	OldText string `json:"old_text" desc:"Text that appears exactly once in the entry, copied exactly"`
 	NewText string `json:"new_text" desc:"What replaces it; empty removes it"`
 }
 
 type forgetArgs struct {
-	Scope string `json:"scope,omitempty" desc:"Which memory the entry belongs to; see the tool description for the choices and the default"`
+	Scope string `json:"scope,omitempty" desc:"Which memory the entry belongs to"`
 	Name  string `json:"name" desc:"The entry to remove"`
 }
 
 type searchArgs struct {
 	Query  string   `json:"query" desc:"Words that must all appear in an entry's name, description or content, in any case"`
-	Scopes []string `json:"scopes,omitempty" desc:"Which memories to search; all of them when omitted"`
+	Scopes []string `json:"scopes,omitempty" desc:"Which memories to search; all the ones this tool can reach when omitted"`
 	Limit  int      `json:"limit,omitempty" desc:"At most this many entries; keep it low, results stay in the conversation"`
 }
 
 // Tools returns the four tools through which the model reaches store,
 // restricted to the scopes the product allows: memory_save,
 // memory_patch, memory_forget and memory_search. A call that names a
-// scope outside the list is an error the model sees; a call that
-// omits the scope uses the first. Every write is a function call in
+// scope outside the list is an error the model sees, and the list is
+// in the schema as an enum, not only in the description; a call that
+// omits the scope is an error too, unless the product allows one scope
+// and there is nothing to choose. Every write is a function call in
 // the transcript, and the store's journal records it under the
 // session on the context, see [WithSession]. A write's result carries
 // that journal record as [WriteRecord] in its Details, which a
@@ -139,11 +143,54 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	}
 	t := &toolset{store: store, scopes: scopes, opts: o}
 	return []agenttool.Tool{
-		agenttool.New(SaveTool, t.saveDescription(), t.save),
-		agenttool.New(PatchTool, t.patchDescription(), t.patch),
-		agenttool.New(ForgetTool, t.forgetDescription(), t.forget),
-		agenttool.New(SearchTool, t.searchDescription(), t.search),
+		agenttool.New(SaveTool, t.saveDescription(), t.save, agenttool.WithParameters(scopeSchema[saveArgs](scopes))),
+		agenttool.New(PatchTool, t.patchDescription(), t.patch, agenttool.WithParameters(scopeSchema[patchArgs](scopes))),
+		agenttool.New(ForgetTool, t.forgetDescription(), t.forget, agenttool.WithParameters(scopeSchema[forgetArgs](scopes))),
+		agenttool.New(SearchTool, t.searchDescription(), t.search, agenttool.WithParameters(scopeSchema[searchArgs](scopes))),
 	}
+}
+
+// scopeSchema reflects an argument type and writes the scopes a
+// product allows into the schema: an enum on scope, and on the items of
+// scopes, so the model is steered by what it is sent rather than by
+// prose it may not follow, and scope required when there is more than
+// one, so a call that omits it is an error it can read rather than a
+// write into whichever scope happens to be first. The schema is built
+// here because the allowed scopes are chosen at this call and a struct
+// tag cannot carry them.
+//
+// A schema given this way is not what agenttool validates a call
+// against, so the call-time check in scope stays: it is the one a model
+// that ignores the schema meets.
+func scopeSchema[Args any](scopes []Scope) json.RawMessage {
+	var zero Args
+	tree, err := agenttool.Reflect(reflect.TypeOf(&zero).Elem())
+	if err != nil {
+		panic(fmt.Sprintf("agentmemory.Tools: %v", err))
+	}
+	values := make([]any, 0, len(scopes))
+	for _, s := range scopes {
+		values = append(values, string(s))
+	}
+	for _, p := range tree.Properties {
+		switch p.Name {
+		case "scope":
+			p.Schema.Enum = values
+			if len(scopes) > 1 {
+				p.Schema.Description = "Which memory the entry belongs to; name one of the values"
+				tree.Required = append([]string{"scope"}, tree.Required...)
+			}
+		case "scopes":
+			if p.Schema.Items != nil {
+				p.Schema.Items.Enum = values
+			}
+		}
+	}
+	data, err := json.Marshal(tree)
+	if err != nil {
+		panic(fmt.Sprintf("agentmemory.Tools: %v", err))
+	}
+	return data
 }
 
 type toolset struct {
@@ -152,13 +199,24 @@ type toolset struct {
 	opts   toolOptions
 }
 
-// scopeList names the choices for a tool description.
+// scopeList names the choices for a tool description. With one scope
+// the argument may be left out, since there is nothing to choose; with
+// more than one it is required, so the failure mode of forgetting it
+// is an error rather than a fact written into whichever scope the
+// product listed first.
 func (t *toolset) scopeList() string {
+	if len(t.scopes) == 1 {
+		return fmt.Sprintf("Scope: %s, the only one; the argument may be left out.", t.scopes[0])
+	}
+	return fmt.Sprintf("Scopes: %s; name one on every call.", strings.Join(t.scopeNames(), ", "))
+}
+
+func (t *toolset) scopeNames() []string {
 	names := make([]string, 0, len(t.scopes))
 	for _, s := range t.scopes {
 		names = append(names, string(s))
 	}
-	return fmt.Sprintf("Scopes: %s; the default is %s.", strings.Join(names, ", "), t.scopes[0])
+	return names
 }
 
 func (t *toolset) saveDescription() string {
@@ -179,10 +237,15 @@ func (t *toolset) searchDescription() string {
 		t.opts.searchLimit, t.opts.searchBytes, t.scopeList())
 }
 
-// scope resolves a call's scope argument to an allowed scope.
+// scope resolves a call's scope argument to an allowed scope. An
+// omitted scope is the only scope when there is one, and an error
+// naming the choices when there are several.
 func (t *toolset) scope(s string) (Scope, error) {
 	if s == "" {
-		return t.scopes[0], nil
+		if len(t.scopes) == 1 {
+			return t.scopes[0], nil
+		}
+		return "", fmt.Errorf("scope is required; name one of: %s", strings.Join(t.scopeNames(), ", "))
 	}
 	for _, allowed := range t.scopes {
 		if string(allowed) == s {

@@ -39,6 +39,12 @@ versions may break the API.
   (#6).
 - The module requires `agenttool` v0.0.5 for `Recordable` (#6).
 
+- The scopes a product allows are in each tool's JSON Schema as an
+  enum, not only in the description, and `scope` is a required argument
+  when there is more than one: a call that omits it is now an error
+  naming the choices rather than a write into the first scope listed,
+  which under the README's own split is the widest. With one scope the
+  argument may still be left out (#5).
 - `memory_save` keeps the entry's metadata when the call leaves `meta`
   out, instead of deleting the description the rendered block, the
   index and `Search` use; `{}` clears it. The tool reads the entry
