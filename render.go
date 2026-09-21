@@ -2,6 +2,7 @@ package agentmemory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -23,10 +24,22 @@ func WithMaxTotalBytes(n int) RenderOption {
 	return func(o *renderOptions) { o.maxTotal = n }
 }
 
+// ManifestNS is the namespace a [Manifest] is recorded under, so a
+// reader of a session recognises one without knowing the product that
+// wrote it. See [Manifest.Record].
+const ManifestNS = "agentmemory:render"
+
 // Manifest lists what [Render] put in the block, for the session's
 // provenance: a product records it beside the turn, in a custom entry
 // under [ManifestNS], so a later reader knows which memories the model
 // had and which it did not.
+//
+// The render is a pure function of the store and the bounds, so most
+// turns produce the manifest the turn before produced. [Manifest.Hash]
+// is what a product compares to record it only when it has changed,
+// which is what the recorder already does for the block itself, and
+// [Manifest.Record] is the namespace and the bytes to hand to the
+// recorder when it has.
 type Manifest struct {
 	// Entries are the included entries in block order.
 	Entries []ManifestEntry `json:"entries"`
@@ -59,6 +72,47 @@ const (
 	OmitBudget = "budget"
 )
 
+// Hash is the manifest's identity: "sha256:" and the hex digest of the
+// entries it holds and the ones it left out, in order, each by scope,
+// name, content hash, size and, for an omission, reason. Two renders
+// that showed the model the same memories hash the same, so a product
+// records the manifest when the hash differs from the last one it
+// recorded and writes nothing when the render has not moved.
+func (m Manifest) Hash() string {
+	var b strings.Builder
+	for _, e := range m.Entries {
+		fmt.Fprintf(&b, "+ %s/%s %s %d\n", e.Scope, e.Name, e.Hash, e.Bytes)
+	}
+	for _, e := range m.Omitted {
+		fmt.Fprintf(&b, "- %s/%s %s %d %s\n", e.Scope, e.Name, e.Hash, e.Bytes, e.Reason)
+	}
+	return Hash(b.String())
+}
+
+// Record returns the namespace and the JSON of the manifest, for a
+// product to hand to its session recorder: this module never imports
+// the loop or the session format, so the call that writes the entry is
+// the product's, and the namespace and the bytes are this module's.
+//
+//	if h := man.Hash(); h != last {
+//		last = h
+//		ns, data := man.Record()
+//		err := rec.Annotate(ctx, ns, json.RawMessage(data))
+//	}
+//
+// A manifest is strings and numbers, so encoding it cannot fail; a
+// caller that wants an error of its own marshals the value itself.
+func (m Manifest) Record() (ns string, data []byte) {
+	data, err := json.Marshal(m)
+	if err != nil {
+		// Unreachable: every field is a string, an int or a slice of
+		// them. Recording something a reader can see went wrong beats
+		// recording nothing.
+		data = fmt.Appendf(nil, "{%q:%q}", "error", err.Error())
+	}
+	return ManifestNS, data
+}
+
 // Render returns the in-context block: a header with the counts and
 // the budget, then one section per scope in the order given, one
 // heading per entry in list order carrying its size and the store's
@@ -79,7 +133,9 @@ const (
 // The output is determined by the store's state and the bounds alone,
 // so an unchanged store renders the same bytes and costs nothing in
 // the session, and the manifest's hashes are the hashes of the content
-// the block shows. The header's own width is reserved before the body
+// the block shows. A product records the manifest when
+// [Manifest.Hash] differs from the last one it recorded, under
+// [ManifestNS]; see [Manifest.Record]. The header's own width is reserved before the body
 // is built, at the widest the counts could be, so a block can come out
 // a few bytes under the bound; it never comes out over it, except that
 // the header and one heading per scope are always written, so a bound

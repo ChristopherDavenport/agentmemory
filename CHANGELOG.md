@@ -41,6 +41,11 @@ versions may break the API.
 
 ### Added
 
+- `Manifest.Hash`, `ManifestNS` (`agentmemory:render`) and
+  `Manifest.Record`: the manifest has an identity, so a product records
+  it when the render has moved rather than writing a byte-identical one
+  every turn, and under a namespace a reader recognises without knowing
+  the product. The README documents the pattern (#9, #10).
 - `WriteRecord` and `WriteNS` (`agentmemory:write`): a memory write's
   result carries the journal record it produced as
   `agenttool.Result.Details`, which implements `agenttool.Recordable`,

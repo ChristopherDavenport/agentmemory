@@ -74,6 +74,7 @@ mem, err := filestore.Open(filepath.Join(home, "memory"))
 scopes := []agentmemory.Scope{"user", "project"}
 
 block, manifest, err := agentmemory.Render(ctx, mem, scopes)
+var recorded string // the last manifest this session wrote
 cfg := agentturn.Config{
 	Model:        client,
 	Instructions: prompt + "\n\n" + block + "\n\n" + agentmemory.Usage(),
@@ -87,12 +88,27 @@ cfg := agentturn.Config{
 			return err
 		}
 		req.Instructions = prompt + "\n\n" + b + "\n\n" + agentmemory.Usage()
-		record(m) // into a custom session entry under agentmemory:render
+		// Record the manifest when it has moved. The render is a pure
+		// function of the store and the bounds, so most turns produce
+		// the manifest the turn before produced, and the recorder
+		// compares nothing for an annotation.
+		if h := m.Hash(); h != recorded {
+			recorded = h
+			ns, data := m.Record() // agentmemory:render, and the JSON
+			return rec.Annotate(ctx, ns, json.RawMessage(data))
+		}
 		return nil
 	},
 }
 ctx = agentmemory.WithSession(ctx, sessionID) // attributes the journal
 ```
+
+The module never imports the loop or the session format, so the call
+that writes the entry is the product's; the namespace and the bytes are
+the module's, through `ManifestNS` and `Manifest.Record`, so a reader
+of the session recognises the entry without knowing the product. Each
+omission in the manifest carries its scope, name, size and reason, so
+the record says what the model was not given and why.
 
 `Render` produces the block: a header with the counts and the budget,
 one section per scope, one heading per entry with its size and the

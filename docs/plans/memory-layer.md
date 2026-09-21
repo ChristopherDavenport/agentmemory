@@ -215,8 +215,14 @@ reach the instructions and an item it prepends is never recorded, so
 the session then fails `Verify`. A change to memory mid-session shows
 up as a config delta on the next turn, which is the record of what the
 model was reminded of and when. The manifest goes into a `custom`
-entry under `agentmemory:render`; the `env` entry's file hashes cannot
-carry the omitted names, the sizes, or a store without paths.
+entry under `ManifestNS`, which this module exports as
+`agentmemory:render` so a reader recognises it without knowing the
+product, with the bytes from `Manifest.Record`; the `env` entry's file
+hashes cannot carry the omitted names, the sizes, the reasons, or a
+store without paths. A product records it when `Manifest.Hash` has
+moved since the last one it recorded, because the render is a pure
+function of the store and the bounds and most turns repeat it, and an
+annotation is compared with nothing the way a config entry is.
 
 ### `filestore`
 
@@ -266,8 +272,9 @@ follow, written once here so this plan stands alone:
    hashes. `Manifest` is that for memory.
 3. Recording through entries the session format already has. The
    rendered block is in the instructions and so in config deltas.
-   Writes are function calls. The manifest goes into an `env` entry's
-   file hashes or a `custom` entry under `agentmemory`; nothing is
+   Writes are function calls, each carrying its journal record under
+   `WriteNS` for a recorder that reads `agenttool.Recordable`. The
+   manifest goes into a `custom` entry under `ManifestNS`; nothing is
    added to the RFC.
 
 ## Invariants

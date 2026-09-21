@@ -302,6 +302,89 @@ func firstLines(s string, n int) string {
 	return strings.Join(parts, "\n")
 }
 
+// TestManifestIdentity checks what a product compares to decide
+// whether to record: the hash is over what the model was shown and
+// what it was not, so an unchanged render hashes the same and any
+// difference moves it.
+func TestManifestIdentity(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore(WithMaxEntryBytes(256))
+	for _, e := range []Entry{
+		{Scope: "user", Name: "a", Content: filler(200, 'a')},
+		{Scope: "user", Name: "b", Content: filler(200, 'b')},
+		{Scope: "user", Name: "c", Content: filler(200, 'c')},
+	} {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scopes := []Scope{"user"}
+	opt := WithMaxTotalBytes(600)
+	_, first, err := Render(ctx, store, scopes, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Entries) == 0 || len(first.Omitted) == 0 {
+		t.Fatalf("the fixture shows and omits nothing: %+v", first)
+	}
+	_, again, err := Render(ctx, store, scopes, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Hash() != again.Hash() {
+		t.Error("two renders of one store hash differently")
+	}
+	if !strings.HasPrefix(first.Hash(), "sha256:") || len(first.Hash()) != len(Hash("")) {
+		t.Errorf("Hash = %q", first.Hash())
+	}
+	// A write the block shows moves the hash.
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "a", Content: filler(199, 'z')}); err != nil {
+		t.Fatal(err)
+	}
+	_, edited, err := Render(ctx, store, scopes, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited.Hash() == first.Hash() {
+		t.Error("a changed entry did not move the manifest's hash")
+	}
+	// So does a change to what was left out, and to the order.
+	swapped := Manifest{Entries: []ManifestEntry{first.Entries[0]}, Omitted: first.Omitted}
+	reordered := Manifest{Entries: []ManifestEntry{first.Entries[0]}, Omitted: []ManifestEntry{}}
+	if len(first.Entries) > 1 {
+		reordered.Entries = []ManifestEntry{first.Entries[1], first.Entries[0]}
+		reordered.Omitted = first.Omitted
+		if swapped.Hash() == reordered.Hash() {
+			t.Error("order does not move the manifest's hash")
+		}
+	}
+	dropped := Manifest{Entries: first.Entries}
+	if dropped.Hash() == first.Hash() {
+		t.Error("what was omitted does not move the manifest's hash")
+	}
+	reason := Manifest{Entries: first.Entries, Omitted: append([]ManifestEntry(nil), first.Omitted...)}
+	reason.Omitted[0].Reason = "something else"
+	if reason.Hash() == first.Hash() {
+		t.Error("the reason does not move the manifest's hash")
+	}
+	// Record is the namespace and the bytes a product hands its
+	// recorder.
+	ns, data := first.Record()
+	if ns != ManifestNS || ManifestNS != "agentmemory:render" {
+		t.Errorf("Record namespace = %q", ns)
+	}
+	var back Manifest
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("Record data: %v", err)
+	}
+	if back.Hash() != first.Hash() {
+		t.Errorf("the recorded manifest hashes differently:\n%s", data)
+	}
+	if len(back.Omitted) == 0 || back.Omitted[0].Reason != OmitBudget || back.Omitted[0].Bytes == 0 || back.Omitted[0].Name == "" {
+		t.Errorf("the recorded omissions do not carry scope, name, size and reason: %s", data)
+	}
+}
+
 func TestRenderErrors(t *testing.T) {
 	ctx := context.Background()
 	if _, _, err := Render(ctx, NewMemStore(), []Scope{"user", "Bad"}); !errors.Is(err, ErrInvalid) {
