@@ -7,6 +7,25 @@ versions may break the API.
 
 ## Unreleased
 
+### Breaking
+
+- `Change.Prev` is now the hash the write was built on, not the hash the
+  store held: the base the caller named with `IfHash` or the new
+  `BasedOn`, or, when the caller named none, the stored hash, which is
+  what it was before. The hash a change replaced moved to the new
+  `Change.Replaced`, which is what records chain through, so a reader
+  that walked `Prev` to chain the journal reads `Replaced` now (#1).
+
+### Added
+
+- `BasedOn(hash)`, a `PutOption` that records the hash a write was
+  built on without making it a precondition, and
+  `PutOptions.BaseFor(stored)` for a store to resolve it (#1).
+- `LostUpdates(ctx, store, after)` and `LostUpdate`: the journal records
+  whose `Prev` is not the state they replaced, which is a write composed
+  from a state another writer had already replaced, or an entry changed
+  outside the journal. `storetest` holds every store to it (#1).
+
 ### Fixed
 
 - `filestore`: the takeover of a lock whose holder is dead is atomic.

@@ -242,11 +242,11 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	if err := s.reindex(e.Scope); err != nil {
 		return err
 	}
-	prev := ""
+	replaced := ""
 	if stored != nil {
-		prev = stored.Hash
+		replaced = stored.Hash
 	}
-	return s.record(ctx, e, prev, now)
+	return s.record(ctx, e, o.BaseFor(stored), replaced, now)
 }
 
 // Forget implements agentmemory.Store: the file is removed, the index
@@ -278,22 +278,23 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	e := *stored
 	e.Deleted = true
 	e.Updated = now
-	return s.record(ctx, e, stored.Hash, now)
+	return s.record(ctx, e, stored.Hash, stored.Hash, now)
 }
 
 // record appends the change with the next sequence number. The caller
 // holds the lock.
-func (s *Store) record(ctx context.Context, e agentmemory.Entry, prev string, at time.Time) error {
+func (s *Store) record(ctx context.Context, e agentmemory.Entry, prev, replaced string, at time.Time) error {
 	seq, err := s.lastSeq()
 	if err != nil {
 		return err
 	}
 	return s.appendJournal(agentmemory.Change{
-		Seq:     seq + 1,
-		Entry:   e,
-		Prev:    prev,
-		Session: agentmemory.SessionFrom(ctx),
-		At:      at,
+		Seq:      seq + 1,
+		Entry:    e,
+		Prev:     prev,
+		Replaced: replaced,
+		Session:  agentmemory.SessionFrom(ctx),
+		At:       at,
 	})
 }
 
@@ -409,13 +410,13 @@ func (s *Store) Reconcile(ctx context.Context) ([]agentmemory.Change, error) {
 			if isKnown && !known.Deleted {
 				prev = known.Hash
 			}
-			c = agentmemory.Change{Entry: cur, Prev: prev, At: now}
+			c = agentmemory.Change{Entry: cur, Prev: prev, Replaced: prev, At: now}
 		case isKnown && !known.Deleted:
 			// Removed by hand: a tombstone with the last content.
 			e := known
 			e.Deleted = true
 			e.Updated = now
-			c = agentmemory.Change{Entry: e, Prev: known.Hash, At: now}
+			c = agentmemory.Change{Entry: e, Prev: known.Hash, Replaced: known.Hash, At: now}
 		default:
 			continue
 		}

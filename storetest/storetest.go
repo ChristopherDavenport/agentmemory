@@ -37,6 +37,7 @@ func Run(t *testing.T, opts Options) {
 	t.Run("IfHash", func(t *testing.T) { testIfHash(t, opts) })
 	t.Run("Forget", func(t *testing.T) { testForget(t, opts) })
 	t.Run("Journal", func(t *testing.T) { testJournal(t, opts) })
+	t.Run("LostUpdates", func(t *testing.T) { testLostUpdates(t, opts) })
 	t.Run("Search", func(t *testing.T) { testSearch(t, opts) })
 	t.Run("Concurrent", func(t *testing.T) { testConcurrent(t, opts) })
 	if opts.Reopen != nil {
@@ -304,14 +305,15 @@ func testForget(t *testing.T, opts Options) {
 	}
 	tomb := changes[2]
 	if !tomb.Entry.Deleted || tomb.Entry.Content != "Europe/London" || tomb.Entry.Hash != agentmemory.Hash("Europe/London") ||
-		tomb.Prev != tomb.Entry.Hash || tomb.Session != "sess-f" || tomb.Entry.Description() != "Timezone" || tomb.Entry.Updated.IsZero() {
+		tomb.Prev != tomb.Entry.Hash || tomb.Replaced != tomb.Entry.Hash || tomb.Session != "sess-f" ||
+		tomb.Entry.Description() != "Timezone" || tomb.Entry.Updated.IsZero() {
 		t.Errorf("tombstone = %+v", tomb)
 	}
 	// Recreating after a tombstone is a create: Prev is empty.
 	if err := st.Put(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	if changes := collect(t, st, 3); len(changes) != 1 || changes[0].Prev != "" || changes[0].Entry.Deleted {
+	if changes := collect(t, st, 3); len(changes) != 1 || changes[0].Prev != "" || changes[0].Replaced != "" || changes[0].Entry.Deleted {
 		t.Errorf("record after recreate = %+v", changes)
 	}
 }
@@ -335,6 +337,8 @@ func testJournal(t *testing.T, opts Options) {
 		{ctx, agentmemory.Entry{Scope: "project", Name: "one", Content: "p1"}, ""},
 		{a, agentmemory.Entry{Scope: "user", Name: "one", Content: "1c", Meta: map[string]string{"k": "v"}}, agentmemory.Hash("1b")},
 	}
+	// Every step is an unconditional write, so each record's base is
+	// the hash the store held, which is also what it replaced.
 	for i, s := range steps {
 		if err := st.Put(s.ctx, s.e); err != nil {
 			t.Fatalf("step %d: %v", i, err)
@@ -357,6 +361,9 @@ func testJournal(t *testing.T, opts Options) {
 		}
 		if c.Prev != s.prev {
 			t.Errorf("record %d: Prev = %q, want %q", i, c.Prev, s.prev)
+		}
+		if c.Replaced != s.prev {
+			t.Errorf("record %d: Replaced = %q, want %q", i, c.Replaced, s.prev)
 		}
 		if c.Session != agentmemory.SessionFrom(s.ctx) {
 			t.Errorf("record %d: Session = %q, want %q", i, c.Session, agentmemory.SessionFrom(s.ctx))
@@ -522,8 +529,11 @@ func testConcurrent(t *testing.T, opts Options) {
 			t.Errorf("record %d: Seq = %d", i, c.Seq)
 		}
 		key := string(c.Entry.Scope) + "/" + c.Entry.Name
-		if c.Prev != last[key] {
-			t.Errorf("record %d (%s): Prev = %q, want %q; the journal is not a chain", i, key, c.Prev, last[key])
+		if c.Replaced != last[key] {
+			t.Errorf("record %d (%s): Replaced = %q, want %q; the journal is not a chain", i, key, c.Replaced, last[key])
+		}
+		if c.Prev != c.Replaced {
+			t.Errorf("record %d (%s): Prev = %q over %q; every write here was anchored in what it read", i, key, c.Prev, c.Replaced)
 		}
 		last[key] = c.Entry.Hash
 	}
@@ -550,6 +560,95 @@ func appendFact(ctx context.Context, st agentmemory.Store, fact string) error {
 		if !errors.Is(err, agentmemory.ErrConflict) || attempt == 200 {
 			return err
 		}
+	}
+}
+
+// testLostUpdates runs the race the journal carries a base hash for:
+// two sessions read one entry and each writes the whole thing back. The
+// second write lands on a state it never saw, and its record says so,
+// because it names the hash it was built on rather than the one it
+// found. An anchored write that was not overtaken says nothing.
+func testLostUpdates(t *testing.T, opts Options) {
+	ctx := context.Background()
+	st := opts.New(t)
+	if err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "profile", Content: "Chris."}); err != nil {
+		t.Fatal(err)
+	}
+	read, err := st.Get(ctx, "user", "profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both sessions composed their content from this one read.
+	slack := *read
+	slack.Content = "Chris. Lives in Bristol."
+	if err := st.Put(agentmemory.WithSession(ctx, "slack"), slack, agentmemory.BasedOn(read.Hash)); err != nil {
+		t.Fatal(err)
+	}
+	telegram := *read
+	telegram.Content = "Chris. Prefers Go."
+	if err := st.Put(agentmemory.WithSession(ctx, "telegram"), telegram, agentmemory.BasedOn(read.Hash)); err != nil {
+		t.Fatal(err)
+	}
+	lost, err := agentmemory.LostUpdates(ctx, st, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lost) != 1 {
+		t.Fatalf("LostUpdates = %+v, want the second write alone", lost)
+	}
+	got := lost[0]
+	if got.Change.Seq != 3 || got.Change.Session != "telegram" ||
+		got.Change.Prev != read.Hash || got.Change.Replaced != agentmemory.Hash(slack.Content) ||
+		got.Over != agentmemory.Hash(slack.Content) {
+		t.Errorf("LostUpdates[0] = %+v", got)
+	}
+	// The cursor is the journal's: read from after the record that
+	// established the entry's state and there is no predecessor to
+	// compare with, so nothing is reported.
+	if from2, err := agentmemory.LostUpdates(ctx, st, 2); err != nil || len(from2) != 0 {
+		t.Errorf("LostUpdates(after 2) = %+v, %v", from2, err)
+	}
+	// An anchored write over the current state, a conditional one, an
+	// unconditional one and a tombstone are all clean.
+	st2 := opts.New(t)
+	e := agentmemory.Entry{Scope: "user", Name: "profile", Content: "one"}
+	if err := st2.Put(ctx, e, agentmemory.IfHash("")); err != nil {
+		t.Fatal(err)
+	}
+	e.Content = "two"
+	if err := st2.Put(ctx, e, agentmemory.IfHash(agentmemory.Hash("one"))); err != nil {
+		t.Fatal(err)
+	}
+	e.Content = "three"
+	if err := st2.Put(ctx, e, agentmemory.BasedOn(agentmemory.Hash("two"))); err != nil {
+		t.Fatal(err)
+	}
+	e.Content = "four"
+	if err := st2.Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if err := st2.Forget(ctx, "user", "profile"); err != nil {
+		t.Fatal(err)
+	}
+	e.Content = "again"
+	if err := st2.Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if clean, err := agentmemory.LostUpdates(ctx, st2, 0); err != nil || len(clean) != 0 {
+		t.Errorf("LostUpdates over an anchored journal = %+v, %v", clean, err)
+	}
+	// A write anchored in a hash the journal never held is reported
+	// too: the entry changed outside the journal.
+	if err := st2.Put(ctx, e, agentmemory.BasedOn(agentmemory.Hash("by hand"))); err != nil {
+		t.Fatal(err)
+	}
+	outside, err := agentmemory.LostUpdates(ctx, st2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outside) != 1 || outside[0].Change.Prev != agentmemory.Hash("by hand") ||
+		outside[0].Over != agentmemory.Hash("again") || outside[0].Change.Replaced != agentmemory.Hash("again") {
+		t.Errorf("LostUpdates over an edit from outside = %+v", outside)
 	}
 }
 

@@ -106,11 +106,11 @@ func (m *MemStore) Put(ctx context.Context, e Entry, opts ...PutOption) error {
 		m.live[e.Scope] = map[string]Entry{}
 	}
 	m.live[e.Scope][e.Name] = e
-	prev := ""
+	replaced := ""
 	if stored != nil {
-		prev = stored.Hash
+		replaced = stored.Hash
 	}
-	m.appendLocked(ctx, e, prev, now)
+	m.appendLocked(ctx, e, o.BaseFor(stored), replaced, now)
 	return nil
 }
 
@@ -126,17 +126,18 @@ func (m *MemStore) Forget(ctx context.Context, scope Scope, name string) error {
 	now := m.now()
 	e.Deleted = true
 	e.Updated = now
-	m.appendLocked(ctx, e, e.Hash, now)
+	m.appendLocked(ctx, e, e.Hash, e.Hash, now)
 	return nil
 }
 
-func (m *MemStore) appendLocked(ctx context.Context, e Entry, prev string, at time.Time) {
+func (m *MemStore) appendLocked(ctx context.Context, e Entry, prev, replaced string, at time.Time) {
 	m.journal = append(m.journal, Change{
-		Seq:     uint64(len(m.journal)) + 1,
-		Entry:   cloneEntry(e),
-		Prev:    prev,
-		Session: SessionFrom(ctx),
-		At:      at,
+		Seq:      uint64(len(m.journal)) + 1,
+		Entry:    cloneEntry(e),
+		Prev:     prev,
+		Replaced: replaced,
+		Session:  SessionFrom(ctx),
+		At:       at,
 	})
 }
 

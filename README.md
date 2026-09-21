@@ -54,9 +54,14 @@ write, so the journal is a list of full states, each with its hash.
 the entry must not exist, so a write built on a stale read fails with
 `ErrConflict` instead of clobbering. `Forget` writes a tombstone that
 keeps the last content. Every `Change` carries a `Seq` that orders the
-journal within the store, the `Prev` hash it replaced, and the
-`Session` that wrote it, from `WithSession(ctx, id)`, so a reader can
-chain records and see a fork. Content over the bound is refused with a
+journal within the store, the `Session` that wrote it, from
+`WithSession(ctx, id)`, and two hashes: `Replaced`, the state the write
+landed on, which chains the records, and `Prev`, the state it was built
+on, which the caller names with `IfHash` or, without making it a
+precondition, with `BasedOn`. A record whose `Prev` is not its
+`Replaced` is a write composed from a state another writer had already
+replaced, and `LostUpdates(ctx, store, after)` lists them, so an
+auditor can say what a session discarded. Content over the bound is refused with a
 `SizeError` naming the attempted size, the limit and what the entry
 holds now.
 

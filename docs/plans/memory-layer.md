@@ -91,14 +91,20 @@ type Store interface {
 // instead of clobbering. "" means the entry must not exist.
 func IfHash(h string) PutOption
 
+// BasedOn records the hash the write was built on without enforcing
+// it, for a writer that composes the whole entry from a read and means
+// to land on whatever is there.
+func BasedOn(h string) PutOption
+
 // Change is one journal record: the entry as it was after the change,
 // what it replaced, and who made it.
 type Change struct {
-    Seq     uint64    // monotonic within the store; the Journal cursor
-    Entry   Entry
-    Prev    string    // hash of the content this change replaced, "" for a create
-    Session string    // the session ID that wrote it, "" for a person
-    At      time.Time // for display and the record; never an ordering
+    Seq      uint64    // monotonic within the store; the Journal cursor
+    Entry    Entry
+    Prev     string    // hash of the content the write was built on, "" for a create
+    Replaced string    // hash of the content it landed on, "" for a create
+    Session  string    // the session ID that wrote it, "" for a person
+    At       time.Time // for display and the record; never an ordering
 }
 ```
 
@@ -113,10 +119,14 @@ below; the store applies the patch and `Put` remains the unit.
 
 `IfHash` is optional. A create and a deliberate overwrite are both
 legitimate; the precondition is for callers that anchor a write in
-what they read. `Prev` and `Seq` make the journal a chain: a reader
-can follow each record to the one it replaced and see a fork where two
-writers built on one predecessor, which the plain list could not
-express. `Seq` orders records within one store and promises nothing
+what they read. `Replaced` and `Seq` make the journal a chain: a reader
+follows each record to the one it replaced. `Prev` is the writer's own
+claim about the state it composed from, which is what makes a fork
+visible: a record whose `Prev` is not its `Replaced` is a write built
+on a state another writer had already replaced, and `LostUpdates` lists
+them. A store fills `Prev` from its own value when the caller claims
+none, so an unanchored write is indistinguishable from an ordinary
+edit; `memory_save` therefore names its base with `BasedOn`. `Seq` orders records within one store and promises nothing
 across stores. `Journal(after)` is exclusive, so a reader resumes with
 the last `Seq` it saw; `0` reads from the beginning. The session ID is
 carried on the context, `WithSession(ctx, id)`, because one store

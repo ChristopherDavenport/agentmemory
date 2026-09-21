@@ -287,11 +287,12 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	if err := reindex(ctx, tx, e.Scope, e.Name, &e); err != nil {
 		return err
 	}
-	prev := ""
+	replaced := ""
 	if stored != nil {
-		prev = stored.Hash
+		replaced = stored.Hash
 	}
-	if err := record(ctx, tx, agentmemory.Change{Entry: e, Prev: prev, Session: agentmemory.SessionFrom(ctx), At: now}); err != nil {
+	if err := record(ctx, tx, agentmemory.Change{Entry: e, Prev: o.BaseFor(stored), Replaced: replaced,
+		Session: agentmemory.SessionFrom(ctx), At: now}); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -327,7 +328,8 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	e := *stored
 	e.Deleted = true
 	e.Updated = now
-	if err := record(ctx, tx, agentmemory.Change{Entry: e, Prev: stored.Hash, Session: agentmemory.SessionFrom(ctx), At: now}); err != nil {
+	if err := record(ctx, tx, agentmemory.Change{Entry: e, Prev: stored.Hash, Replaced: stored.Hash,
+		Session: agentmemory.SessionFrom(ctx), At: now}); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
