@@ -104,6 +104,8 @@ type Change struct {
     Prev     string    // hash of the content the write was built on, "" for a create
     Replaced string    // hash of the content it landed on, "" for a create
     Session  string    // the session ID that wrote it, "" for a person
+    Source   string    // "" for a write through the store, "reconciled" for
+                       // a state it found, such as a person's edit
     At       time.Time // for display and the record; never an ordering
 }
 ```
@@ -126,7 +128,8 @@ visible: a record whose `Prev` is not its `Replaced` is a write built
 on a state another writer had already replaced, and `LostUpdates` lists
 them. A store fills `Prev` from its own value when the caller claims
 none, so an unanchored write is indistinguishable from an ordinary
-edit; `memory_save` therefore names its base with `BasedOn`. `Seq` orders records within one store and promises nothing
+edit; `memory_save` therefore names its base with `BasedOn`.
+`Seq` orders records within one store and promises nothing
 across stores. `Journal(after)` is exclusive, so a reader resumes with
 the last `Seq` it saw; `0` reads from the beginning. The session ID is
 carried on the context, `WithSession(ctx, id)`, because one store

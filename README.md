@@ -63,9 +63,9 @@ on, which the caller names with `IfHash` or, without making it a
 precondition, with `BasedOn`. A record whose `Prev` is not its
 `Replaced` is a write composed from a state another writer had already
 replaced, and `LostUpdates(ctx, store, after)` lists them, so an
-auditor can say what a session discarded. Content over the bound is refused with a
-`SizeError` naming the attempted size, the limit and what the entry
-holds now.
+auditor can say what a session discarded. Content over the bound is
+refused with a `SizeError` naming the attempted size, the limit and
+what the entry holds now.
 
 ## Wiring
 
@@ -184,7 +184,8 @@ stays in the transcript where the block is replaced each turn.
 
 `filestore.Open(dir)` keeps one directory per scope, one `<name>.md`
 per entry with a frontmatter of `name`, `updated` and the meta, an
-`INDEX.md` per scope, and one `journal.jsonl` at the root:
+`INDEX.md` per scope, and one `journal.jsonl` at the root with the
+cursor `.state.json` beside it:
 
 ```
 memory/
