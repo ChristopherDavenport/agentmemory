@@ -1,3 +1,5 @@
+github.com/ChristopherDavenport/agentmemory v0.0.1 h1:V0/K/jHpy7O/rIoYB5aUIlG50FAoTvRMOeqtPAsbfvw=
+github.com/ChristopherDavenport/agentmemory v0.0.1/go.mod h1:aTVA5nSv4ccZQifOd68IKNcOZ8+t4N6FiDi5hUL/tYY=
 github.com/ChristopherDavenport/agenttool v0.0.4 h1:JUIjm3cQpy9uoOV7hbOUsMX86+5dgf7P06tr7lbEGmA=
 github.com/ChristopherDavenport/agenttool v0.0.4/go.mod h1:ZwrMvxCq1LTtp0e2EgxYKJ3Nr3NJRpjVkGnEZSM6fO4=
 github.com/ChristopherDavenport/agentturn v0.0.5 h1:1WdVU+7LsaXWGwgse5PlxeH3hmYHKyFdc1YZcbBnjvI=

@@ -31,8 +31,31 @@ standard library only, and `filestore` and `storetest` on the root
 package and the standard library only; `make deps` and a test fail if
 anything else creeps in. `agentturn` is a test dependency of the
 tools' integration test and never a build dependency. `sqlite` is a
-nested module listed under `SUBMODULES` in the Makefile; a bare `go
-test ./...` at the root does not cover it, the Makefile targets do.
+nested module listed under `SUBMODULES` in the Makefile and joined to
+the root by `go.work`; a bare `go test ./...` at the root does not
+cover it even in workspace mode, the Makefile targets do. Workspace
+mode rejects `-mod=mod`, so a `GOFLAGS=-mod=mod` in your environment
+has to go.
+
+A nested module's `go.mod` requires a released root version and carries
+no `replace`: the workspace is what builds it against the tree. That is
+deliberate. A `replace` is a property of the main module and consumers
+ignore it, so a nested module that carried one would build green here
+while shipping a `go.mod` that names a root version without the API it
+uses. `make release-check` builds each nested module with `GOWORK=off`,
+against the versions its own `go.mod` requires, which is what a consumer
+gets.
+
+`release-check` is not part of `check`, and it fails by design between a
+root API addition and the next root tag — a nested module that uses the
+new API cannot name a version that carries it until that version exists.
+That failure is the release ordering, not a bug; see below.
+
+`make no-replace` is what keeps `release-check` honest, and it *is* part
+of `check` and of CI. Re-adding a `replace` makes every other gate green
+again after one `make tidy` — including `release-check`, on a module no
+consumer can build — so the absence of one is asserted on every run
+rather than only at release.
 
 Every `Store` passes `storetest.Run`; a new store adds a test that
 runs it. `Render` has golden fixtures under `testdata/render/`;
@@ -48,19 +71,54 @@ regenerate them with `go test . -update` and review the diff.
 
 ## Releases
 
-Every module in the repository shares one version and is tagged at one
-commit. With the changelog's *Unreleased* section written:
+Every module in the repository shares one version, but not one commit.
+A nested module's requirement cannot name a tag that does not exist
+yet, so the root is released first and the nested modules follow. With
+the changelog's *Unreleased* section written:
 
 ```sh
-make release VERSION=v0.1.0
+make release-root VERSION=v0.1.0
 ```
 
-sets the root requirement in `sqlite` to the version, dates the
-changelog, runs `make check`, commits, tags `v0.1.0` and
-`sqlite/v0.1.0` with the changelog section as the message, and pushes.
-The nested `go.mod` requires a released root next to a `replace`
-directive to the tree, so consumers fetch the version and the checkout
-builds against the working tree. The release workflow publishes a
-GitHub release per tag, and the Go module proxy picks the versions up.
-Before v1.0.0 the API may change between minor versions; the changelog
-records every break.
+dates the changelog, runs `make check`, commits, tags `v0.1.0` with the
+changelog section as the message, and pushes the branch and the tag.
+The nested modules still require the previous root release across this
+commit, which is correct: `v0.1.0` did not exist when it was written.
+
+Once that tag is on the module proxy:
+
+```sh
+make release-submodules VERSION=v0.1.0
+```
+
+walks `SUBMODULES` in order and, for each, sets its requirement on the
+root and on any already-released sibling to the version, tidies, builds
+and tests it with `GOWORK=off` against exactly those versions, commits,
+tags `<dir>/v0.1.0` and pushes. One commit and one tag per module,
+because `go mod tidy` and the `GOWORK=off` build both resolve a sibling
+requirement from the proxy: a module has to be published before the
+module that requires it is bumped. A module is built the way a consumer
+builds it before its tag is written, and the release workflow runs
+`make release-check` again on the tag — scoped to that tag's module,
+since the others are still on the previous root at that commit.
+
+If a module fails partway, the tags already pushed stay valid and
+self-consistent; nothing has to be deleted. The failure will usually
+have left that module's `go.mod` and `go.sum` rewritten, so:
+
+```sh
+git checkout -- sqlite                       # the module that failed
+make release-submodules VERSION=v0.1.0 RELEASE_SUBMODULES=sqlite
+```
+
+Narrow `RELEASE_SUBMODULES`, never `SUBMODULES`: the first is the list to
+release, the second is the list of siblings to bump, and narrowing the
+second would tag a module still requiring an old sibling — which
+`release-check` cannot catch, because the old sibling satisfies it.
+`release-submodules` refuses a `SUBMODULES` override for that reason.
+`sqlite` is the only nested module today, so there is no sibling to
+bump; the target is the same one `agenttool` uses, where there is.
+
+The release workflow publishes a GitHub release per tag, and the Go
+module proxy picks the versions up. Before v1.0.0 the API may change
+between minor versions; the changelog records every break.
