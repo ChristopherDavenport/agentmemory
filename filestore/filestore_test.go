@@ -1,6 +1,7 @@
 package filestore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -104,6 +105,19 @@ func TestLayout(t *testing.T) {
 	}
 	if _, err := os.Stat(s.lockPath()); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("lock left behind: %v", err)
+	}
+	// The cursor beside the journal: where the store has read to, and
+	// the hashes it knows, so a person's edit is noticed without
+	// reading the journal again.
+	var state journalState
+	if err := json.Unmarshal([]byte(readFile(t, s.statePath())), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Seq != 2 || state.Off != int64(len(journal)) || len(state.Entries) != 2 {
+		t.Errorf("state = %+v, journal is %d bytes", state, len(journal))
+	}
+	if got := state.Entries["user/style"]; got.Hash != agentmemory.Hash(e.Content) || got.Meta == "" {
+		t.Errorf("state entry = %+v", got)
 	}
 	if _, err := s.Forget(ctx, "user", "style"); err != nil {
 		t.Fatal(err)
@@ -231,6 +245,9 @@ func TestReconcile(t *testing.T) {
 	}
 	var got []string
 	for _, c := range changes {
+		if c.Source != agentmemory.SourceReconciled {
+			t.Errorf("%s/%s: Source = %q, want %q", c.Entry.Scope, c.Entry.Name, c.Source, agentmemory.SourceReconciled)
+		}
 		got = append(got, fmt.Sprintf("%d %s/%s deleted=%v prev=%v session=%q", c.Seq, c.Entry.Scope, c.Entry.Name, c.Entry.Deleted, c.Prev != "", c.Session))
 	}
 	want := []string{
@@ -270,6 +287,159 @@ func TestReconcile(t *testing.T) {
 	if last.Seq != 10 || last.Entry.Name != "next" {
 		t.Errorf("last record = %+v", last)
 	}
+}
+
+// TestReconcileClosesTheGap is the case Reconcile alone could not
+// reach: the agent writes over a person's edit before anything has
+// reconciled. The person's version is recorded first, by nobody, so
+// the chain is whole and nothing they wrote is lost.
+func TestReconcileClosesTheGap(t *testing.T) {
+	ctx := agentmemory.WithSession(context.Background(), "sess-agent")
+	s := open(t)
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "profile", Content: "Chris. Timezone Europe/London.\n"}); err != nil {
+		t.Fatal(err)
+	}
+	// A person edits the file by hand.
+	byHand := "---\nname: profile\n---\nChris. Prefers Go. Timezone Europe/London.\n"
+	if err := os.WriteFile(filepath.Join(s.Dir(), "user", "profile.md"), []byte(byHand), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The agent writes over it without reconciling first.
+	rec, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "profile", Content: "Chris. Lives in Bristol.\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := journalOf(t, s)
+	if len(changes) != 3 {
+		t.Fatalf("journal = %d records, want the write, the person's version and the write over it", len(changes))
+	}
+	person := changes[1]
+	if person.Source != agentmemory.SourceReconciled || person.Session != "" ||
+		person.Entry.Content != "Chris. Prefers Go. Timezone Europe/London.\n" ||
+		person.Prev != changes[0].Entry.Hash || person.Replaced != changes[0].Entry.Hash {
+		t.Errorf("the person's version = %+v", person)
+	}
+	if rec.Seq != 3 || rec.Prev != person.Entry.Hash || rec.Replaced != person.Entry.Hash || rec.Session != "sess-agent" {
+		t.Errorf("the agent's write = %+v", rec)
+	}
+	// The chain is whole, so an auditor finds no gap.
+	if lost, err := agentmemory.LostUpdates(ctx, s, 0); err != nil || len(lost) != 0 {
+		t.Errorf("LostUpdates = %+v, %v", lost, err)
+	}
+	// And a Reconcile afterwards has nothing to add.
+	if again, err := s.Reconcile(ctx); err != nil || len(again) != 0 {
+		t.Errorf("Reconcile after the write = %v, %v", again, err)
+	}
+	// The same holds for a file a person removed and for one they
+	// added, when the agent writes to the name next.
+	if err := os.Remove(filepath.Join(s.Dir(), "user", "profile.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "profile", Content: "Chris.\n"}); err != nil {
+		t.Fatal(err)
+	}
+	changes = journalOf(t, s)
+	tomb := changes[3]
+	if !tomb.Entry.Deleted || tomb.Source != agentmemory.SourceReconciled || tomb.Session != "" ||
+		tomb.Entry.Content != "Chris. Lives in Bristol.\n" {
+		t.Errorf("the tombstone for the file the person removed = %+v", tomb)
+	}
+	if last := changes[4]; last.Prev != "" || last.Replaced != "" || last.Session != "sess-agent" {
+		t.Errorf("the write after it = %+v", last)
+	}
+	if lost, err := agentmemory.LostUpdates(ctx, s, 0); err != nil || len(lost) != 0 {
+		t.Errorf("LostUpdates after the removal = %+v, %v", lost, err)
+	}
+}
+
+// TestReconcileReadsFromItsCursor checks that Reconcile reads the
+// journal from where it left off and not from the beginning: a record
+// it has already seen is damaged in place, and a run that re-read the
+// journal would lose what that record said and report the entry as one
+// a person had added.
+func TestReconcileReadsFromItsCursor(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	for _, name := range []string{"one", "two"} {
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: name, Content: name + "\n"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if changes, err := s.Reconcile(ctx); err != nil || len(changes) != 0 {
+		t.Fatalf("Reconcile on a clean store = %v, %v", changes, err)
+	}
+	if _, err := os.Stat(s.statePath()); err != nil {
+		t.Fatalf("no cursor beside the journal: %v", err)
+	}
+	// Damage the first record in place, keeping the file's length so
+	// the offsets after it still hold.
+	data := []byte(readFile(t, s.journalPath()))
+	end := bytes.IndexByte(data, '\n')
+	if end < 0 {
+		t.Fatal("no journal")
+	}
+	copy(data[:end], bytes.Repeat([]byte("x"), end))
+	if err := os.WriteFile(s.journalPath(), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if changes, err := s.Reconcile(ctx); err != nil || len(changes) != 0 {
+		t.Errorf("Reconcile read the journal again: %v, %v", changes, err)
+	}
+	// A run that finds nothing to do and has nothing to catch up on
+	// writes no cursor either, so the call a product makes before every
+	// render costs a read and no write.
+	before, err := os.Stat(s.statePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(s.statePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Error("a Reconcile with nothing to do rewrote the cursor")
+	}
+	// Without the cursor it does read the journal whole, and then the
+	// damaged record is a record it never saw.
+	if err := os.Remove(s.statePath()); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := s.Reconcile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 || changes[0].Entry.Name != "one" || changes[0].Source != agentmemory.SourceReconciled {
+		t.Errorf("Reconcile without a cursor = %+v", changes)
+	}
+	// And a cursor it had to rebuild is written back, whatever it
+	// found, or every later run rebuilds it again.
+	if _, err := os.Stat(s.statePath()); err != nil {
+		t.Errorf("the rebuilt cursor was not written: %v", err)
+	}
+	if err := os.Remove(s.statePath()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(s.statePath()); err != nil {
+		t.Errorf("a rebuild that found nothing wrote no cursor: %v", err)
+	}
+}
+
+func journalOf(t *testing.T, s *Store) []agentmemory.Change {
+	t.Helper()
+	var out []agentmemory.Change
+	for c, err := range s.Journal(context.Background(), 0) {
+		if err != nil {
+			t.Fatalf("journal: %v", err)
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // TestJournalDamage checks that a damaged line is reported and skipped

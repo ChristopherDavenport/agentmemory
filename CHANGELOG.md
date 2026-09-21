@@ -52,6 +52,19 @@ versions may break the API.
   it replaced and what became of the metadata, and the journal shows a
   save that landed on another channel's write (#4).
 
+- `filestore.Reconcile` reads the journal from a cursor kept beside it
+  in `.state.json` rather than whole, so a product that reconciles
+  before every render stops paying for the store's whole history on
+  every turn: reading a 4,000 record journal took 9.6 ms and reading
+  from the cursor takes 44 µs, whatever the journal holds, and a run
+  with nothing to do writes nothing. The file is derived: a missing,
+  damaged or stale one is rebuilt from the journal (#7).
+- A write through `filestore` records a person's edit to the entry it
+  is about to replace, as a change by nobody with
+  `Source: "reconciled"`, so nothing a person wrote is lost when the
+  agent writes before anything reconciles, and the journal no longer
+  ends up with a `Prev` naming a hash no record holds (#7).
+
 ### Added
 
 - `Manifest.Hash`, `ManifestNS` (`agentmemory:render`) and
@@ -64,6 +77,8 @@ versions may break the API.
   `agenttool.Result.Details`, which implements `agenttool.Recordable`,
   so a recorder writes it beside the call under a namespace a reader
   recognises and the model never sees it (#6).
+- `Change.Source` and `SourceReconciled`: where a change the store did
+  not write came from (#7).
 - `ManifestEntry.Reason` on an omitted entry, with the `OmitBudget`
   constant, so a session can record why the model was not given an
   entry (#3, #8).

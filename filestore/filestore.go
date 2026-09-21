@@ -6,12 +6,18 @@
 //
 //	memory/
 //	  journal.jsonl
+//	  .state.json
 //	  user/
 //	    INDEX.md
 //	    style.md
 //	  project/
 //	    INDEX.md
 //	    build.md
+//
+// journal.jsonl is the record; .state.json is the cursor beside it,
+// how far the store has read the journal and the hashes it last knew,
+// so a person's edit is noticed without reading the journal again. It
+// is derived, and a missing or damaged one is rebuilt.
 //
 // Writes are atomic (write, fsync, rename) and serialised by one lock
 // file at the root that names its holder, is taken over when its
@@ -236,6 +242,16 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	if len(e.Meta) == 0 {
 		e.Meta = nil
 	}
+	st, err := s.loadState()
+	if err != nil {
+		return nil, err
+	}
+	// A person's edit to this file that the journal has not seen is
+	// recorded before the write lands on top of it; afterwards the file
+	// and the journal agree and there is nothing left to record.
+	if err := s.noteOutside(st, e.Scope, e.Name, stored, now); err != nil {
+		return nil, err
+	}
 	if err := writeAtomic(s.entryPath(e.Scope, e.Name), encode(e)); err != nil {
 		return nil, err
 	}
@@ -246,7 +262,32 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	if stored != nil {
 		replaced = stored.Hash
 	}
-	return s.record(ctx, e, o.BaseFor(stored), replaced, now)
+	c, err := s.appendChange(st, agentmemory.Change{
+		Entry:    e,
+		Prev:     o.BaseFor(stored),
+		Replaced: replaced,
+		Session:  agentmemory.SessionFrom(ctx),
+		At:       now,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.saveState(st); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// noteOutside appends the record of a state the store finds in place
+// of the one it wrote, when there is one, and advances the cursor. The
+// caller holds the lock.
+func (s *Store) noteOutside(st *journalState, scope agentmemory.Scope, name string, cur *agentmemory.Entry, at time.Time) error {
+	c, err := s.outside(st, scope, name, cur, at)
+	if err != nil || c == nil {
+		return err
+	}
+	_, err = s.appendChange(st, *c)
+	return err
 }
 
 // Forget implements agentmemory.Store: the file is removed, the index
@@ -268,38 +309,37 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	if stored == nil {
 		return nil, fmt.Errorf("%w: %s/%s", agentmemory.ErrNotFound, scope, name)
 	}
+	now := s.now()
+	st, err := s.loadState()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.noteOutside(st, scope, name, stored, now); err != nil {
+		return nil, err
+	}
 	if err := os.Remove(s.entryPath(scope, name)); err != nil {
 		return nil, fmt.Errorf("filestore: remove %s/%s: %w", scope, name, err)
 	}
 	if err := s.reindex(scope); err != nil {
 		return nil, err
 	}
-	now := s.now()
 	e := *stored
 	e.Deleted = true
 	e.Updated = now
-	return s.record(ctx, e, stored.Hash, stored.Hash, now)
-}
-
-// record appends the change with the next sequence number and returns
-// it. The caller holds the lock.
-func (s *Store) record(ctx context.Context, e agentmemory.Entry, prev, replaced string, at time.Time) (*agentmemory.Change, error) {
-	seq, err := s.lastSeq()
+	c, err := s.appendChange(st, agentmemory.Change{
+		Entry:    e,
+		Prev:     stored.Hash,
+		Replaced: stored.Hash,
+		Session:  agentmemory.SessionFrom(ctx),
+		At:       now,
+	})
 	if err != nil {
 		return nil, err
 	}
-	c := agentmemory.Change{
-		Seq:      seq + 1,
-		Entry:    e,
-		Prev:     prev,
-		Replaced: replaced,
-		Session:  agentmemory.SessionFrom(ctx),
-		At:       at,
-	}
-	if err := s.appendJournal(c); err != nil {
+	if err := s.saveState(st); err != nil {
 		return nil, err
 	}
-	return &c, nil
+	return c, nil
 }
 
 // Search implements agentmemory.Store with [agentmemory.Match],
@@ -334,35 +374,33 @@ func (s *Store) Journal(_ context.Context, after uint64) iter.Seq2[agentmemory.C
 }
 
 // Reconcile journals what changed outside the store: a person's edit
-// to an entry file, a file they added, a file they removed. It
-// compares every entry file with the journal's last state for that
-// name and appends a change by nobody, Session empty, for each
-// difference, then rewrites the indexes. It returns the changes it
+// to an entry file, a file they added, a file they removed. It reads
+// the journal from the cursor it keeps beside it rather than whole, so
+// what it costs follows what has happened since it last ran and not
+// the store's whole history, compares every entry file with the
+// journal's last state for that name, appends a change by nobody,
+// Session empty and Source [agentmemory.SourceReconciled], for each
+// difference, and rewrites the indexes. It returns the changes it
 // recorded. A product that lets people edit the directory runs it
 // before it renders.
+//
+// It is not the only thing that closes the gap. A write through this
+// store records the person's version of the entry it is about to
+// replace, because once the agent has written, the file and the
+// journal agree again and no later Reconcile can tell that anything
+// was there. Reconcile is what notices the entries the agent did not
+// touch.
 func (s *Store) Reconcile(ctx context.Context) ([]agentmemory.Change, error) {
 	release, err := s.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	// The journal's last word on every name.
-	last := map[string]agentmemory.Entry{}
-	var seq uint64
-	var readErr error
-	s.readJournal(0, func(c agentmemory.Change, err error) bool {
-		if err != nil {
-			readErr = err
-			return false
-		}
-		last[key(c.Entry.Scope, c.Entry.Name)] = c.Entry
-		seq = c.Seq
-		return true
-	})
-	if readErr != nil {
-		return nil, readErr
+	st, err := s.loadState()
+	if err != nil {
+		return nil, err
 	}
-	// The files.
+	was := *st
 	scopes, err := s.scopes()
 	if err != nil {
 		return nil, err
@@ -378,11 +416,11 @@ func (s *Store) Reconcile(ctx context.Context) ([]agentmemory.Change, error) {
 		}
 	}
 	// Every difference, in a fixed order so two runs agree.
-	keys := make([]string, 0, len(live)+len(last))
+	keys := make([]string, 0, len(live)+len(st.Entries))
 	for k := range live {
 		keys = append(keys, k)
 	}
-	for k := range last {
+	for k := range st.Entries {
 		if _, ok := live[k]; !ok {
 			keys = append(keys, k)
 		}
@@ -392,45 +430,33 @@ func (s *Store) Reconcile(ctx context.Context) ([]agentmemory.Change, error) {
 	var changes []agentmemory.Change
 	touched := map[agentmemory.Scope]bool{}
 	for _, k := range keys {
-		cur, isLive := live[k]
-		known, isKnown := last[k]
-		var c agentmemory.Change
-		switch {
-		case isLive && isKnown && !known.Deleted && known.Hash == cur.Hash && sameMeta(known.Meta, cur.Meta):
-			continue
-		case isLive:
-			// Created or edited by hand. The file's own time is when
-			// that happened; the updated line, if any, is when the
-			// store last wrote the file.
-			if agentmemory.CheckEntry(cur, s.max, nil) != nil {
-				// Over the bound or otherwise unstorable: leave it to
-				// the person, and out of the journal.
-				continue
-			}
-			if info, err := os.Stat(s.entryPath(cur.Scope, cur.Name)); err == nil {
-				cur.Updated = info.ModTime().UTC()
-			}
-			prev := ""
-			if isKnown && !known.Deleted {
-				prev = known.Hash
-			}
-			c = agentmemory.Change{Entry: cur, Prev: prev, Replaced: prev, At: now}
-		case isKnown && !known.Deleted:
-			// Removed by hand: a tombstone with the last content.
-			e := known
-			e.Deleted = true
-			e.Updated = now
-			c = agentmemory.Change{Entry: e, Prev: known.Hash, Replaced: known.Hash, At: now}
-		default:
-			continue
+		scope, name, _ := strings.Cut(k, "/")
+		var cur *agentmemory.Entry
+		if e, ok := live[k]; ok {
+			cur = &e
 		}
-		seq++
-		c.Seq = seq
-		if err := s.appendJournal(c); err != nil {
+		c, err := s.outside(st, agentmemory.Scope(scope), name, cur, now)
+		if err != nil {
 			return changes, err
 		}
-		changes = append(changes, c)
-		touched[c.Entry.Scope] = true
+		if c == nil {
+			continue
+		}
+		rec, err := s.appendChange(st, *c)
+		if err != nil {
+			return changes, err
+		}
+		changes = append(changes, *rec)
+		touched[rec.Entry.Scope] = true
+	}
+	// A run that found nothing and had nothing to catch up on leaves
+	// the cursor as it is, so the common call, before every render,
+	// writes nothing at all. A cursor that had to be rebuilt is
+	// written whatever it found, or the next run rebuilds it again.
+	if !st.read || st.Seq != was.Seq || st.Off != was.Off {
+		if err := s.saveState(st); err != nil {
+			return changes, err
+		}
 	}
 	for scope := range touched {
 		if err := s.reindex(scope); err != nil {
@@ -456,18 +482,6 @@ func (s *Store) scopes() ([]agentmemory.Scope, error) {
 }
 
 func key(scope agentmemory.Scope, name string) string { return string(scope) + "/" + name }
-
-func sameMeta(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
-}
 
 // reindex rewrites a scope's INDEX.md: one line per live entry with
 // its description, for the person reading the directory. The caller

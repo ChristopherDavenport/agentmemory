@@ -189,6 +189,7 @@ per entry with a frontmatter of `name`, `updated` and the meta, an
 ```
 memory/
   journal.jsonl
+  .state.json
   user/
     INDEX.md
     style.md
@@ -200,7 +201,13 @@ waited for only so long (`ErrLocked`, `LockHolder`, `BreakLock`). The
 takeover is exclusive: one writer of the several that find a dead
 holder's lock removes it, so no two writers hold the store and take the
 same sequence number.
-`Reconcile` journals what a person changed by hand. `sqlite.Open(path)`
+`Reconcile` journals what a person changed by hand, reading the
+journal from the cursor in `.state.json` rather than whole, so a turn
+does not pay for the store's whole history; and a write records the
+person's version of the entry it is about to replace, under
+`Source: "reconciled"` and no session, because once the agent has
+written, the file and the journal agree again and no later `Reconcile`
+could tell that anything was there. `sqlite.Open(path)`
 keeps the same rows and the same journal lines in one database and
 searches an FTS5 index in relevance order. `NewMemStore()` is the
 in-memory store. All three pass `storetest.Run`.

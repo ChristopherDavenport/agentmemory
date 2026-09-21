@@ -98,10 +98,27 @@ type Change struct {
 	// Session is the session that wrote the change, from
 	// [WithSession], or "" for a person or an unattributed caller.
 	Session string `json:"session,omitempty"`
+	// Source says where a change the store did not write came from,
+	// "" for a write through the store. [SourceReconciled] is a state
+	// the store found rather than wrote, such as a person's edit to a
+	// file, which a store records so that nothing it overwrites is
+	// lost.
+	Source string `json:"source,omitempty"`
 	// At is when the change was made, for display and the record. It
 	// never orders records; Seq does.
 	At time.Time `json:"at"`
 }
+
+// Sources a change can have beside a write through the store, carried
+// on [Change.Source].
+const (
+	// SourceReconciled is a state the store found in place of the one
+	// it last wrote: a person edited, added or removed an entry outside
+	// the store, and the store recorded what it found before writing
+	// over it. Session is empty on such a record, since nobody in a
+	// session made it.
+	SourceReconciled = "reconciled"
+)
 
 // Store holds entries and the journal of every change to them. Every
 // implementation passes storetest.

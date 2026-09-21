@@ -266,9 +266,21 @@ import `agentsession`.
 
 A person's edit to a file is not a `Put` and is not journaled as it
 happens. `Reconcile` compares the files with the journal's last state
-and journals each difference as a change by nobody, `Session` empty,
-so a product that lets people edit the directory runs it before it
-renders.
+and journals each difference as a change by nobody, `Session` empty and
+`Source` `reconciled`, so a product that lets people edit the directory
+runs it before it renders. It reads the journal from a cursor kept
+beside it, `.state.json`, holding the sequence and offset it has read
+to and the content and metadata hashes it knew there, so the cost of a
+turn follows what has happened since the last run and not the store's
+whole history; the file is derived and a missing or damaged one is
+rebuilt from the journal.
+
+Reconcile is not the only half of it. A `Put` reads the stored entry
+under the lock anyway, so it compares it with the cursor and records
+the person's version before writing over it: once the agent has
+written, the file and the journal agree again and no later `Reconcile`
+can tell that anything was there. That is the write that used to leave
+a `Prev` naming a hash no record held.
 
 The directory is a valid `agentskill.Source` in reverse: a person can
 read it, and git can diff it. That is the transparency argument for
