@@ -79,8 +79,8 @@ type Entry struct {
 type Store interface {
     Get(ctx context.Context, scope Scope, name string) (*Entry, error)
     List(ctx context.Context, scope Scope) ([]Entry, error)          // live entries, by name
-    Put(ctx context.Context, e Entry, opts ...PutOption) error        // create or replace; appends to the journal
-    Forget(ctx context.Context, scope Scope, name string) error       // writes a tombstone
+    Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error)  // create or replace; appends and returns the record
+    Forget(ctx context.Context, scope Scope, name string) (*Change, error) // writes a tombstone, returns the record
     Search(ctx context.Context, scopes []Scope, query string, limit int) ([]Entry, error)
     Journal(ctx context.Context, after uint64) iter.Seq2[Change, error] // records with Seq > after
     MaxEntryBytes() int                                              // the bound Put enforces
@@ -91,14 +91,22 @@ type Store interface {
 // instead of clobbering. "" means the entry must not exist.
 func IfHash(h string) PutOption
 
+// BasedOn records the hash the write was built on without enforcing
+// it, for a writer that composes the whole entry from a read and means
+// to land on whatever is there.
+func BasedOn(h string) PutOption
+
 // Change is one journal record: the entry as it was after the change,
 // what it replaced, and who made it.
 type Change struct {
-    Seq     uint64    // monotonic within the store; the Journal cursor
-    Entry   Entry
-    Prev    string    // hash of the content this change replaced, "" for a create
-    Session string    // the session ID that wrote it, "" for a person
-    At      time.Time // for display and the record; never an ordering
+    Seq      uint64    // monotonic within the store; the Journal cursor
+    Entry    Entry
+    Prev     string    // hash of the content the write was built on, "" for a create
+    Replaced string    // hash of the content it landed on, "" for a create
+    Session  string    // the session ID that wrote it, "" for a person
+    Source   string    // "" for a write through the store, "reconciled" for
+                       // a state it found, such as a person's edit
+    At       time.Time // for display and the record; never an ordering
 }
 ```
 
@@ -113,10 +121,15 @@ below; the store applies the patch and `Put` remains the unit.
 
 `IfHash` is optional. A create and a deliberate overwrite are both
 legitimate; the precondition is for callers that anchor a write in
-what they read. `Prev` and `Seq` make the journal a chain: a reader
-can follow each record to the one it replaced and see a fork where two
-writers built on one predecessor, which the plain list could not
-express. `Seq` orders records within one store and promises nothing
+what they read. `Replaced` and `Seq` make the journal a chain: a reader
+follows each record to the one it replaced. `Prev` is the writer's own
+claim about the state it composed from, which is what makes a fork
+visible: a record whose `Prev` is not its `Replaced` is a write built
+on a state another writer had already replaced, and `LostUpdates` lists
+them. A store fills `Prev` from its own value when the caller claims
+none, so an unanchored write is indistinguishable from an ordinary
+edit; `memory_save` therefore names its base with `BasedOn`.
+`Seq` orders records within one store and promises nothing
 across stores. `Journal(after)` is exclusive, so a reader resumes with
 the last `Seq` it saw; `0` reads from the beginning. The session ID is
 carried on the context, `WithSession(ctx, id)`, because one store
@@ -129,13 +142,17 @@ A store has `MaxEntryBytes` (default 4 KiB) and `Render` has
 with the attempted size, the limit and the size the entry holds now,
 so the model is told to split or trim rather than have its write
 silently cut, and the trim is arithmetic rather than a guess. `Render`
-includes entries in index order until the total bound and then lists
-what it left out, so the model knows what it can fetch. The bound is
-rendered as well as enforced: each entry's heading carries its size
-and the limit, and the block's header states the total budget and what
-remains, so the model can see the wall before it hits it. The bound
-counts the content of the included entries; the headings are not
-counted.
+includes entries in index order while they fit, skipping one that does
+not and going on to the next, and lists what it left out, so the model
+knows what it can fetch and one large entry cannot hide the small ones
+after it. The bound is rendered as well as enforced: each entry's
+heading carries its size and the limit, and the block's header states
+the total budget and what remains, so the model can see the wall before
+it hits it. The bound is on the block and not on the content it holds:
+the header, the headings, the descriptions and the list of omissions
+are counted, because the window pays for them, and the header reports
+the block's own size. The manifest's omissions carry the reason, so a
+session can record what the model was not given.
 
 ### The tools
 
@@ -143,8 +160,15 @@ Built with `agenttool.New`, four tools, names prefixed `memory_`:
 
 - `memory_save` takes scope, name, content and optional meta, and
   creates or replaces the whole entry. It returns the stored hash and
-  size. Over-bound content is an error naming the limit and the stored
-  size.
+  size, what it replaced and what became of the metadata. Over-bound
+  content is an error naming the limit and the stored size. The tool
+  reads the entry first: meta left out of the call keeps what the entry
+  has, since a model rewriting the content is not saying to drop the
+  description, and `{}` is how it clears it; and the write is anchored
+  with `BasedOn` in what it read, so the journal shows a save that
+  landed on another channel's write. The merge is the tool's: `Put`
+  stays a replace of the whole entry, or the journal is no longer a
+  list of full states.
 - `memory_patch` takes scope, name, `old_text` and `new_text`, and
   replaces one exact occurrence of `old_text` in the stored content.
   It refuses when `old_text` is absent or appears more than once and
@@ -165,8 +189,20 @@ Built with `agenttool.New`, four tools, names prefixed `memory_`:
   `agentturn/compact` configured.
 
 `Tools(store, scopes)` returns the four restricted to the scopes the
-product allows; a scope outside the list is an error the model sees,
-and a call that omits the scope uses the first one listed.
+product allows. The scopes are in the schema, as an enum on `scope`
+and on the items of `scopes`, built at the `Tools` call because a
+struct tag cannot carry a value chosen there, and `scope` is required
+when there is more than one, so a call that omits it is an error the
+model can read rather than a fact written into the widest scope. With
+one scope the argument may be left out. A scope outside the list is an
+error the model sees; the call-time check stays, since a model may
+ignore the schema.
+
+Each tool returns an `agenttool.Result`. A write sets `Details` to a
+`WriteRecord`, the journal record the write produced, which implements
+`agenttool.Recordable` under `WriteNS`, so a recorder writes it beside
+the call without knowing the type and a session joins to the store's
+journal without re-reading it. The model sees the output line alone.
 
 ### Rendering
 
@@ -178,7 +214,7 @@ func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) 
 // Manifest lists what Render included, for the session's provenance.
 type Manifest struct {
     Entries []ManifestEntry // scope, name, hash, bytes
-    Omitted []ManifestEntry // left out by the total bound, same fields
+    Omitted []ManifestEntry // left out, same fields plus the reason
 }
 ```
 
@@ -195,8 +231,14 @@ reach the instructions and an item it prepends is never recorded, so
 the session then fails `Verify`. A change to memory mid-session shows
 up as a config delta on the next turn, which is the record of what the
 model was reminded of and when. The manifest goes into a `custom`
-entry under `agentmemory:render`; the `env` entry's file hashes cannot
-carry the omitted names, the sizes, or a store without paths.
+entry under `ManifestNS`, which this module exports as
+`agentmemory:render` so a reader recognises it without knowing the
+product, with the bytes from `Manifest.Record`; the `env` entry's file
+hashes cannot carry the omitted names, the sizes, the reasons, or a
+store without paths. A product records it when `Manifest.Hash` has
+moved since the last one it recorded, because the render is a pure
+function of the store and the bounds and most turns repeat it, and an
+annotation is compared with nothing the way a config entry is.
 
 ### `filestore`
 
@@ -217,17 +259,31 @@ The lock is specified, mirroring `agentsession/jsonl`: the file holds
 the holder's PID, host and start time; a writer waits for a live
 holder, bounded by the caller's context and a store-level timeout, and
 then returns a typed `ErrLocked` naming the holder rather than waiting
-forever; a lock whose PID is dead on the same host is taken over; a
-lock from another host is never taken over silently, and `BreakLock`
+forever; a lock whose PID is dead on the same host is taken over,
+exclusively, so that of several writers finding one dead holder's lock
+exactly one removes it and the others wait for the lock it then holds;
+a lock from another host is never taken over silently, and `BreakLock`
 is the deliberate way. That is a second implementation of the same
 lock, tested against the same cases, because this package cannot
 import `agentsession`.
 
 A person's edit to a file is not a `Put` and is not journaled as it
 happens. `Reconcile` compares the files with the journal's last state
-and journals each difference as a change by nobody, `Session` empty,
-so a product that lets people edit the directory runs it before it
-renders.
+and journals each difference as a change by nobody, `Session` empty and
+`Source` `reconciled`, so a product that lets people edit the directory
+runs it before it renders. It reads the journal from a cursor kept
+beside it, `.state.json`, holding the sequence and offset it has read
+to and the content and metadata hashes it knew there, so the cost of a
+turn follows what has happened since the last run and not the store's
+whole history; the file is derived and a missing or damaged one is
+rebuilt from the journal.
+
+Reconcile is not the only half of it. A `Put` reads the stored entry
+under the lock anyway, so it compares it with the cursor and records
+the person's version before writing over it: once the agent has
+written, the file and the journal agree again and no later `Reconcile`
+can tell that anything was there. That is the write that used to leave
+a `Prev` naming a hash no record held.
 
 The directory is a valid `agentskill.Source` in reverse: a person can
 read it, and git can diff it. That is the transparency argument for
@@ -244,8 +300,9 @@ follow, written once here so this plan stands alone:
    hashes. `Manifest` is that for memory.
 3. Recording through entries the session format already has. The
    rendered block is in the instructions and so in config deltas.
-   Writes are function calls. The manifest goes into an `env` entry's
-   file hashes or a `custom` entry under `agentmemory`; nothing is
+   Writes are function calls, each carrying its journal record under
+   `WriteNS` for a recorder that reads `agenttool.Recordable`. The
+   manifest goes into a `custom` entry under `ManifestNS`; nothing is
    added to the RFC.
 
 ## Invariants

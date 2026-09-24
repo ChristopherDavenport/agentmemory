@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/ChristopherDavenport/agentmemory"
@@ -50,7 +52,7 @@ func TestSearchRanking(t *testing.T) {
 		{Scope: "user", Name: "path", Content: "Timezone Europe/London; editor: nvim-qt"},
 	}
 	for _, e := range puts {
-		if err := s.Put(ctx, e); err != nil {
+		if _, err := s.Put(ctx, e); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -77,10 +79,10 @@ func TestSearchRanking(t *testing.T) {
 		}
 	}
 	// The index follows a replace and a tombstone.
-	if err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "focus", Content: "Rust now."}); err != nil {
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "focus", Content: "Rust now."}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Forget(ctx, "user", "mention"); err != nil {
+	if _, err := s.Forget(ctx, "user", "mention"); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.Search(ctx, []agentmemory.Scope{"user"}, "go", 0); len(got) != 0 {
@@ -111,7 +113,7 @@ func names(es []agentmemory.Entry) []string {
 func TestSearchOddQueries(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t, filepath.Join(t.TempDir(), "memory.db"))
-	if err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "a", Content: "C++ and 日本語 notes; see a-b."}); err != nil {
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "a", Content: "C++ and 日本語 notes; see a-b."}); err != nil {
 		t.Fatal(err)
 	}
 	for q, want := range map[string]int{"...": 0, "\"\"": 0, "*": 0, "c++": 1, "日本語": 1, "a-b": 1, "notes;": 1, "AND": 1, "NOT": 1, "(": 0} {
@@ -122,6 +124,59 @@ func TestSearchOddQueries(t *testing.T) {
 		}
 		if len(got) != want {
 			t.Errorf("Search(%q) = %d entries, want %d", q, len(got), want)
+		}
+	}
+}
+
+// TestConcurrentHandlesSequence is the sqlite half of the takeover race
+// filestore's lock had: several handles on one database file, as
+// several processes would have, writing at once. The sequence number is
+// taken inside the immediate transaction that writes the record, and
+// the column is the table's primary key, so two writers cannot compute
+// or store the same one. The journal must hold every write, once, under
+// a contiguous sequence.
+func TestConcurrentHandlesSequence(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "memory.db")
+	const writers, each = 8, 6
+	var wg sync.WaitGroup
+	errs := make(chan error, writers*each)
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			s := openStore(t, path)
+			wctx := agentmemory.WithSession(ctx, fmt.Sprintf("w%d", w))
+			for i := 0; i < each; i++ {
+				if _, err := s.Put(wctx, agentmemory.Entry{
+					Scope: "user", Name: fmt.Sprintf("n-%d-%d", w, i), Content: "x"}); err != nil {
+					errs <- fmt.Errorf("writer %d: %w", w, err)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	s := openStore(t, path)
+	seen := map[uint64]int{}
+	n := 0
+	for c, err := range s.Journal(ctx, 0) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[c.Seq]++
+		n++
+	}
+	if n != writers*each || len(seen) != n {
+		t.Errorf("journal has %d records with %d distinct sequence numbers, want %d of each", n, len(seen), writers*each)
+	}
+	for seq := 1; seq <= n; seq++ {
+		if seen[uint64(seq)] != 1 {
+			t.Errorf("sequence %d appears %d times", seq, seen[uint64(seq)])
 		}
 	}
 }

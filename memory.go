@@ -79,17 +79,46 @@ type Change struct {
 	// Entry is the entry after the change; a tombstone carries the
 	// last content with Deleted set.
 	Entry Entry `json:"entry"`
-	// Prev is the hash of the content the change replaced, "" for a
-	// create. A reader chains records through it and sees a fork where
-	// two writers built on one predecessor.
+	// Prev is the hash of the content the write was built on: the one
+	// the caller anchored it to with [IfHash] or [BasedOn], or, when it
+	// anchored the write to nothing, the hash the store held. "" for a
+	// create, and for a write built on an entry that did not exist.
+	//
+	// It is the writer's claim about what it was editing, which is what
+	// makes a fork visible: two records with one Prev and different
+	// hashes are two writes built on one read, and the later of them
+	// lost the earlier. Chaining is Replaced's job.
 	Prev string `json:"prev,omitempty"`
+	// Replaced is the hash of the content the store held when the
+	// change landed, "" for a create. Records chain through it: the
+	// Replaced of each names the Entry.Hash of the record before it for
+	// that entry, and a record whose Prev is not its Replaced is a write
+	// built on something else. See [LostUpdates].
+	Replaced string `json:"replaced,omitempty"`
 	// Session is the session that wrote the change, from
 	// [WithSession], or "" for a person or an unattributed caller.
 	Session string `json:"session,omitempty"`
+	// Source says where a change the store did not write came from,
+	// "" for a write through the store. [SourceReconciled] is a state
+	// the store found rather than wrote, such as a person's edit to a
+	// file, which a store records so that nothing it overwrites is
+	// lost.
+	Source string `json:"source,omitempty"`
 	// At is when the change was made, for display and the record. It
 	// never orders records; Seq does.
 	At time.Time `json:"at"`
 }
+
+// Sources a change can have beside a write through the store, carried
+// on [Change.Source].
+const (
+	// SourceReconciled is a state the store found in place of the one
+	// it last wrote: a person edited, added or removed an entry outside
+	// the store, and the store recorded what it found before writing
+	// over it. Session is empty on such a record, since nobody in a
+	// session made it.
+	SourceReconciled = "reconciled"
+)
 
 // Store holds entries and the journal of every change to them. Every
 // implementation passes storetest.
@@ -105,11 +134,16 @@ type Store interface {
 	// [ErrTooLarge], and, under [IfHash], a stored hash other than the
 	// one expected with [ErrConflict]. Hash and Updated on e are
 	// ignored and set by the store.
-	Put(ctx context.Context, e Entry, opts ...PutOption) error
+	//
+	// It returns the record it appended, the caller's own copy, so a
+	// write can be recorded beside the call that made it without
+	// reading the journal back. A failed Put returns nil and writes
+	// nothing.
+	Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error)
 	// Forget writes a tombstone: the entry leaves Get and List, and
-	// the journal keeps its last content. A missing entry is
-	// [ErrNotFound].
-	Forget(ctx context.Context, scope Scope, name string) error
+	// the journal keeps its last content, and returns that record. A
+	// missing entry is [ErrNotFound].
+	Forget(ctx context.Context, scope Scope, name string) (*Change, error)
 	// Search returns the live entries of the scopes that match query,
 	// at most limit of them when limit is positive. What matches and
 	// in what order is the store's; the reference stores use [Match]
@@ -137,6 +171,11 @@ type PutOptions struct {
 	// is set, "" meaning the entry must not exist.
 	IfHash      string
 	Conditional bool
+	// Base is the hash the write was built on when the caller named one
+	// through [BasedOn] and HasBase says it did. [IfHash] names one
+	// too, and enforces it.
+	Base    string
+	HasBase bool
 }
 
 // IfHash makes the Put conditional: it fails with [ErrConflict] when
@@ -149,6 +188,24 @@ func IfHash(h string) PutOption {
 	}
 }
 
+// BasedOn records the hash the write was built on without making it a
+// precondition: the Put still lands on whatever the store holds, and
+// the journal record's Prev is h, so a later reader can see that two
+// writes were built on one read and that the second lost the first.
+// A caller that wants the write refused instead uses [IfHash], which
+// records the same base.
+//
+// It is for a writer that reads, composes and writes whole, as
+// memory_save does: an unanchored write leaves nothing to tell a lost
+// update from an ordinary edit, because a store fills Prev from its own
+// value when the caller claims none.
+func BasedOn(h string) PutOption {
+	return func(o *PutOptions) {
+		o.Base = h
+		o.HasBase = true
+	}
+}
+
 // ResolvePutOptions applies the options to a zero PutOptions.
 func ResolvePutOptions(opts ...PutOption) PutOptions {
 	var o PutOptions
@@ -156,6 +213,22 @@ func ResolvePutOptions(opts ...PutOption) PutOptions {
 		opt(&o)
 	}
 	return o
+}
+
+// BaseFor returns the hash a store records as the write's [Change.Prev]:
+// the base the caller named through [IfHash] or [BasedOn], or the hash
+// of the entry the store holds when it named none, "" for a create. A
+// store calls it under its write lock, with the live entry or nil.
+func (o PutOptions) BaseFor(stored *Entry) string {
+	switch {
+	case o.Conditional:
+		return o.IfHash
+	case o.HasBase:
+		return o.Base
+	case stored != nil:
+		return stored.Hash
+	}
+	return ""
 }
 
 // Check reports an [ErrConflict] when the options are conditional and

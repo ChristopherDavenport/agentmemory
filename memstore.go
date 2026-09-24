@@ -83,7 +83,7 @@ func (m *MemStore) listLocked(scope Scope) []Entry {
 }
 
 // Put implements Store.
-func (m *MemStore) Put(ctx context.Context, e Entry, opts ...PutOption) error {
+func (m *MemStore) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error) {
 	o := ResolvePutOptions(opts...)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -92,10 +92,10 @@ func (m *MemStore) Put(ctx context.Context, e Entry, opts ...PutOption) error {
 		stored = &cur
 	}
 	if err := CheckEntry(e, m.max, stored); err != nil {
-		return err
+		return nil, err
 	}
 	if err := o.Check(e.Scope, e.Name, stored); err != nil {
-		return err
+		return nil, err
 	}
 	now := m.now()
 	e = cloneEntry(e)
@@ -106,38 +106,41 @@ func (m *MemStore) Put(ctx context.Context, e Entry, opts ...PutOption) error {
 		m.live[e.Scope] = map[string]Entry{}
 	}
 	m.live[e.Scope][e.Name] = e
-	prev := ""
+	replaced := ""
 	if stored != nil {
-		prev = stored.Hash
+		replaced = stored.Hash
 	}
-	m.appendLocked(ctx, e, prev, now)
-	return nil
+	return m.appendLocked(ctx, e, o.BaseFor(stored), replaced, now), nil
 }
 
 // Forget implements Store.
-func (m *MemStore) Forget(ctx context.Context, scope Scope, name string) error {
+func (m *MemStore) Forget(ctx context.Context, scope Scope, name string) (*Change, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e, ok := m.live[scope][name]
 	if !ok {
-		return fmt.Errorf("%w: %s/%s", ErrNotFound, scope, name)
+		return nil, fmt.Errorf("%w: %s/%s", ErrNotFound, scope, name)
 	}
 	delete(m.live[scope], name)
 	now := m.now()
 	e.Deleted = true
 	e.Updated = now
-	m.appendLocked(ctx, e, e.Hash, now)
-	return nil
+	return m.appendLocked(ctx, e, e.Hash, e.Hash, now), nil
 }
 
-func (m *MemStore) appendLocked(ctx context.Context, e Entry, prev string, at time.Time) {
-	m.journal = append(m.journal, Change{
-		Seq:     uint64(len(m.journal)) + 1,
-		Entry:   cloneEntry(e),
-		Prev:    prev,
-		Session: SessionFrom(ctx),
-		At:      at,
-	})
+// appendLocked adds the record and returns the caller's own copy of it.
+func (m *MemStore) appendLocked(ctx context.Context, e Entry, prev, replaced string, at time.Time) *Change {
+	c := Change{
+		Seq:      uint64(len(m.journal)) + 1,
+		Entry:    cloneEntry(e),
+		Prev:     prev,
+		Replaced: replaced,
+		Session:  SessionFrom(ctx),
+		At:       at,
+	}
+	m.journal = append(m.journal, c)
+	c.Entry = cloneEntry(c.Entry)
+	return &c
 }
 
 // Search implements Store with [Match], listing by scope order then

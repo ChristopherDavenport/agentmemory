@@ -21,7 +21,11 @@ import (
 func TestRunUnderAgentturn(t *testing.T) {
 	ctx := agentmemory.WithSession(context.Background(), "sess-echo")
 	store := agentmemory.NewMemStore()
-	scopes := []agentmemory.Scope{"user", "project"}
+	// One scope, so scope is not a required argument: the echo adapter
+	// fills every required property with the user's text, and a scope
+	// is not a name. The schema a product with several scopes offers is
+	// checked below.
+	scopes := []agentmemory.Scope{"user"}
 	tools := agentmemory.Tools(store, scopes)
 	block, _, err := agentmemory.Render(ctx, store, scopes)
 	if err != nil {
@@ -38,7 +42,7 @@ func TestRunUnderAgentturn(t *testing.T) {
 	}{
 		{agentmemory.SaveTool, "Saved user/favourite-editor (16 of 4096 bytes) ", "No entries."},
 		{agentmemory.PatchTool, "Patched user/favourite-editor (16 of 4096 bytes) ", "### favourite-editor (16 of 4096 bytes)\n\nfavourite-editor\n"},
-		{agentmemory.SearchTool, "1 match in user, project for \"favourite-editor\".\n\nuser/favourite-editor (16 bytes)\nfavourite-editor\n", "Entries: 1 shown, 0 omitted. Used: 16 of 32768 bytes"},
+		{agentmemory.SearchTool, "1 match in user for \"favourite-editor\".\n\nuser/favourite-editor (16 bytes)\nfavourite-editor\n", "Entries: 1 shown, 0 omitted. Block: 172 of 32768 bytes"},
 		{agentmemory.ForgetTool, "Forgot user/favourite-editor", "### favourite-editor"},
 	}
 	for _, step := range steps {
@@ -84,6 +88,20 @@ func TestRunUnderAgentturn(t *testing.T) {
 			if te.Name != step.tool || te.Err != nil {
 				t.Fatalf("ToolEnd = %+v", te)
 			}
+			// A write's result reaches the loop with the journal record
+			// on it, which is what a recorder writes between the
+			// dispatch and the output without knowing the type.
+			rec, err := agenttool.RecordOf(te.Result.Details)
+			if err != nil {
+				t.Fatalf("RecordOf: %v", err)
+			}
+			if step.tool == agentmemory.SearchTool {
+				if rec != nil {
+					t.Errorf("a search recorded %s", rec.Data)
+				}
+			} else if rec == nil || rec.NS != agentmemory.WriteNS || !strings.Contains(string(rec.Data), `"tool":"`+step.tool+`"`) {
+				t.Errorf("%s recorded %+v", step.tool, rec)
+			}
 			if got := te.Result.Output.String(); !strings.HasPrefix(got, step.output) {
 				t.Errorf("tool output = %q, want prefix %q", got, step.output)
 			}
@@ -122,8 +140,22 @@ func TestRunUnderAgentturn(t *testing.T) {
 	if !changes[2].Entry.Deleted || changes[1].Prev != changes[0].Entry.Hash {
 		t.Errorf("journal is not a chain ending in a tombstone: %+v", changes)
 	}
-	// The definitions the model was offered are the four tools.
+	// The definitions the model was offered are the four tools, and
+	// with several scopes each one's schema names them, so the model is
+	// steered by the request rather than by the description alone.
 	if defs := agenttool.Set(tools).Definitions(); len(defs) != 4 {
 		t.Errorf("definitions = %d", len(defs))
+	}
+	for _, def := range agenttool.Set(agentmemory.Tools(store, []agentmemory.Scope{"user", "channel-slack"})).Definitions() {
+		ft, ok := def.(*openresponses.FunctionTool)
+		if !ok {
+			t.Fatalf("definition %T is not a function tool", def)
+		}
+		if !strings.Contains(string(ft.Parameters), `"enum":["user","channel-slack"]`) {
+			t.Errorf("%s schema does not name the scopes: %s", ft.Name, ft.Parameters)
+		}
+		if ft.Name != agentmemory.SearchTool && !strings.Contains(string(ft.Parameters), `"required":["scope"`) {
+			t.Errorf("%s schema does not require the scope: %s", ft.Name, ft.Parameters)
+		}
 	}
 }

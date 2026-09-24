@@ -1,6 +1,6 @@
 # Memory
 
-Entries: 2 shown, 0 omitted. Used: 86 of 32768 bytes (32682 free). Entry limit: 4096 bytes.
+Entries: 2 shown, 0 omitted. Block: 285 of 32768 bytes (32483 free). Entry limit: 4096 bytes.
 
 ## user
 

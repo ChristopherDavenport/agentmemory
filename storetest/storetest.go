@@ -37,6 +37,7 @@ func Run(t *testing.T, opts Options) {
 	t.Run("IfHash", func(t *testing.T) { testIfHash(t, opts) })
 	t.Run("Forget", func(t *testing.T) { testForget(t, opts) })
 	t.Run("Journal", func(t *testing.T) { testJournal(t, opts) })
+	t.Run("LostUpdates", func(t *testing.T) { testLostUpdates(t, opts) })
 	t.Run("Search", func(t *testing.T) { testSearch(t, opts) })
 	t.Run("Concurrent", func(t *testing.T) { testConcurrent(t, opts) })
 	if opts.Reopen != nil {
@@ -70,7 +71,7 @@ func testValidation(t *testing.T, opts Options) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := st.Put(ctx, tt.e); !errors.Is(err, agentmemory.ErrInvalid) {
+			if _, err := st.Put(ctx, tt.e); !errors.Is(err, agentmemory.ErrInvalid) {
 				t.Errorf("Put = %v, want ErrInvalid", err)
 			}
 		})
@@ -94,17 +95,17 @@ func testPutGetList(t *testing.T, opts Options) {
 		t.Errorf("List(unknown scope) = %v, %v; want none, nil", es, err)
 	}
 	style := agentmemory.Entry{Scope: "user", Name: "style", Content: "Short answers.\n", Meta: map[string]string{"description": "How to answer", "type": "feedback"}}
-	if err := st.Put(ctx, style); err != nil {
+	if _, err := st.Put(ctx, style); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	// Content round-trips byte for byte: no trailing newline, unicode,
 	// leading whitespace, a line that looks like frontmatter.
 	odd := agentmemory.Entry{Scope: "user", Name: "odd", Content: "  ---\nname: not-meta\n---\nsüß ✓ 日本"}
-	if err := st.Put(ctx, odd); err != nil {
+	if _, err := st.Put(ctx, odd); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	proj := agentmemory.Entry{Scope: "project", Name: "build", Content: "make check"}
-	if err := st.Put(ctx, proj); err != nil {
+	if _, err := st.Put(ctx, proj); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	got, err := st.Get(ctx, "user", "style")
@@ -143,7 +144,7 @@ func testPutGetList(t *testing.T, opts Options) {
 	// Put replaces content and meta together.
 	style.Content = "Long answers.\n"
 	style.Meta = map[string]string{"type": "feedback"}
-	if err := st.Put(ctx, style); err != nil {
+	if _, err := st.Put(ctx, style); err != nil {
 		t.Fatalf("Put(replace): %v", err)
 	}
 	got, err = st.Get(ctx, "user", "style")
@@ -159,7 +160,7 @@ func testPutGetList(t *testing.T, opts Options) {
 		t.Error("a caller's edit to a returned meta map reached the store")
 	}
 	// An empty meta map stores as none.
-	if err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "bare", Content: "x", Meta: map[string]string{}}); err != nil {
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "bare", Content: "x", Meta: map[string]string{}}); err != nil {
 		t.Fatal(err)
 	}
 	if bare, _ := st.Get(ctx, "user", "bare"); bare.Meta != nil {
@@ -175,12 +176,15 @@ func testBounds(t *testing.T, opts Options) {
 		t.Fatalf("MaxEntryBytes = %d; the suite needs at least 256", limit)
 	}
 	at := agentmemory.Entry{Scope: "user", Name: "at", Content: strings.Repeat("a", limit)}
-	if err := st.Put(ctx, at); err != nil {
+	if _, err := st.Put(ctx, at); err != nil {
 		t.Fatalf("Put at the bound: %v", err)
 	}
 	// A create over the bound reports no stored size.
 	over := agentmemory.Entry{Scope: "user", Name: "over", Content: strings.Repeat("b", limit+1)}
-	err := st.Put(ctx, over)
+	rec, err := st.Put(ctx, over)
+	if rec != nil {
+		t.Errorf("a refused Put returned a record: %+v", rec)
+	}
 	var se *agentmemory.SizeError
 	if !errors.Is(err, agentmemory.ErrTooLarge) || !errors.As(err, &se) {
 		t.Fatalf("Put over the bound = %v, want SizeError", err)
@@ -193,11 +197,11 @@ func testBounds(t *testing.T, opts Options) {
 	}
 	// A replace over the bound reports what the entry holds now.
 	small := agentmemory.Entry{Scope: "user", Name: "small", Content: "ten bytes!"}
-	if err := st.Put(ctx, small); err != nil {
+	if _, err := st.Put(ctx, small); err != nil {
 		t.Fatal(err)
 	}
 	small.Content = strings.Repeat("c", limit+7)
-	err = st.Put(ctx, small)
+	_, err = st.Put(ctx, small)
 	if !errors.As(err, &se) {
 		t.Fatalf("Put over the bound = %v, want SizeError", err)
 	}
@@ -221,12 +225,12 @@ func testIfHash(t *testing.T, opts Options) {
 	st := opts.New(t)
 	e := agentmemory.Entry{Scope: "user", Name: "profile", Content: "Chris."}
 	// A create that must not exist.
-	if err := st.Put(ctx, e, agentmemory.IfHash("")); err != nil {
+	if _, err := st.Put(ctx, e, agentmemory.IfHash("")); err != nil {
 		t.Fatalf("Put(IfHash \"\") on a new entry: %v", err)
 	}
 	h1 := agentmemory.Hash(e.Content)
 	var ce *agentmemory.ConflictError
-	err := st.Put(ctx, e, agentmemory.IfHash(""))
+	_, err := st.Put(ctx, e, agentmemory.IfHash(""))
 	if !errors.Is(err, agentmemory.ErrConflict) || !errors.As(err, &ce) {
 		t.Fatalf("Put(IfHash \"\") on an existing entry = %v, want ConflictError", err)
 	}
@@ -235,7 +239,7 @@ func testIfHash(t *testing.T, opts Options) {
 	}
 	// A wrong hash.
 	e.Content = "Chris. Prefers Go."
-	err = st.Put(ctx, e, agentmemory.IfHash(agentmemory.Hash("stale")))
+	_, err = st.Put(ctx, e, agentmemory.IfHash(agentmemory.Hash("stale")))
 	if !errors.As(err, &ce) || ce.Have != h1 || ce.Want != agentmemory.Hash("stale") {
 		t.Fatalf("Put(IfHash stale) = %v", err)
 	}
@@ -243,25 +247,25 @@ func testIfHash(t *testing.T, opts Options) {
 		t.Errorf("a refused conditional Put changed the entry: %q", got.Content)
 	}
 	// The right hash.
-	if err := st.Put(ctx, e, agentmemory.IfHash(h1)); err != nil {
+	if _, err := st.Put(ctx, e, agentmemory.IfHash(h1)); err != nil {
 		t.Fatalf("Put(IfHash right) = %v", err)
 	}
 	h2 := agentmemory.Hash(e.Content)
 	// A missing entry with a hash expected.
-	if err := st.Forget(ctx, "user", "profile"); err != nil {
+	if _, err := st.Forget(ctx, "user", "profile"); err != nil {
 		t.Fatal(err)
 	}
-	err = st.Put(ctx, e, agentmemory.IfHash(h2))
+	_, err = st.Put(ctx, e, agentmemory.IfHash(h2))
 	if !errors.As(err, &ce) || ce.Have != "" || ce.Want != h2 {
 		t.Fatalf("Put(IfHash) on a forgotten entry = %v", err)
 	}
 	// And after a tombstone the entry may be created again.
-	if err := st.Put(ctx, e, agentmemory.IfHash("")); err != nil {
+	if _, err := st.Put(ctx, e, agentmemory.IfHash("")); err != nil {
 		t.Fatalf("Put(IfHash \"\") after Forget: %v", err)
 	}
 	// The precondition does not bypass validation.
 	bad := agentmemory.Entry{Scope: "user", Name: "Bad", Content: "x"}
-	if err := st.Put(ctx, bad, agentmemory.IfHash("")); !errors.Is(err, agentmemory.ErrInvalid) {
+	if _, err := st.Put(ctx, bad, agentmemory.IfHash("")); !errors.Is(err, agentmemory.ErrInvalid) {
 		t.Errorf("Put(invalid, IfHash) = %v, want ErrInvalid", err)
 	}
 	if n := count(t, st, 0); n != 4 {
@@ -272,18 +276,22 @@ func testIfHash(t *testing.T, opts Options) {
 func testForget(t *testing.T, opts Options) {
 	ctx := context.Background()
 	st := opts.New(t)
-	if err := st.Forget(ctx, "user", "missing"); !errors.Is(err, agentmemory.ErrNotFound) {
-		t.Errorf("Forget(missing) = %v, want ErrNotFound", err)
+	if rec, err := st.Forget(ctx, "user", "missing"); !errors.Is(err, agentmemory.ErrNotFound) || rec != nil {
+		t.Errorf("Forget(missing) = %+v, %v, want nil, ErrNotFound", rec, err)
 	}
 	e := agentmemory.Entry{Scope: "user", Name: "tz", Content: "Europe/London", Meta: map[string]string{"description": "Timezone"}}
-	if err := st.Put(ctx, e); err != nil {
+	if _, err := st.Put(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "keep", Content: "kept"}); err != nil {
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "keep", Content: "kept"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Forget(agentmemory.WithSession(ctx, "sess-f"), "user", "tz"); err != nil {
+	tombRec, err := st.Forget(agentmemory.WithSession(ctx, "sess-f"), "user", "tz")
+	if err != nil {
 		t.Fatalf("Forget: %v", err)
+	}
+	if tombRec == nil || !tombRec.Entry.Deleted || tombRec.Seq != 3 || tombRec.Session != "sess-f" {
+		t.Errorf("Forget returned %+v", tombRec)
 	}
 	if _, err := st.Get(ctx, "user", "tz"); !errors.Is(err, agentmemory.ErrNotFound) {
 		t.Errorf("Get after Forget = %v, want ErrNotFound", err)
@@ -291,7 +299,7 @@ func testForget(t *testing.T, opts Options) {
 	if es, _ := st.List(ctx, "user"); names(es) != "keep" {
 		t.Errorf("List after Forget = %s, want keep", names(es))
 	}
-	if err := st.Forget(ctx, "user", "tz"); !errors.Is(err, agentmemory.ErrNotFound) {
+	if _, err := st.Forget(ctx, "user", "tz"); !errors.Is(err, agentmemory.ErrNotFound) {
 		t.Errorf("second Forget = %v, want ErrNotFound", err)
 	}
 	if found, _ := st.Search(ctx, []agentmemory.Scope{"user"}, "London", 0); len(found) != 0 {
@@ -304,14 +312,15 @@ func testForget(t *testing.T, opts Options) {
 	}
 	tomb := changes[2]
 	if !tomb.Entry.Deleted || tomb.Entry.Content != "Europe/London" || tomb.Entry.Hash != agentmemory.Hash("Europe/London") ||
-		tomb.Prev != tomb.Entry.Hash || tomb.Session != "sess-f" || tomb.Entry.Description() != "Timezone" || tomb.Entry.Updated.IsZero() {
+		tomb.Prev != tomb.Entry.Hash || tomb.Replaced != tomb.Entry.Hash || tomb.Session != "sess-f" ||
+		tomb.Entry.Description() != "Timezone" || tomb.Entry.Updated.IsZero() {
 		t.Errorf("tombstone = %+v", tomb)
 	}
 	// Recreating after a tombstone is a create: Prev is empty.
-	if err := st.Put(ctx, e); err != nil {
+	if _, err := st.Put(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	if changes := collect(t, st, 3); len(changes) != 1 || changes[0].Prev != "" || changes[0].Entry.Deleted {
+	if changes := collect(t, st, 3); len(changes) != 1 || changes[0].Prev != "" || changes[0].Replaced != "" || changes[0].Entry.Deleted {
 		t.Errorf("record after recreate = %+v", changes)
 	}
 }
@@ -335,12 +344,41 @@ func testJournal(t *testing.T, opts Options) {
 		{ctx, agentmemory.Entry{Scope: "project", Name: "one", Content: "p1"}, ""},
 		{a, agentmemory.Entry{Scope: "user", Name: "one", Content: "1c", Meta: map[string]string{"k": "v"}}, agentmemory.Hash("1b")},
 	}
+	// Every step is an unconditional write, so each record's base is
+	// the hash the store held, which is also what it replaced.
+	returned := make([]agentmemory.Change, 0, len(steps))
 	for i, s := range steps {
-		if err := st.Put(s.ctx, s.e); err != nil {
+		rec, err := st.Put(s.ctx, s.e)
+		if err != nil {
 			t.Fatalf("step %d: %v", i, err)
 		}
+		if rec == nil {
+			t.Fatalf("step %d: Put returned no record", i)
+		}
+		returned = append(returned, *rec)
 	}
 	changes := collect(t, st, 0)
+	// What Put returned is what the journal holds, so a caller can
+	// record a write without reading the journal back.
+	if len(returned) != len(changes) {
+		t.Fatalf("Put returned %d records, the journal holds %d", len(returned), len(changes))
+	}
+	for i := range changes {
+		r, c := returned[i], changes[i]
+		if r.Seq != c.Seq || r.Prev != c.Prev || r.Replaced != c.Replaced || r.Session != c.Session ||
+			!r.At.Equal(c.At) || !sameEntry(r.Entry, c.Entry) || r.Entry.Hash != c.Entry.Hash || r.Entry.Deleted != c.Entry.Deleted {
+			t.Errorf("record %d: Put returned %+v, the journal holds %+v", i, r, c)
+		}
+	}
+	// And the record is the caller's own.
+	if returned[0].Entry.Meta == nil {
+		returned[0].Entry.Meta = map[string]string{}
+	}
+	returned[0].Entry.Content = "changed"
+	returned[0].Entry.Meta["k"] = "changed"
+	if again := collect(t, st, 0)[0]; again.Entry.Content != changes[0].Entry.Content || again.Entry.Meta["k"] != "" {
+		t.Error("a caller's edit to the record Put returned reached the store")
+	}
 	if len(changes) != len(steps) {
 		t.Fatalf("journal = %d records, want %d", len(changes), len(steps))
 	}
@@ -358,11 +396,17 @@ func testJournal(t *testing.T, opts Options) {
 		if c.Prev != s.prev {
 			t.Errorf("record %d: Prev = %q, want %q", i, c.Prev, s.prev)
 		}
+		if c.Replaced != s.prev {
+			t.Errorf("record %d: Replaced = %q, want %q", i, c.Replaced, s.prev)
+		}
 		if c.Session != agentmemory.SessionFrom(s.ctx) {
 			t.Errorf("record %d: Session = %q, want %q", i, c.Session, agentmemory.SessionFrom(s.ctx))
 		}
 		if c.At.IsZero() {
 			t.Errorf("record %d: At is zero", i)
+		}
+		if c.Source != "" {
+			t.Errorf("record %d: Source = %q; a write through the store has none", i, c.Source)
 		}
 		if i > 0 && c.At.Before(changes[i-1].At) {
 			t.Errorf("record %d: At %v before record %d: %v", i, c.At, i-1, changes[i-1].At)
@@ -413,7 +457,7 @@ func testSearch(t *testing.T, opts Options) {
 		{Scope: "hidden", Name: "secret", Content: "Go is also mentioned here."},
 	}
 	for _, e := range puts {
-		if err := st.Put(ctx, e); err != nil {
+		if _, err := st.Put(ctx, e); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -470,7 +514,7 @@ func testConcurrent(t *testing.T, opts Options) {
 	ctx := context.Background()
 	st := opts.New(t)
 	const writers, each = 4, 8
-	if err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "shared", Content: "facts:"}); err != nil {
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "shared", Content: "facts:"}); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
@@ -482,7 +526,7 @@ func testConcurrent(t *testing.T, opts Options) {
 			wctx := agentmemory.WithSession(ctx, fmt.Sprintf("sess-%d", w))
 			for i := 0; i < each; i++ {
 				e := agentmemory.Entry{Scope: "user", Name: fmt.Sprintf("w%d-n%d", w, i), Content: fmt.Sprintf("writer %d entry %d", w, i)}
-				if err := st.Put(wctx, e); err != nil {
+				if _, err := st.Put(wctx, e); err != nil {
 					errs <- err
 					return
 				}
@@ -522,8 +566,11 @@ func testConcurrent(t *testing.T, opts Options) {
 			t.Errorf("record %d: Seq = %d", i, c.Seq)
 		}
 		key := string(c.Entry.Scope) + "/" + c.Entry.Name
-		if c.Prev != last[key] {
-			t.Errorf("record %d (%s): Prev = %q, want %q; the journal is not a chain", i, key, c.Prev, last[key])
+		if c.Replaced != last[key] {
+			t.Errorf("record %d (%s): Replaced = %q, want %q; the journal is not a chain", i, key, c.Replaced, last[key])
+		}
+		if c.Prev != c.Replaced {
+			t.Errorf("record %d (%s): Prev = %q over %q; every write here was anchored in what it read", i, key, c.Prev, c.Replaced)
 		}
 		last[key] = c.Entry.Hash
 	}
@@ -543,13 +590,102 @@ func appendFact(ctx context.Context, st agentmemory.Store, fact string) error {
 		}
 		next := *cur
 		next.Content = cur.Content + fact
-		err = st.Put(ctx, next, agentmemory.IfHash(cur.Hash))
+		_, err = st.Put(ctx, next, agentmemory.IfHash(cur.Hash))
 		if err == nil {
 			return nil
 		}
 		if !errors.Is(err, agentmemory.ErrConflict) || attempt == 200 {
 			return err
 		}
+	}
+}
+
+// testLostUpdates runs the race the journal carries a base hash for:
+// two sessions read one entry and each writes the whole thing back. The
+// second write lands on a state it never saw, and its record says so,
+// because it names the hash it was built on rather than the one it
+// found. An anchored write that was not overtaken says nothing.
+func testLostUpdates(t *testing.T, opts Options) {
+	ctx := context.Background()
+	st := opts.New(t)
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "profile", Content: "Chris."}); err != nil {
+		t.Fatal(err)
+	}
+	read, err := st.Get(ctx, "user", "profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both sessions composed their content from this one read.
+	slack := *read
+	slack.Content = "Chris. Lives in Bristol."
+	if _, err := st.Put(agentmemory.WithSession(ctx, "slack"), slack, agentmemory.BasedOn(read.Hash)); err != nil {
+		t.Fatal(err)
+	}
+	telegram := *read
+	telegram.Content = "Chris. Prefers Go."
+	if _, err := st.Put(agentmemory.WithSession(ctx, "telegram"), telegram, agentmemory.BasedOn(read.Hash)); err != nil {
+		t.Fatal(err)
+	}
+	lost, err := agentmemory.LostUpdates(ctx, st, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lost) != 1 {
+		t.Fatalf("LostUpdates = %+v, want the second write alone", lost)
+	}
+	got := lost[0]
+	if got.Change.Seq != 3 || got.Change.Session != "telegram" ||
+		got.Change.Prev != read.Hash || got.Change.Replaced != agentmemory.Hash(slack.Content) ||
+		got.Over != agentmemory.Hash(slack.Content) {
+		t.Errorf("LostUpdates[0] = %+v", got)
+	}
+	// The cursor is the journal's: read from after the record that
+	// established the entry's state and there is no predecessor to
+	// compare with, so nothing is reported.
+	if from2, err := agentmemory.LostUpdates(ctx, st, 2); err != nil || len(from2) != 0 {
+		t.Errorf("LostUpdates(after 2) = %+v, %v", from2, err)
+	}
+	// An anchored write over the current state, a conditional one, an
+	// unconditional one and a tombstone are all clean.
+	st2 := opts.New(t)
+	e := agentmemory.Entry{Scope: "user", Name: "profile", Content: "one"}
+	if _, err := st2.Put(ctx, e, agentmemory.IfHash("")); err != nil {
+		t.Fatal(err)
+	}
+	e.Content = "two"
+	if _, err := st2.Put(ctx, e, agentmemory.IfHash(agentmemory.Hash("one"))); err != nil {
+		t.Fatal(err)
+	}
+	e.Content = "three"
+	if _, err := st2.Put(ctx, e, agentmemory.BasedOn(agentmemory.Hash("two"))); err != nil {
+		t.Fatal(err)
+	}
+	e.Content = "four"
+	if _, err := st2.Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st2.Forget(ctx, "user", "profile"); err != nil {
+		t.Fatal(err)
+	}
+	e.Content = "again"
+	if _, err := st2.Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if clean, err := agentmemory.LostUpdates(ctx, st2, 0); err != nil || len(clean) != 0 {
+		t.Errorf("LostUpdates over an anchored journal = %+v, %v", clean, err)
+	}
+	// A write anchored in a hash the journal never held is reported
+	// too: the entry changed outside the journal.
+	if _, err := st2.Put(ctx, e, agentmemory.BasedOn(agentmemory.Hash("by hand"))); err != nil {
+		t.Fatal(err)
+	}
+	outside, err := agentmemory.LostUpdates(ctx, st2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outside) != 1 || outside[0].Change.Prev != agentmemory.Hash("by hand") ||
+		outside[0].Over != agentmemory.Hash("again") || outside[0].Change.Replaced != agentmemory.Hash("again") {
+		t.Errorf("LostUpdates over an edit from outside = %+v", outside)
 	}
 }
 
@@ -564,11 +700,11 @@ func testPersistence(t *testing.T, opts Options) {
 		{Scope: "project", Name: "build", Content: "make check"},
 	}
 	for _, e := range puts {
-		if err := st.Put(a, e); err != nil {
+		if _, err := st.Put(a, e); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := st.Forget(a, "user", "gone"); err != nil {
+	if _, err := st.Forget(a, "user", "gone"); err != nil {
 		t.Fatal(err)
 	}
 	before := collect(t, st, 0)
@@ -607,7 +743,7 @@ func testPersistence(t *testing.T, opts Options) {
 	}
 	// Writing through the second handle continues the sequence, and
 	// the first handle sees it.
-	if err := st2.Put(ctx, agentmemory.Entry{Scope: "user", Name: "more", Content: "more"}); err != nil {
+	if _, err := st2.Put(ctx, agentmemory.Entry{Scope: "user", Name: "more", Content: "more"}); err != nil {
 		t.Fatal(err)
 	}
 	if more := collect(t, st, uint64(len(before))); len(more) != 1 || more[0].Seq != uint64(len(before))+1 {

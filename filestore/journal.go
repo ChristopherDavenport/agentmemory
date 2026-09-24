@@ -17,16 +17,17 @@ import (
 // root so one sequence orders every scope.
 const journalName = "journal.jsonl"
 
-// appendJournal writes one record. The caller holds the lock and has
-// set Seq from [lastSeq].
-func (s *Store) appendJournal(c agentmemory.Change) error {
+// appendJournal writes one record and returns the journal's size after
+// it, which is where the next record starts. The caller holds the lock
+// and has set Seq from [lastSeq].
+func (s *Store) appendJournal(c agentmemory.Change) (int64, error) {
 	line, err := json.Marshal(c)
 	if err != nil {
-		return fmt.Errorf("filestore: encode journal record: %w", err)
+		return 0, fmt.Errorf("filestore: encode journal record: %w", err)
 	}
 	f, err := os.OpenFile(s.journalPath(), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
-		return fmt.Errorf("filestore: open journal: %w", err)
+		return 0, fmt.Errorf("filestore: open journal: %w", err)
 	}
 	// A write that was cut off leaves a partial last line. Terminate
 	// it first, so it stays one damaged line that readers report and
@@ -41,14 +42,48 @@ func (s *Store) appendJournal(c agentmemory.Change) error {
 	if werr == nil {
 		werr = f.Sync()
 	}
+	var end int64
+	if werr == nil {
+		if info, serr := f.Stat(); serr == nil {
+			end = info.Size()
+		} else {
+			werr = serr
+		}
+	}
 	if cerr := f.Close(); werr == nil {
 		werr = cerr
 	}
 	if werr != nil {
-		return fmt.Errorf("filestore: append journal: %w", werr)
+		return 0, fmt.Errorf("filestore: append journal: %w", werr)
 	}
-	return nil
+	return end, nil
 }
+
+// headLine returns the journal's first line, up to the first newline
+// and at most headLimit bytes, which identifies the file a cursor's
+// offsets belong to. A journal replaced by another of the same length
+// or longer would otherwise be resumed at an offset that is not where
+// a record starts.
+func (s *Store) headLine() ([]byte, error) {
+	f, err := os.Open(s.journalPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("filestore: open journal: %w", err)
+	}
+	defer f.Close()
+	line, err := bufio.NewReader(io.LimitReader(f, headLimit)).ReadBytes('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("filestore: read journal: %w", err)
+	}
+	return line, nil
+}
+
+// headLimit bounds the first line a cursor is identified by, so a
+// journal whose first record is enormous is read in part rather than
+// whole.
+const headLimit = 64 << 10
 
 // lastSeq returns the Seq of the journal's last record, or 0 for no
 // journal. It reads the file's tail rather than the whole file, since
@@ -117,44 +152,78 @@ func lastLine(f *os.File) ([]byte, error) {
 // reported through fn as an error, with a zero Change, and reading
 // continues if fn returns true.
 func (s *Store) readJournal(after uint64, fn func(agentmemory.Change, error) bool) {
+	_, err := s.scanJournal(0, func(c agentmemory.Change, err error) bool {
+		if err != nil || c.Seq > after {
+			return fn(c, err)
+		}
+		return true
+	})
+	if err != nil {
+		fn(agentmemory.Change{}, err)
+	}
+}
+
+// scanJournal calls fn with each record from the byte offset off,
+// which must be where a line starts, and returns the offset after the
+// last complete line, so a reader that keeps it resumes there rather
+// than reading the journal again. An offset past the end of the
+// journal, from a file that was replaced or truncated, reads nothing
+// and returns the size, which the caller compares with the offset it
+// held. A line that is not a record is reported through fn as an
+// error, with a zero Change, and reading continues if fn returns true.
+func (s *Store) scanJournal(off int64, fn func(agentmemory.Change, error) bool) (int64, error) {
 	f, err := os.Open(s.journalPath())
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			fn(agentmemory.Change{}, fmt.Errorf("filestore: open journal: %w", err))
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
 		}
-		return
+		return off, fmt.Errorf("filestore: open journal: %w", err)
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return off, fmt.Errorf("filestore: read journal: %w", err)
+	}
+	if off > info.Size() {
+		return info.Size(), nil
+	}
+	if off > 0 {
+		if _, err := f.Seek(off, io.SeekStart); err != nil {
+			return off, fmt.Errorf("filestore: read journal: %w", err)
+		}
+	}
+	end := off
 	r := bufio.NewReader(f)
 	for lineNo := 1; ; lineNo++ {
 		line, err := r.ReadBytes('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
 			fn(agentmemory.Change{}, fmt.Errorf("filestore: read journal: %w", err))
-			return
+			return end, nil
 		}
 		if len(line) > 0 && line[len(line)-1] == '\n' {
+			end += int64(len(line))
 			line = line[:len(line)-1]
 		} else if errors.Is(err, io.EOF) {
 			// A partial last line is a write that was cut off; the
 			// record before it is the journal's last.
-			return
+			return end, nil
 		}
 		if len(bytes.TrimSpace(line)) == 0 {
 			if errors.Is(err, io.EOF) {
-				return
+				return end, nil
 			}
 			continue
 		}
 		var c agentmemory.Change
 		if uerr := json.Unmarshal(line, &c); uerr != nil {
 			if !fn(agentmemory.Change{}, fmt.Errorf("filestore: journal line %d: %w", lineNo, uerr)) {
-				return
+				return end, nil
 			}
-		} else if c.Seq > after && !fn(c, nil) {
-			return
+		} else if !fn(c, nil) {
+			return end, nil
 		}
 		if errors.Is(err, io.EOF) {
-			return
+			return end, nil
 		}
 	}
 }

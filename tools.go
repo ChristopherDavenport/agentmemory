@@ -2,8 +2,11 @@ package agentmemory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/ChristopherDavenport/agenttool"
@@ -33,6 +36,32 @@ const (
 // an edit whose conditional write lost to another writer.
 const patchAttempts = 4
 
+// WriteNS is the namespace a memory write is recorded under, so a
+// reader of a session recognises one without knowing the product that
+// wrote it. It is [WriteRecord]'s [agenttool.Recordable] namespace.
+const WriteNS = "agentmemory:write"
+
+// WriteRecord is what a memory tool knows and the line it returns to
+// the model does not: the journal record the write produced, with the
+// sequence number it took, the hashes it was built on and replaced, and
+// the session it was attributed to. The tools set it as the Details of
+// their [agenttool.Result], where it is never sent to the model, and a
+// recorder that does not know the type writes it beside the call as a
+// namespaced entry, which is what joins a session to the store's
+// journal without re-reading a journal that may since have been
+// compacted or moved.
+type WriteRecord struct {
+	// Tool is the tool that made the write.
+	Tool string `json:"tool"`
+	// Change is the record the store appended.
+	Change Change `json:"change"`
+}
+
+// RecordNS implements [agenttool.Recordable].
+func (WriteRecord) RecordNS() string { return WriteNS }
+
+var _ agenttool.Recordable = WriteRecord{}
+
 // ToolOption configures [Tools].
 type ToolOption func(*toolOptions)
 
@@ -56,39 +85,43 @@ func WithSearchBytes(n int) ToolOption {
 }
 
 type saveArgs struct {
-	Scope   string            `json:"scope,omitempty" desc:"Which memory the entry belongs to; see the tool description for the choices and the default"`
+	Scope   string            `json:"scope,omitempty" desc:"Which memory the entry belongs to"`
 	Name    string            `json:"name" desc:"Kebab-case name, unique within the scope: lowercase letters, digits and hyphens"`
 	Content string            `json:"content" desc:"The whole content of the entry, Markdown"`
-	Meta    map[string]string `json:"meta,omitempty" desc:"Metadata beside the content: a description is shown in the block and the index; keys are kebab-case, values one line"`
+	Meta    map[string]string `json:"meta,omitempty" desc:"Metadata beside the content: a description is shown in the block and the index; keys are kebab-case, values one line. Omit it to keep the metadata the entry has; give {} to clear it"`
 }
 
 type patchArgs struct {
-	Scope   string `json:"scope,omitempty" desc:"Which memory the entry belongs to; see the tool description for the choices and the default"`
+	Scope   string `json:"scope,omitempty" desc:"Which memory the entry belongs to"`
 	Name    string `json:"name" desc:"The entry to edit"`
 	OldText string `json:"old_text" desc:"Text that appears exactly once in the entry, copied exactly"`
 	NewText string `json:"new_text" desc:"What replaces it; empty removes it"`
 }
 
 type forgetArgs struct {
-	Scope string `json:"scope,omitempty" desc:"Which memory the entry belongs to; see the tool description for the choices and the default"`
+	Scope string `json:"scope,omitempty" desc:"Which memory the entry belongs to"`
 	Name  string `json:"name" desc:"The entry to remove"`
 }
 
 type searchArgs struct {
 	Query  string   `json:"query" desc:"Words that must all appear in an entry's name, description or content, in any case"`
-	Scopes []string `json:"scopes,omitempty" desc:"Which memories to search; all of them when omitted"`
+	Scopes []string `json:"scopes,omitempty" desc:"Which memories to search; all the ones this tool can reach when omitted"`
 	Limit  int      `json:"limit,omitempty" desc:"At most this many entries; keep it low, results stay in the conversation"`
 }
 
 // Tools returns the four tools through which the model reaches store,
 // restricted to the scopes the product allows: memory_save,
 // memory_patch, memory_forget and memory_search. A call that names a
-// scope outside the list is an error the model sees; a call that
-// omits the scope uses the first. Every write is a function call in
+// scope outside the list is an error the model sees, and the list is
+// in the schema as an enum, not only in the description; a call that
+// omits the scope is an error too, unless the product allows one scope
+// and there is nothing to choose. Every write is a function call in
 // the transcript, and the store's journal records it under the
-// session on the context, see [WithSession]. Tools panics with no
-// scopes, since a tool set that can reach nothing is a programming
-// error.
+// session on the context, see [WithSession]. A write's result carries
+// that journal record as [WriteRecord] in its Details, which a
+// recorder writes beside the call under [WriteNS] and the model never
+// sees. Tools panics with no scopes, since a tool set that can reach
+// nothing is a programming error.
 func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	if len(scopes) == 0 {
 		panic("agentmemory.Tools: no scopes")
@@ -110,11 +143,91 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	}
 	t := &toolset{store: store, scopes: scopes, opts: o}
 	return []agenttool.Tool{
-		agenttool.New(SaveTool, t.saveDescription(), t.save),
-		agenttool.New(PatchTool, t.patchDescription(), t.patch),
-		agenttool.New(ForgetTool, t.forgetDescription(), t.forget),
-		agenttool.New(SearchTool, t.searchDescription(), t.search),
+		tool(SaveTool, t.saveDescription(), t.save, scopes),
+		tool(PatchTool, t.patchDescription(), t.patch, scopes),
+		tool(ForgetTool, t.forgetDescription(), t.forget, scopes),
+		tool(SearchTool, t.searchDescription(), t.search, scopes),
 	}
+}
+
+// tool builds one memory tool over a schema that names the scopes, and
+// checks a call against that schema before it runs.
+func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes []Scope) agenttool.Tool {
+	tree, schema := scopeSchema[Args](scopes)
+	return checked{
+		Tool: agenttool.New(name, description, fn, agenttool.WithParameters(schema)),
+		tree: tree,
+	}
+}
+
+// checked is a tool that validates a call's arguments against its own
+// schema. agenttool validates against the schema it reflected, and
+// skips it for a schema given through WithParameters, since it cannot
+// know what that schema promises; these tools build their own schema
+// to name the scopes, so they check it themselves. Without it every
+// required property and every enum is advice: a memory_patch that
+// omits new_text would decode to the empty string and delete old_text
+// rather than come back as an error the model can read.
+type checked struct {
+	agenttool.Tool
+	tree *agenttool.Schema
+}
+
+func (c checked) Execute(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+	if err := c.tree.ValidateJSON(call.Args); err != nil {
+		return agenttool.Result{}, err
+	}
+	return c.Tool.Execute(ctx, call)
+}
+
+// Strict and Sequential keep the wrapped tool's answers, which an
+// embedded interface does not promote.
+func (c checked) Strict() bool     { return agenttool.IsStrict(c.Tool) }
+func (c checked) Sequential() bool { return agenttool.IsSequential(c.Tool) }
+
+// scopeSchema reflects an argument type and writes the scopes a
+// product allows into the schema: an enum on scope, and on the items of
+// scopes, so the model is steered by what it is sent rather than by
+// prose it may not follow, and scope required when there is more than
+// one, so a call that omits it is an error it can read rather than a
+// write into whichever scope happens to be first. The schema is built
+// here because the allowed scopes are chosen at this call and a struct
+// tag cannot carry them.
+//
+// It returns the tree as well as the JSON, because a schema given
+// through WithParameters is not one agenttool validates against: the
+// tools check it themselves, see [checked]. The call-time check in
+// scope stays too, for a caller that reaches a tool function another
+// way.
+func scopeSchema[Args any](scopes []Scope) (*agenttool.Schema, json.RawMessage) {
+	var zero Args
+	tree, err := agenttool.Reflect(reflect.TypeOf(&zero).Elem())
+	if err != nil {
+		panic(fmt.Sprintf("agentmemory.Tools: %v", err))
+	}
+	values := make([]any, 0, len(scopes))
+	for _, s := range scopes {
+		values = append(values, string(s))
+	}
+	for _, p := range tree.Properties {
+		switch p.Name {
+		case "scope":
+			p.Schema.Enum = values
+			if len(scopes) > 1 {
+				p.Schema.Description = "Which memory the entry belongs to; name one of the values"
+				tree.Required = append([]string{"scope"}, tree.Required...)
+			}
+		case "scopes":
+			if p.Schema.Items != nil {
+				p.Schema.Items.Enum = values
+			}
+		}
+	}
+	data, err := json.Marshal(tree)
+	if err != nil {
+		panic(fmt.Sprintf("agentmemory.Tools: %v", err))
+	}
+	return tree, data
 }
 
 type toolset struct {
@@ -123,17 +236,28 @@ type toolset struct {
 	opts   toolOptions
 }
 
-// scopeList names the choices for a tool description.
+// scopeList names the choices for a tool description. With one scope
+// the argument may be left out, since there is nothing to choose; with
+// more than one it is required, so the failure mode of forgetting it
+// is an error rather than a fact written into whichever scope the
+// product listed first.
 func (t *toolset) scopeList() string {
+	if len(t.scopes) == 1 {
+		return fmt.Sprintf("Scope: %s, the only one; the argument may be left out.", t.scopes[0])
+	}
+	return fmt.Sprintf("Scopes: %s; name one on every call.", strings.Join(t.scopeNames(), ", "))
+}
+
+func (t *toolset) scopeNames() []string {
 	names := make([]string, 0, len(t.scopes))
 	for _, s := range t.scopes {
 		names = append(names, string(s))
 	}
-	return fmt.Sprintf("Scopes: %s; the default is %s.", strings.Join(names, ", "), t.scopes[0])
+	return names
 }
 
 func (t *toolset) saveDescription() string {
-	return fmt.Sprintf("Create a memory entry, or replace one whole. To edit an existing entry prefer memory_patch, which sends only the change. Content is Markdown of at most %d bytes; a larger write is refused with the sizes. Give a description in meta so the entry can be found. %s",
+	return fmt.Sprintf("Create a memory entry, or replace one whole. To edit an existing entry prefer memory_patch, which sends only the change. Content is Markdown of at most %d bytes; a larger write is refused with the sizes. Give a description in meta so the entry can be found. meta replaces the entry's metadata when you give it and keeps what is there when you leave it out, so send an empty object to clear it. The result says what the write replaced and what became of the metadata. %s",
 		t.store.MaxEntryBytes(), t.scopeList())
 }
 
@@ -150,10 +274,15 @@ func (t *toolset) searchDescription() string {
 		t.opts.searchLimit, t.opts.searchBytes, t.scopeList())
 }
 
-// scope resolves a call's scope argument to an allowed scope.
+// scope resolves a call's scope argument to an allowed scope. An
+// omitted scope is the only scope when there is one, and an error
+// naming the choices when there are several.
 func (t *toolset) scope(s string) (Scope, error) {
 	if s == "" {
-		return t.scopes[0], nil
+		if len(t.scopes) == 1 {
+			return t.scopes[0], nil
+		}
+		return "", fmt.Errorf("scope is required; name one of: %s", strings.Join(t.scopeNames(), ", "))
 	}
 	for _, allowed := range t.scopes {
 		if string(allowed) == s {
@@ -163,72 +292,139 @@ func (t *toolset) scope(s string) (Scope, error) {
 	return "", fmt.Errorf("scope %q is not available; %s", s, t.scopeList())
 }
 
-func (t *toolset) save(ctx context.Context, a saveArgs) (string, error) {
-	scope, err := t.scope(a.Scope)
-	if err != nil {
-		return "", err
+// wrote builds a write's result: the line the model reads, and the
+// journal record beside it as details only a recorder sees.
+func wrote(tool string, c *Change, format string, args ...any) (agenttool.Result, error) {
+	res := agenttool.Text(fmt.Sprintf(format, args...))
+	if c != nil {
+		res.Details = WriteRecord{Tool: tool, Change: *c}
 	}
-	e := Entry{Scope: scope, Name: a.Name, Content: a.Content, Meta: a.Meta}
-	if err := t.store.Put(ctx, e); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Saved %s/%s (%d of %d bytes) %s", scope, a.Name, len(a.Content), t.store.MaxEntryBytes(), Hash(a.Content)), nil
+	return res, nil
 }
 
-func (t *toolset) patch(ctx context.Context, a patchArgs) (string, error) {
+// save writes the whole entry. It reads the stored one first for two
+// reasons: a call that leaves meta out means the content, not the
+// description, so the stored metadata is carried forward rather than
+// deleted in silence; and the write then names the state it was built
+// on, so the journal can show a write that lost another's. Put stays a
+// replace of the whole entry, because a store whose write is sometimes
+// a merge cannot keep the journal a list of full states.
+func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error) {
 	scope, err := t.scope(a.Scope)
 	if err != nil {
-		return "", err
+		return agenttool.Result{}, err
+	}
+	stored, err := t.store.Get(ctx, scope, a.Name)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return agenttool.Result{}, err
+	}
+	if errors.Is(err, ErrNotFound) {
+		stored = nil
+	}
+	e := Entry{Scope: scope, Name: a.Name, Content: a.Content, Meta: a.Meta}
+	var opts []PutOption
+	if stored != nil {
+		opts = append(opts, BasedOn(stored.Hash))
+		if a.Meta == nil {
+			e.Meta = stored.Meta
+		}
+	}
+	c, err := t.store.Put(ctx, e, opts...)
+	if err != nil {
+		return agenttool.Result{}, err
+	}
+	return wrote(SaveTool, c, "Saved %s/%s (%d of %d bytes) %s — %s; %s",
+		scope, a.Name, len(a.Content), t.store.MaxEntryBytes(), Hash(a.Content), savedWhat(stored), metaWhat(stored, a.Meta, e.Meta))
+}
+
+// savedWhat says what the write did to the entry.
+func savedWhat(stored *Entry) string {
+	if stored == nil {
+		return "created"
+	}
+	return fmt.Sprintf("replaced %d bytes", stored.Size())
+}
+
+// metaWhat says what became of the metadata, since a call that leaves
+// it out is the one that used to delete it.
+func metaWhat(stored *Entry, given, final map[string]string) string {
+	switch {
+	case len(final) == 0 && (stored == nil || len(stored.Meta) == 0):
+		return "no meta"
+	case len(final) == 0:
+		return "meta cleared"
+	case given == nil:
+		return "meta kept (" + metaKeys(final) + ")"
+	case stored == nil:
+		return "meta set (" + metaKeys(final) + ")"
+	}
+	return "meta replaced (" + metaKeys(final) + ")"
+}
+
+func metaKeys(meta map[string]string) string {
+	keys := make([]string, 0, len(meta))
+	for k := range meta {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
+}
+
+func (t *toolset) patch(ctx context.Context, a patchArgs) (agenttool.Result, error) {
+	scope, err := t.scope(a.Scope)
+	if err != nil {
+		return agenttool.Result{}, err
 	}
 	if a.OldText == "" {
-		return "", errors.New("old_text is empty; give the exact text to replace, or use memory_save to write the entry whole")
+		return agenttool.Result{}, errors.New("old_text is empty; give the exact text to replace, or use memory_save to write the entry whole")
 	}
 	var lastErr error
 	for attempt := 0; attempt < patchAttempts; attempt++ {
 		cur, err := t.store.Get(ctx, scope, a.Name)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return "", fmt.Errorf("%w; memory_save creates an entry", err)
+				return agenttool.Result{}, fmt.Errorf("%w; memory_save creates an entry", err)
 			}
-			return "", err
+			return agenttool.Result{}, err
 		}
 		switch n := strings.Count(cur.Content, a.OldText); {
 		case n == 0:
-			return "", fmt.Errorf("old_text does not appear in %s/%s; read the entry with memory_search and copy the text exactly", scope, a.Name)
+			return agenttool.Result{}, fmt.Errorf("old_text does not appear in %s/%s; read the entry with memory_search and copy the text exactly", scope, a.Name)
 		case n > 1:
-			return "", fmt.Errorf("old_text appears %d times in %s/%s; include more of the surrounding text so it appears once", n, scope, a.Name)
+			return agenttool.Result{}, fmt.Errorf("old_text appears %d times in %s/%s; include more of the surrounding text so it appears once", n, scope, a.Name)
 		}
 		next := *cur
 		next.Content = strings.Replace(cur.Content, a.OldText, a.NewText, 1)
-		err = t.store.Put(ctx, next, IfHash(cur.Hash))
+		c, err := t.store.Put(ctx, next, IfHash(cur.Hash))
 		if err == nil {
-			return fmt.Sprintf("Patched %s/%s (%d of %d bytes) %s", scope, a.Name, len(next.Content), t.store.MaxEntryBytes(), Hash(next.Content)), nil
+			return wrote(PatchTool, c, "Patched %s/%s (%d of %d bytes) %s", scope, a.Name, len(next.Content), t.store.MaxEntryBytes(), Hash(next.Content))
 		}
 		if !errors.Is(err, ErrConflict) {
-			return "", err
+			return agenttool.Result{}, err
 		}
 		// Another writer changed the entry between the read and the
 		// write. The edit is anchored in old_text, so apply it to the
 		// new content.
 		lastErr = err
 	}
-	return "", fmt.Errorf("%w after %d attempts; another session keeps changing it, try again", lastErr, patchAttempts)
+	return agenttool.Result{}, fmt.Errorf("%w after %d attempts; another session keeps changing it, try again", lastErr, patchAttempts)
 }
 
-func (t *toolset) forget(ctx context.Context, a forgetArgs) (string, error) {
+func (t *toolset) forget(ctx context.Context, a forgetArgs) (agenttool.Result, error) {
 	scope, err := t.scope(a.Scope)
 	if err != nil {
-		return "", err
+		return agenttool.Result{}, err
 	}
-	if err := t.store.Forget(ctx, scope, a.Name); err != nil {
-		return "", err
+	c, err := t.store.Forget(ctx, scope, a.Name)
+	if err != nil {
+		return agenttool.Result{}, err
 	}
-	return fmt.Sprintf("Forgot %s/%s", scope, a.Name), nil
+	return wrote(ForgetTool, c, "Forgot %s/%s", scope, a.Name)
 }
 
-func (t *toolset) search(ctx context.Context, a searchArgs) (string, error) {
+func (t *toolset) search(ctx context.Context, a searchArgs) (agenttool.Result, error) {
 	if strings.TrimSpace(a.Query) == "" {
-		return "", errors.New("query is empty; give one or more words")
+		return agenttool.Result{}, errors.New("query is empty; give one or more words")
 	}
 	scopes := t.scopes
 	if len(a.Scopes) > 0 {
@@ -236,7 +432,7 @@ func (t *toolset) search(ctx context.Context, a searchArgs) (string, error) {
 		for _, s := range a.Scopes {
 			scope, err := t.scope(s)
 			if err != nil {
-				return "", err
+				return agenttool.Result{}, err
 			}
 			scopes = append(scopes, scope)
 		}
@@ -247,14 +443,15 @@ func (t *toolset) search(ctx context.Context, a searchArgs) (string, error) {
 	}
 	found, err := t.store.Search(ctx, scopes, a.Query, limit)
 	if err != nil {
-		return "", err
+		return agenttool.Result{}, err
 	}
 	names := make([]string, 0, len(scopes))
 	for _, s := range scopes {
 		names = append(names, string(s))
 	}
 	if len(found) == 0 {
-		return fmt.Sprintf("No entries in %s match %q.", strings.Join(names, ", "), a.Query), nil
+		// A search writes nothing, so its result carries no record.
+		return agenttool.Text(fmt.Sprintf("No entries in %s match %q.", strings.Join(names, ", "), a.Query)), nil
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d %s in %s for %q.\n", len(found), plural(len(found), "match", "matches"), strings.Join(names, ", "), a.Query)
@@ -280,7 +477,7 @@ func (t *toolset) search(ctx context.Context, a searchArgs) (string, error) {
 	if len(unshown) > 0 {
 		fmt.Fprintf(&b, "\nNot shown, over the %d byte result limit; search for them by name: %s\n", t.opts.searchBytes, strings.Join(unshown, ", "))
 	}
-	return b.String(), nil
+	return agenttool.Text(b.String()), nil
 }
 
 func plural(n int, one, many string) string {

@@ -1,0 +1,82 @@
+{
+  "entries": [
+    {
+      "scope": "user",
+      "name": "note-00",
+      "hash": "sha256:b3b9c6c277bccae30ed2072c4b8d8dfd54224091c8407c9c02b57cf091435729",
+      "bytes": 8
+    },
+    {
+      "scope": "user",
+      "name": "note-01",
+      "hash": "sha256:06b85d10ff11c20cc3cb033db17f75c2155681753ce5f0dd7e7ad91db2f419d6",
+      "bytes": 8
+    },
+    {
+      "scope": "user",
+      "name": "note-02",
+      "hash": "sha256:9241f8602d99acdd78e8bfca0c671c0c03e4c00afd8eeb662de993007935b2bd",
+      "bytes": 8
+    },
+    {
+      "scope": "user",
+      "name": "note-03",
+      "hash": "sha256:75a7c66a0a0fa9aa4d434244735f8c9936e97b4680ba0e4948ab4653a8a48277",
+      "bytes": 8
+    },
+    {
+      "scope": "user",
+      "name": "note-04",
+      "hash": "sha256:966ef1302437f69aaf9a108963d1e10f3deccc5ac3389d287f03d7eabf4f4280",
+      "bytes": 8
+    },
+    {
+      "scope": "user",
+      "name": "note-05",
+      "hash": "sha256:343fad2e7848a30d3bdea7ba90dddd075631d18972aea5c37ab216b91123aabd",
+      "bytes": 8
+    },
+    {
+      "scope": "user",
+      "name": "note-06",
+      "hash": "sha256:f7fb7ef47fe753ff30eea514d71dde0e75038d109ec4031828cbe4859548b3da",
+      "bytes": 8
+    },
+    {
+      "scope": "user",
+      "name": "note-07",
+      "hash": "sha256:d53ac50e5f8ea2de868bc5d7767c74bff09e3c270905b09df6e4985ecbe73a76",
+      "bytes": 8
+    }
+  ],
+  "omitted": [
+    {
+      "scope": "user",
+      "name": "note-08",
+      "hash": "sha256:8a54b0a4dd09a34dc6958c680746af7d5f92d58a325000fd51ede754e0ed7af6",
+      "bytes": 8,
+      "reason": "budget"
+    },
+    {
+      "scope": "user",
+      "name": "note-09",
+      "hash": "sha256:dd5c98c154e804baa0fd60f1468452b7e0aa9eadcdb78cb56de504f4b04e8c7c",
+      "bytes": 8,
+      "reason": "budget"
+    },
+    {
+      "scope": "user",
+      "name": "note-10",
+      "hash": "sha256:66d250aecd9aa5490a4eeb1c83e3e1c56b252da6ac01216113fdaaa426da6cbc",
+      "bytes": 9,
+      "reason": "budget"
+    },
+    {
+      "scope": "user",
+      "name": "note-11",
+      "hash": "sha256:7f51f8888a1b2afb40133ed01307cd5382ef1ef0eb7311595964249f8c2d32ea",
+      "bytes": 9,
+      "reason": "budget"
+    }
+  ]
+}

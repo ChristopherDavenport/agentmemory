@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	github.com/ChristopherDavenport/agenttool v0.0.4 // indirect
+	github.com/ChristopherDavenport/agenttool v0.0.5 // indirect
 	github.com/ChristopherDavenport/openresponses v0.0.9 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
