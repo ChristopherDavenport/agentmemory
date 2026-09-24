@@ -116,6 +116,13 @@ versions may break the API.
   table's primary key, so sqlite never had filestore's race; a test
   now holds it to that (#2).
 
+### Dependencies
+
+- openresponses v0.0.9 to v0.0.12 and agenttool v0.0.5 to v0.0.7, in
+  the root module and in `sqlite`, and agentturn v0.0.5 to v0.0.8,
+  which the tools' integration test alone depends on. No API of this
+  module changes with them.
+
 ## v0.0.1 - 2026-09-20
 
 - Initial release: `Scope`, `Entry`, `Change` and the `Store` contract
