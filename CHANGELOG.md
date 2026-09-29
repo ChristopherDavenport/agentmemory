@@ -5,6 +5,32 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Breaking
+
+- **sqlite: the tables are renamed** `memory_entries`,
+  `memory_journal` and `memory_entries_fts`, with the journal's index
+  `memory_journal_entry`. agentsession's sqlite store also names its
+  table `entries`, and both created theirs with `CREATE TABLE IF NOT
+  EXISTS`, so on one shared file whichever opened second adopted the
+  other's table: with sessions first the first `memory_save` failed with
+  `no such column: content`, and with memory first the session store
+  refused to open. The two now share a file. `Open` renames the tables
+  of a database an earlier release wrote in its schema transaction,
+  when all three have this store's columns and none of the new names
+  exists; another program's `entries` is left alone. A release before
+  this one that opens a migrated file creates empty unprefixed tables
+  and does not see the renamed ones, so every process on a file moves
+  together. Anything that queries the tables by name moves with them
+  (#29).
+
+### Added
+
+- sqlite: `Open` fails, naming the table and its columns, when a table
+  of one of the store's names has other columns, where before the
+  mismatch surfaced as a column error at the first read or write.
+
 ## v0.0.5 - 2026-09-28
 
 ### Breaking
