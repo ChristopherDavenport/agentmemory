@@ -117,6 +117,21 @@ func TestRenderGolden(t *testing.T) {
 				t.Fatal(err)
 			}
 			checkGolden(t, filepath.Join("testdata", "render", tc.name+".manifest.json"), append(manJSON, '\n'))
+			// The parts are the block, and their IDs are pinned too: a
+			// product records them, so a change to one is a change to
+			// every session that does.
+			parts, partsMan, err := RenderParts(ctx, store, tc.scopes, ropts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if JoinParts(parts) != block || partsMan.Hash() != man.Hash() {
+				t.Error("RenderParts joined is not Render")
+			}
+			var ids strings.Builder
+			for _, p := range parts {
+				fmt.Fprintf(&ids, "%s %d\n", p.ID, len(p.Text))
+			}
+			checkGolden(t, filepath.Join("testdata", "render", tc.name+".parts"), []byte(ids.String()))
 			// The manifest's hashes are the hashes of what the block
 			// shows, and the block shows exactly the manifest's entries.
 			for _, me := range man.Entries {
@@ -124,7 +139,7 @@ func TestRenderGolden(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if me.Hash != e.Hash || me.Bytes != e.Size() || !strings.Contains(block, e.Content) {
+				if me.Hash != e.Hash || me.Bytes != e.Size() || !strings.Contains(block, strings.TrimSuffix(e.Content, "\n")) {
 					t.Errorf("manifest entry %s/%s does not match the block", me.Scope, me.Name)
 				}
 			}
@@ -139,7 +154,7 @@ func TestRenderGolden(t *testing.T) {
 			if err != nil || again != block {
 				t.Error("Render is not stable")
 			}
-			// The bound is on the block, and the header says so.
+			// The bound is on the block, and its last line says so.
 			max := tc.maxTotal
 			if max <= 0 {
 				max = DefaultMaxTotalBytes
@@ -147,8 +162,8 @@ func TestRenderGolden(t *testing.T) {
 			if len(block) > max {
 				t.Errorf("block is %d bytes, over the %d byte bound", len(block), max)
 			}
-			if !strings.Contains(block, blockLine(len(block), max)) {
-				t.Errorf("the header does not state the block's own size (%d of %d):\n%s", len(block), max, firstLines(block, 3))
+			if !strings.HasSuffix(block, blockLine(len(block), max)+" Entry limit: "+strconv.Itoa(store.MaxEntryBytes())+" bytes.") {
+				t.Errorf("the last line does not state the block's own size (%d of %d):\n%s", len(block), max, lastLine(block))
 			}
 			for _, me := range man.Omitted {
 				if me.Reason != OmitBudget {
@@ -187,10 +202,10 @@ func TestRenderBudget(t *testing.T) {
 		t.Errorf("block is %d bytes, over the %d byte bound", len(block), DefaultMaxTotalBytes)
 	}
 	if !strings.Contains(block, "Entries: 7 shown, 2 omitted. "+blockLine(len(block), DefaultMaxTotalBytes)+" Entry limit: 4096 bytes.") {
-		t.Errorf("header: %s", firstLines(block, 3))
+		t.Errorf("summary: %s", lastLine(block))
 	}
 	if !strings.Contains(block, "Not shown, over the block budget; fetch with memory_search: note-h (4096 bytes), note-i (4096 bytes)") {
-		t.Errorf("omitted line missing:\n%s", firstLines(block, 3))
+		t.Errorf("omitted line missing:\n%s", lastLine(block))
 	}
 }
 
@@ -214,7 +229,7 @@ func TestRenderPacksTheBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(block, "### zz-passport") {
-		t.Errorf("the 19 byte entry is not in a block with %d bytes free:\n%s", DefaultMaxTotalBytes-len(block), firstLines(block, 3))
+		t.Errorf("the 19 byte entry is not in a block with %d bytes free:\n%s", DefaultMaxTotalBytes-len(block), lastLine(block))
 	}
 	for _, me := range man.Omitted {
 		if me.Name == "zz-passport" {
@@ -287,10 +302,10 @@ func TestRenderTinyBound(t *testing.T) {
 	}
 }
 
-// blockLine is the header's sentence about the block's own size. The
+// blockLine is the summary's sentence about the block's own size. The
 // free count is written at the width of the bound, so that the
-// header's width depends on the size alone and the size it states
-// settles; see header.
+// summary's width depends on the size alone and the size it states
+// settles; see summary.
 func blockLine(size, max int) string {
 	return fmt.Sprintf("Block: %d of %d bytes (%*d free).", size, max, len(strconv.Itoa(max)), max-size)
 }
@@ -304,12 +319,8 @@ func sortedNames(names []string) bool {
 	return true
 }
 
-func firstLines(s string, n int) string {
-	parts := strings.SplitN(s, "\n", n+1)
-	if len(parts) > n {
-		parts = parts[:n]
-	}
-	return strings.Join(parts, "\n")
+func lastLine(s string) string {
+	return s[strings.LastIndex(s, "\n")+1:]
 }
 
 // TestManifestIdentity checks what a product compares to decide
@@ -395,13 +406,13 @@ func TestManifestIdentity(t *testing.T) {
 	}
 }
 
-// TestRenderHeaderSettles is the case the header's width could not
+// TestRenderSummarySettles is the case the summary's width could not
 // settle on: at 243 bytes the block's size and its free count cross a
-// power of ten in opposite directions, so a header whose free count
+// power of ten in opposite directions, so a summary whose free count
 // shrinks with the size is wider for the smaller size than for the
 // larger and states a length the block does not have. The sweep is the
 // same question asked at random.
-func TestRenderHeaderSettles(t *testing.T) {
+func TestRenderSummarySettles(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore(WithMaxEntryBytes(4096))
 	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "a", Content: strings.Repeat("x", 9) + "\n"}); err != nil {
@@ -412,7 +423,7 @@ func TestRenderHeaderSettles(t *testing.T) {
 		t.Fatal(err)
 	}
 	if want := blockLine(len(block), 243); !strings.Contains(block, want) {
-		t.Errorf("the block is %d bytes and does not say %q:\n%s", len(block), want, firstLines(block, 3))
+		t.Errorf("the block is %d bytes and does not say %q:\n%s", len(block), want, lastLine(block))
 	}
 
 	rng := rand.New(rand.NewSource(1))
@@ -436,17 +447,17 @@ func TestRenderHeaderSettles(t *testing.T) {
 			t.Fatalf("bound %d: block is %d bytes", max, len(block))
 		}
 		if want := blockLine(len(block), max); !strings.Contains(block, want) {
-			t.Fatalf("bound %d: the block is %d bytes and does not say %q:\n%s", max, len(block), want, firstLines(block, 3))
+			t.Fatalf("bound %d: the block is %d bytes and does not say %q:\n%s", max, len(block), want, lastLine(block))
 		}
 	}
 }
 
-// TestRenderHeaderIsExact sweeps the block's size across the digit
+// TestRenderSummaryIsExact sweeps the block's size across the digit
 // boundaries where the size it reports and the free count it reports
-// move in opposite directions, and holds the header to the block's
+// move in opposite directions, and holds the summary to the block's
 // true length at every one of them. The bound is on the block, so it
 // is checked here too.
-func TestRenderHeaderIsExact(t *testing.T) {
+func TestRenderSummaryIsExact(t *testing.T) {
 	ctx := context.Background()
 	for _, max := range []int{400, 1000, 2000, 11000, DefaultMaxTotalBytes} {
 		for n := 1; n <= max; n += 7 {
@@ -466,7 +477,7 @@ func TestRenderHeaderIsExact(t *testing.T) {
 			}
 			want := blockLine(len(block), max)
 			if !strings.Contains(block, want) {
-				t.Fatalf("max %d, entry %d: header does not say %q:\n%s", max, n, want, firstLines(block, 3))
+				t.Fatalf("max %d, entry %d: summary does not say %q:\n%s", max, n, want, lastLine(block))
 			}
 		}
 	}
@@ -515,5 +526,68 @@ func checkGolden(t *testing.T, path string, got []byte) {
 	}
 	if !bytes.Equal(want, got) {
 		t.Errorf("%s differs from golden:\n--- got ---\n%s\n--- want ---\n%s", path, got, want)
+	}
+}
+
+// TestRenderPartsKeepThePrefix is the round 3 study's cache question: a
+// write to one entry changes that entry's part and the summary, and no
+// other part, so the block before the entry is the prefix the last
+// request cached. A new entry adds its part and moves the summary.
+func TestRenderPartsKeepThePrefix(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	for i := range 8 {
+		if _, err := store.Put(ctx, Entry{Scope: "user", Name: fmt.Sprintf("note-%d", i), Content: filler(3000, byte('a'+i))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scopes := []Scope{"user", "project"}
+	before, _, err := RenderParts(ctx, store, scopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before[0].ID != TitlePartID || before[len(before)-1].ID != SummaryPartID || before[1].ID != "memory/user" || before[2].ID != PartID("user", "note-0") {
+		t.Errorf("parts begin %s, %s, %s and end %s", before[0].ID, before[1].ID, before[2].ID, before[len(before)-1].ID)
+	}
+	ids := map[string]bool{}
+	for _, p := range before {
+		if ids[p.ID] {
+			t.Errorf("two parts are %s", p.ID)
+		}
+		ids[p.ID] = true
+		if p.ID != SummaryPartID && (strings.HasPrefix(p.Text, "\n") || strings.HasSuffix(p.Text, "\n")) {
+			t.Errorf("part %s begins or ends with a newline, which the separator supplies: %q", p.ID, p.Text)
+		}
+	}
+
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "note-6", Content: "Likes Bristol"}); err != nil {
+		t.Fatal(err)
+	}
+	after, _, err := RenderParts(ctx, store, scopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("%d parts before the write, %d after", len(before), len(after))
+	}
+	var changed []string
+	for i := range after {
+		if after[i].ID != before[i].ID {
+			t.Fatalf("part %d is %s after the write, %s before", i, after[i].ID, before[i].ID)
+		}
+		if after[i].Text != before[i].Text {
+			changed = append(changed, after[i].ID)
+		}
+	}
+	if fmt.Sprint(changed) != "["+PartID("user", "note-6")+" "+SummaryPartID+"]" {
+		t.Errorf("the write changed %v", changed)
+	}
+	b1, b2 := JoinParts(before), JoinParts(after)
+	shared := 0
+	for shared < len(b1) && shared < len(b2) && b1[shared] == b2[shared] {
+		shared++
+	}
+	if want := strings.Index(b1, "### note-6"); shared < want {
+		t.Errorf("the two blocks share %d bytes; the entry the write touched starts at %d", shared, want)
 	}
 }

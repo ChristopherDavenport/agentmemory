@@ -1,7 +1,5 @@
 # Memory
 
-Entries: 8 shown, 4 omitted. Block: 695 of 700 bytes (  5 free). Entry limit: 256 bytes.
-
 ## user
 
 ### note-00 (8 of 256 bytes) — What fact 0 is for
@@ -37,3 +35,5 @@ Fact 6.
 Fact 7.
 
 Not shown, over the block budget; fetch with memory_search: note-08 (8 bytes), and 3 more
+
+Entries: 8 shown, 4 omitted. Block: 694 of 700 bytes (  6 free). Entry limit: 256 bytes.

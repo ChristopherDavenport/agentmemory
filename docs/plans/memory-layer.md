@@ -146,11 +146,11 @@ includes entries in index order while they fit, skipping one that does
 not and going on to the next, and lists what it left out, so the model
 knows what it can fetch and one large entry cannot hide the small ones
 after it. The bound is rendered as well as enforced: each entry's
-heading carries its size and the limit, and the block's header states
+heading carries its size and the limit, and the block's last line states
 the total budget and what remains, so the model can see the wall before
 it hits it. The bound is on the block and not on the content it holds:
-the header, the headings, the descriptions and the list of omissions
-are counted, because the window pays for them, and the header reports
+the last line, the headings, the descriptions and the list of omissions
+are counted, because the window pays for them, and the last line reports
 the block's own size. The manifest's omissions carry the reason, so a
 session can record what the model was not given.
 
@@ -218,10 +218,14 @@ type Manifest struct {
 }
 ```
 
-The block is Markdown: a header line with the counts and the budget,
-one `##` section per scope, one `###` heading per entry carrying the
-entry's size and the limit, the description under it, then the content
-verbatim. `Usage` is one paragraph telling the model how to use the
+The block is Markdown: a title, one `##` section per scope, one `###`
+heading per entry carrying the entry's size and the limit, the
+description under it, then the content verbatim, and a last line with
+the counts and the budget, last because every write changes it and the
+block is a cached prefix. `RenderParts` returns the same block as
+parts, one per heading, entry and omission line, joined with a blank
+line, so a recorder of instructions parts records a write as the entry
+it touched. `Usage` is one paragraph telling the model how to use the
 tools, which a product appends when it offers them.
 
 The product puts the block into `Config.Instructions` before each run,

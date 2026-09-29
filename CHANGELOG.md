@@ -7,6 +7,37 @@ versions may break the API.
 
 ## Unreleased
 
+### Breaking
+
+- **The rendered block changes.** The line with the counts and the
+  budget, `Entries: … Block: n of m bytes (k free). Entry limit: …`,
+  is the block's last line instead of its second, and the block no
+  longer ends with a newline, so it is one byte shorter. The line
+  changes on every write, and the block is the instructions, the prefix
+  every provider's prompt cache keys on: with it first, a write
+  invalidated the cached prefix at byte 83, before every entry, tool
+  and item; now a write keeps every entry before the one it touched.
+  Everything else in the block is byte for byte what it was, and
+  `Manifest` does not change. Every golden that pins a rendered block,
+  here or in a consumer, moves; a product that joined the block to
+  what follows with a blank line still gets one. `Usage` says the
+  budget is on the block's last line (#23).
+- **`Render` is `RenderParts` joined.** `RenderParts(ctx, s, scopes,
+  opts...)` returns the block as `[]Part`, `Part{ID, Text}`: the title
+  (`memory`, `TitlePartID`), each scope heading (`memory/<scope>`), each
+  entry (`memory/<scope>/<name>`, `PartID`), each scope's omission line
+  (`memory/<scope>:omitted`) and the summary line (`memory:summary`,
+  `SummaryPartID`), with the `Manifest`. `JoinParts` joins them with
+  `PartSeparator`, one blank line, which is agentsession's
+  `PartSeparator`; the type and the constant are this module's own,
+  since it does not import the session format. A product recording its
+  instructions as parts, through agentturn v0.0.10's
+  `session.WithInstructionsParts`, hands agentsession these parts
+  beside its own instead of parsing the block, and a write to one entry
+  is recorded as that entry's part and the summary. An empty scope's
+  `No entries.` is in its heading's part (#24; feeds agentturn #114 and
+  agentkit).
+
 ### Added
 
 - `WithRendered(func() Manifest)`: `memory_save` names the hash the

@@ -9,7 +9,7 @@ import (
 )
 
 // DefaultMaxTotalBytes is the bound [Render] starts with: the whole
-// block, header and headings included.
+// block, summary and headings included.
 const DefaultMaxTotalBytes = 32 << 10
 
 // RenderOption configures [Render].
@@ -114,38 +114,115 @@ func (m Manifest) Record() (ns string, data []byte) {
 	return ManifestNS, data
 }
 
-// Render returns the in-context block: a header with the counts and
-// the budget, then one section per scope in the order given, one
-// heading per entry in list order carrying its size and the store's
-// limit and its description, then the content verbatim.
+// PartSeparator joins the parts [RenderParts] returns into the block
+// [Render] returns: one blank line. It is agentsession's PartSeparator,
+// the rule a session's instructions parts are joined by, stated here
+// because this module does not import the session format; a product
+// that records the block's parts as instructions parts, beside parts of
+// its own, gets from the format's join exactly the string Render gives.
+const PartSeparator = "\n\n"
+
+// Part is one piece of the rendered block, with an ID that is the same
+// across renders for as long as the piece exists, so a product that
+// records its instructions as parts records a write as a change to the
+// entry it touched and names the others by hash. [RenderParts] returns
+// the block as parts, in order, and [JoinParts] gives back the block.
+type Part struct {
+	// ID names the piece: [TitlePartID] and [SummaryPartID] for the
+	// block's first and last lines, "memory/<scope>" for a scope's
+	// heading, [PartID] for an entry, and "memory/<scope>:omitted" for
+	// the line naming what a scope left out. Scopes and names are
+	// kebab-case, so no two pieces of one block can share an ID.
+	ID string `json:"id"`
+	// Text is the piece, without the blank line that separates it from
+	// the next.
+	Text string `json:"text"`
+}
+
+// The IDs of the block's fixed parts.
+const (
+	// TitlePartID is the block's first part, its title, which no write
+	// changes.
+	TitlePartID = "memory"
+	// SummaryPartID is the block's last part: the counts, the block's
+	// size and the entry limit, which every write changes.
+	SummaryPartID = "memory:summary"
+)
+
+// PartID is the ID of the part that holds an entry, "memory/" and the
+// scope and the name, and the ID a product gives an omitted entry of
+// the [Manifest] when it records what the block left out beside the
+// parts it holds.
+func PartID(scope Scope, name string) string { return "memory/" + string(scope) + "/" + name }
+
+func scopePartID(scope Scope) string   { return "memory/" + string(scope) }
+func omittedPartID(scope Scope) string { return "memory/" + string(scope) + ":omitted" }
+
+// JoinParts returns the block the parts compose: their texts joined
+// with [PartSeparator], in order.
+func JoinParts(parts []Part) string {
+	texts := make([]string, 0, len(parts))
+	for _, p := range parts {
+		texts = append(texts, p.Text)
+	}
+	return strings.Join(texts, PartSeparator)
+}
+
+// Render returns the in-context block: [RenderParts] joined with
+// [PartSeparator]. A product that records its instructions as one
+// string uses it; one that records parts uses RenderParts.
+func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) (string, Manifest, error) {
+	parts, man, err := RenderParts(ctx, s, scopes, opts...)
+	if err != nil {
+		return "", Manifest{}, err
+	}
+	return JoinParts(parts), man, nil
+}
+
+// RenderParts returns the in-context block as its parts, and the
+// [Manifest] of what it holds. In order: the title; for each scope in
+// the order given, its heading, then each entry that fits in list
+// order, its heading carrying its size, the store's limit and its
+// description, then its content; after a scope's entries, the line
+// naming the ones left out; and last, the summary: the counts, the
+// block's own size against the bound, and the entry limit.
 //
-// The bound is on the block, not on the content it holds: the header,
-// the scope headings, the per-entry headings with their descriptions
-// and the list of what was left out are all counted, because they are
-// all sent to the model, and the header reports the block's own size
-// so what the model reads is what the window pays. An entry whose
-// rendered form does not fit is skipped, recorded in [Manifest.Omitted]
-// with [OmitBudget] and listed by name under its scope so the model
-// knows what memory_search can fetch; entries after it are still
-// considered, so one large entry cannot hide the small ones that sort
-// after it. Order is never changed: the block holds the entries in
-// list order, whichever were skipped.
+// The summary comes last because it is the one part every write
+// changes, and the block is the instructions, the request's prefix,
+// which every prompt cache in use caches by prefix: a write keeps every
+// part before the entry it touched in the cached prefix. Nothing in a
+// part depends on whether it is last.
+//
+// The bound is on the joined block, not on the content it holds: the
+// title, the summary, the scope headings, the per-entry headings with
+// their descriptions, the list of what was left out and the separators
+// are all counted, because they are all sent to the model, and the
+// summary reports the block's own size so what the model reads is what
+// the window pays. An entry whose part does not fit is skipped,
+// recorded in [Manifest.Omitted] with [OmitBudget] and listed by name
+// after its scope's entries so the model knows what memory_search can
+// fetch; entries after it are still considered, so one large entry
+// cannot hide the small ones that sort after it. Order is never
+// changed: the block holds the entries in list order, whichever were
+// skipped.
 //
 // The output is determined by the store's state and the bounds alone,
-// so an unchanged store renders the same bytes and costs nothing in
-// the session, and the manifest's hashes are the hashes of the content
-// the block shows. A product records the manifest when
-// [Manifest.Hash] differs from the last one it recorded, under
-// [ManifestNS]; see [Manifest.Record]. The header's own width is reserved before the body
-// is built, at the widest the counts could be, so a block can come out
-// a few bytes under the bound; it never comes out over it, except that
-// the header and one heading per scope are always written, so a bound
-// too small for those cannot be met.
+// so an unchanged store renders the same parts and costs nothing in the
+// session, and the manifest's hashes are the hashes of the content the
+// block shows. A product records the manifest when [Manifest.Hash]
+// differs from the last one it recorded, under [ManifestNS]; see
+// [Manifest.Record]. The summary's own width is reserved before the
+// entries are placed, at the widest the counts could be, so a block can
+// come out a few bytes under the bound; it never comes out over it,
+// except that the title, the summary and one heading per scope are
+// always written, so a bound too small for those cannot be met.
 //
-// Content is not transformed. A heading inside an entry's content at
-// level one to three would read as structure, so the tool descriptions
-// ask the model for level four or none.
-func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) (string, Manifest, error) {
+// Content is not transformed, except that one trailing newline is
+// dropped, since the separator after the part supplies it. A heading
+// inside an entry's content at level one to three would read as
+// structure, so the tool descriptions ask the model for level four or
+// none.
+func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) ([]Part, Manifest, error) {
 	o := renderOptions{maxTotal: DefaultMaxTotalBytes}
 	for _, opt := range opts {
 		opt(&o)
@@ -155,7 +232,7 @@ func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) 
 	}
 	for _, scope := range scopes {
 		if !ValidScope(scope) {
-			return "", Manifest{}, fmt.Errorf("%w: scope %q is not kebab-case", ErrInvalid, scope)
+			return nil, Manifest{}, fmt.Errorf("%w: scope %q is not kebab-case", ErrInvalid, scope)
 		}
 	}
 	limit := s.MaxEntryBytes()
@@ -164,32 +241,28 @@ func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) 
 	for i, scope := range scopes {
 		es, err := s.List(ctx, scope)
 		if err != nil {
-			return "", Manifest{}, err
+			return nil, Manifest{}, err
 		}
 		lists[i] = es
 		total += len(es)
 	}
-	// What the block holds whatever it shows: the header, at the widest
-	// its numbers can be, since it is written last and reports its own
-	// size, and one heading per scope. Taking it off the bound before
-	// anything else means the entries of an early scope cannot spend
-	// what a later scope's heading needs.
-	fixed := len(header(total, total, o.maxTotal, o.maxTotal, o.maxTotal, limit))
+	// What the block holds whatever it shows: the title, the summary at
+	// the widest its numbers can be, since it is written last and
+	// reports the block's size, and one heading per scope. Taking it off
+	// the bound before anything else means the entries of an early scope
+	// cannot spend what a later scope's heading needs.
+	fixed := len(title) + cost(summary(total, total, o.maxTotal, o.maxTotal, o.maxTotal, limit))
 	for i, scope := range scopes {
-		fixed += len(scopeHead(scope))
-		if len(lists[i]) == 0 {
-			fixed += len(noEntries)
-		}
+		fixed += cost(scopeText(scope, len(lists[i]) == 0))
 	}
 
 	man := Manifest{Entries: []ManifestEntry{}}
-	var body strings.Builder
-	spent := 0 // the entries and the omission lines written so far
+	parts := []Part{{ID: TitlePartID, Text: title}}
+	spent := 0 // the entries and the omission lines placed so far
 	for i, scope := range scopes {
-		body.WriteString(scopeHead(scope))
 		es := lists[i]
+		parts = append(parts, Part{ID: scopePartID(scope), Text: scopeText(scope, len(es) == 0)})
 		if len(es) == 0 {
-			body.WriteString(noEntries)
 			continue
 		}
 		room := o.maxTotal - fixed - spent
@@ -205,7 +278,7 @@ func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) 
 		for j, e := range es {
 			me := ManifestEntry{Scope: scope, Name: e.Name, Hash: e.Hash, Bytes: e.Size()}
 			if in[j] {
-				body.WriteString(entryBlock(e, limit))
+				parts = append(parts, Part{ID: PartID(scope, e.Name), Text: entryText(e, limit)})
 				man.Entries = append(man.Entries, me)
 				continue
 			}
@@ -215,42 +288,57 @@ func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) 
 		}
 		spent += used
 		if len(dropped) > 0 {
-			line := omitLine(dropped, o.maxTotal-fixed-spent)
-			body.WriteString(line)
-			spent += len(line)
+			if line := omitLine(dropped, o.maxTotal-fixed-spent); line != "" {
+				parts = append(parts, Part{ID: omittedPartID(scope), Text: line})
+				spent += cost(line)
+			}
 		}
 	}
-	// The header reports the block's own size, so settling it is a
-	// fixed point: the reservation above is as wide as the header can
+	// The summary reports the block's own size, so settling it is a
+	// fixed point: the reservation above is as wide as the summary can
 	// be, and writing the size into it narrows it, which narrows the
-	// size, so the passes below descend to the width the header keeps.
+	// size, so the passes below descend to the width the summary keeps.
 	// Only the size's own digits move that width, because the free
 	// count is written at the width of the bound, so each pass is no
 	// wider than the one before and a few of them reach the width that
 	// holds. Every pass is inside the bound, since none is wider than
 	// the reservation.
 	shown, left := len(man.Entries), len(man.Omitted)
+	rest := len(JoinParts(parts)) + len(PartSeparator) // all but the summary's text
 	size := fixed + spent
-	head := ""
+	last := ""
 	for range 8 {
-		head = header(shown, left, size, o.maxTotal-size, o.maxTotal, limit)
-		n := len(head) + body.Len()
+		last = summary(shown, left, size, o.maxTotal-size, o.maxTotal, limit)
+		n := rest + len(last)
 		if n == size {
 			break
 		}
 		size = n
 	}
-	return head + body.String(), man, nil
+	parts = append(parts, Part{ID: SummaryPartID, Text: last})
+	return parts, man, nil
 }
 
 const (
-	noEntries = "\nNo entries.\n"
-	omitHead  = "\nNot shown, over the block budget; fetch with memory_search: "
-	omitCount = "\nNot shown, over the block budget: %d entries.\n"
+	title     = "# Memory"
+	noEntries = "No entries."
+	omitHead  = "Not shown, over the block budget; fetch with memory_search: "
+	omitCount = "Not shown, over the block budget: %d entries."
 	moreTail  = ", and %d more"
 )
 
-func scopeHead(scope Scope) string { return "\n## " + string(scope) + "\n" }
+// cost is what a part other than the first adds to the block: its text
+// and the separator before it.
+func cost(text string) int { return len(PartSeparator) + len(text) }
+
+// scopeText is a scope's heading part, which says so when the scope
+// has no entries.
+func scopeText(scope Scope, empty bool) string {
+	if empty {
+		return "## " + string(scope) + PartSeparator + noEntries
+	}
+	return "## " + string(scope)
+}
 
 // pack decides which of es the block has room for, in list order,
 // skipping one that does not fit and going on to the next, so a large
@@ -260,7 +348,7 @@ func pack(es []Entry, limit, room int) ([]bool, int) {
 	in := make([]bool, len(es))
 	used := 0
 	for i, e := range es {
-		n := len(entryBlock(e, limit))
+		n := cost(entryText(e, limit))
 		if used+n <= room {
 			in[i] = true
 			used += n
@@ -287,16 +375,16 @@ func omitLineReserve(es []Entry) int {
 			item = n
 		}
 	}
-	return len(omitHead) + item + len(fmt.Sprintf(moreTail, len(es))) + 1
+	return cost(omitHead) + item + len(fmt.Sprintf(moreTail, len(es)))
 }
 
 func omitItem(e Entry) string { return fmt.Sprintf("%s (%d bytes)", e.Name, e.Size()) }
 
 // omitLine names the entries the block left out, so the model knows
-// what memory_search can fetch, within the room left for it: the names
-// that fit, then how many more there are. With room for neither it
-// gives the count alone, and with room for nothing it gives nothing;
-// the manifest carries every omission either way.
+// what memory_search can fetch, within the room left for it, separator
+// included: the names that fit, then how many more there are. With room
+// for neither it gives the count alone, and with room for nothing it
+// gives nothing; the manifest carries every omission either way.
 func omitLine(dropped []Entry, room int) string {
 	var b strings.Builder
 	listed := 0
@@ -309,14 +397,14 @@ func omitLine(dropped []Entry, room int) string {
 		if rest := len(dropped) - i - 1; rest > 0 {
 			tail = len(fmt.Sprintf(moreTail, rest))
 		}
-		if len(omitHead)+b.Len()+len(piece)+tail+1 > room {
+		if cost(omitHead)+b.Len()+len(piece)+tail > room {
 			break
 		}
 		b.WriteString(piece)
 		listed++
 	}
 	if listed == 0 {
-		if short := fmt.Sprintf(omitCount, len(dropped)); len(short) <= room {
+		if short := fmt.Sprintf(omitCount, len(dropped)); cost(short) <= room {
 			return short
 		}
 		return ""
@@ -325,35 +413,33 @@ func omitLine(dropped []Entry, room int) string {
 	if rest := len(dropped) - listed; rest > 0 {
 		out += fmt.Sprintf(moreTail, rest)
 	}
-	return out + "\n"
+	return out
 }
 
-// header is the block's first lines: what it holds and what it cost.
+// summary is the block's last line: what it holds and what it cost.
 //
 // The free count is written at the width of the bound, padded with
-// spaces, so that the header's own width depends on the size it reports
-// and on nothing else. Let it shrink as the size shrinks and the two
-// swap at a power of ten: the header is then wider for the smaller
-// size than for the larger, no width is a fixed point of the size it
-// states, and the block reports a length it does not have.
-func header(shown, omitted, size, free, max, limit int) string {
-	return fmt.Sprintf("# Memory\n\nEntries: %d shown, %d omitted. Block: %d of %d bytes (%*d free). Entry limit: %d bytes.\n",
+// spaces, so that the summary's own width depends on the size it
+// reports and on nothing else. Let it shrink as the size shrinks and
+// the two swap at a power of ten: the summary is then wider for the
+// smaller size than for the larger, no width is a fixed point of the
+// size it states, and the block reports a length it does not have.
+func summary(shown, omitted, size, free, max, limit int) string {
+	return fmt.Sprintf("Entries: %d shown, %d omitted. Block: %d of %d bytes (%*d free). Entry limit: %d bytes.",
 		shown, omitted, size, max, len(strconv.Itoa(max)), free, limit)
 }
 
-// entryBlock renders one entry as the block holds it.
-func entryBlock(e Entry, limit int) string {
+// entryText renders one entry's part: its heading, a blank line, and
+// its content less one trailing newline.
+func entryText(e Entry, limit int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n### %s (%d of %d bytes)", e.Name, e.Size(), limit)
+	fmt.Fprintf(&b, "### %s (%d of %d bytes)", e.Name, e.Size(), limit)
 	if d := e.Description(); d != "" {
 		b.WriteString(" — ")
 		b.WriteString(d)
 	}
 	b.WriteString("\n\n")
-	b.WriteString(e.Content)
-	if !strings.HasSuffix(e.Content, "\n") {
-		b.WriteString("\n")
-	}
+	b.WriteString(strings.TrimSuffix(e.Content, "\n"))
 	return b.String()
 }
 
@@ -361,5 +447,5 @@ func entryBlock(e Entry, limit int) string {
 // over the block [Render] produced. A product appends it to its
 // instructions when it offers [Tools].
 func Usage() string {
-	return "The Memory block is what you remember between sessions, rendered from the memory store at the start of each turn; it is not part of the conversation. Save a new fact with memory_save, giving a kebab-case name and a description in meta. Edit an existing entry with memory_patch, giving the exact old_text once and its replacement; prefer it to memory_save, which rewrites the entry whole. Remove an entry with memory_forget. Entries the block omits, and any entry you want to read whole, are reachable with memory_search; its results stay in the conversation, so search for what you need. Each entry's heading shows its size and the limit, and the block's header shows the budget; a write over the limit is refused with both numbers, so split or trim before you save. Use headings of level four or none inside an entry."
+	return "The Memory block is what you remember between sessions, rendered from the memory store at the start of each turn; it is not part of the conversation. Save a new fact with memory_save, giving a kebab-case name and a description in meta. Edit an existing entry with memory_patch, giving the exact old_text once and its replacement; prefer it to memory_save, which rewrites the entry whole. Remove an entry with memory_forget. Entries the block omits, and any entry you want to read whole, are reachable with memory_search; its results stay in the conversation, so search for what you need. Each entry's heading shows its size and the limit, and the block's last line shows the budget; a write over the limit is refused with both numbers, so split or trim before you save. Use headings of level four or none inside an entry."
 }
