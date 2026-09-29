@@ -1,7 +1,5 @@
 # Memory
 
-Entries: 3 shown, 1 omitted. Block: 862 of 900 bytes ( 38 free). Entry limit: 512 bytes.
-
 ## user
 
 ### architecture-notes (512 of 512 bytes) — Long
@@ -17,3 +15,5 @@ Lives in Bristol.
 In the top drawer.
 
 Not shown, over the block budget; fetch with memory_search: more-notes (500 bytes)
+
+Entries: 3 shown, 1 omitted. Block: 861 of 900 bytes ( 39 free). Entry limit: 512 bytes.

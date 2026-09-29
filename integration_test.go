@@ -3,6 +3,7 @@ package agentmemory_test
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ChristopherDavenport/agentmemory"
@@ -26,7 +27,18 @@ func TestRunUnderAgentturn(t *testing.T) {
 	// is not a name. The schema a product with several scopes offers is
 	// checked below.
 	scopes := []agentmemory.Scope{"user"}
-	tools := agentmemory.Tools(store, scopes)
+	// The product keeps the manifest of the block it last sent, and
+	// memory_save reads it through WithRendered to name what the model
+	// was shown as its base.
+	var (
+		mu       sync.Mutex
+		rendered agentmemory.Manifest
+	)
+	tools := agentmemory.Tools(store, scopes, agentmemory.WithRendered(func() agentmemory.Manifest {
+		mu.Lock()
+		defer mu.Unlock()
+		return rendered
+	}))
 	block, _, err := agentmemory.Render(ctx, store, scopes)
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +54,7 @@ func TestRunUnderAgentturn(t *testing.T) {
 	}{
 		{agentmemory.SaveTool, "Saved user/favourite-editor (16 of 4096 bytes) ", "No entries."},
 		{agentmemory.PatchTool, "Patched user/favourite-editor (16 of 4096 bytes) ", "### favourite-editor (16 of 4096 bytes)\n\nfavourite-editor\n"},
-		{agentmemory.SearchTool, "1 match in user for \"favourite-editor\".\n\nuser/favourite-editor (16 bytes)\nfavourite-editor\n", "Entries: 1 shown, 0 omitted. Block: 172 of 32768 bytes"},
+		{agentmemory.SearchTool, "1 match in user for \"favourite-editor\".\n\nuser/favourite-editor (16 bytes)\nfavourite-editor\n", "Entries: 1 shown, 0 omitted. Block: 171 of 32768 bytes"},
 		{agentmemory.ForgetTool, "Forgot user/favourite-editor", "### favourite-editor"},
 	}
 	for _, step := range steps {
@@ -54,10 +66,13 @@ func TestRunUnderAgentturn(t *testing.T) {
 				Tools:        tools,
 				Request:      openresponses.Request{ToolChoice: openresponses.ToolChoiceFunction(step.tool)},
 				BeforeModelCall: func(ctx context.Context, req *openresponses.Request) error {
-					b, _, err := agentmemory.Render(ctx, store, scopes)
+					b, man, err := agentmemory.Render(ctx, store, scopes)
 					if err != nil {
 						return err
 					}
+					mu.Lock()
+					rendered = man
+					mu.Unlock()
 					req.Instructions = b + "\n\n" + agentmemory.Usage()
 					if seen == "" {
 						seen = req.Instructions

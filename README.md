@@ -75,10 +75,15 @@ scopes := []agentmemory.Scope{"user", "project"}
 
 block, manifest, err := agentmemory.Render(ctx, mem, scopes)
 var recorded string // the last manifest this session wrote
+var shown atomic.Pointer[agentmemory.Manifest]
+shown.Store(&manifest)
+memTools := agentmemory.Tools(mem, scopes,
+	// memory_save names what the model was shown as its base.
+	agentmemory.WithRendered(func() agentmemory.Manifest { return *shown.Load() }))
 cfg := agentturn.Config{
 	Model:        client,
 	Instructions: prompt + "\n\n" + block + "\n\n" + agentmemory.Usage(),
-	Tools:        append(tools, agentmemory.Tools(mem, scopes)...),
+	Tools:        append(tools, memTools...),
 	// The freshest state each turn. Not a Transform: a Transform
 	// cannot reach the instructions and what it injects is not
 	// recorded.
@@ -88,6 +93,7 @@ cfg := agentturn.Config{
 			return err
 		}
 		req.Instructions = prompt + "\n\n" + b + "\n\n" + agentmemory.Usage()
+		shown.Store(&m)
 		// Record the manifest when it has moved. The render is a pure
 		// function of the store and the bounds, so most turns produce
 		// the manifest the turn before produced, and the recorder
@@ -110,11 +116,14 @@ of the session recognises the entry without knowing the product. Each
 omission in the manifest carries its scope, name, size and reason, so
 the record says what the model was not given and why.
 
-`Render` produces the block: a header with the counts and the budget,
-one section per scope, one heading per entry with its size and the
-limit and its description, then the content verbatim. `MaxTotalBytes`
-(32 KiB by default) bounds the block itself, header and headings and
-descriptions included, and the header reports the block's own size. An
+`Render` produces the block: a title, one section per scope, one
+heading per entry with its size and the limit and its description, then
+the content verbatim, and last a line with the counts and the budget.
+`MaxTotalBytes` (32 KiB by default) bounds the block itself, headings,
+descriptions and that last line included, and the line reports the
+block's own size. The line is last because every write changes it, and
+the instructions are the prefix a provider caches: a write keeps every
+entry before the one it touched in the cached prefix. An
 entry whose rendered form does not fit is skipped and the next is
 still considered, so one large entry cannot hide the small ones after
 it; what was left out is listed under its scope so the model knows what
@@ -127,8 +136,6 @@ session's provenance.
 ```
 # Memory
 
-Entries: 2 shown, 0 omitted. Block: 251 of 32768 bytes (32517 free). Entry limit: 4096 bytes.
-
 ## user
 
 ### style (28 of 4096 bytes) — How the user likes answers
@@ -140,7 +147,20 @@ Code in Go.
 ### timezone (13 of 4096 bytes)
 
 Europe/London
+
+Entries: 2 shown, 0 omitted. Block: 250 of 32768 bytes (32518 free). Entry limit: 4096 bytes.
 ```
+
+`RenderParts` returns the same block as its parts, `Part{ID, Text}`,
+which `JoinParts` joins with one blank line, `PartSeparator`, the rule
+agentsession joins instructions parts by. The title is `memory`, each
+scope heading `memory/<scope>`, each entry `memory/<scope>/<name>`
+(`PartID`), a scope's omission line `memory/<scope>:omitted`, and the
+last line `memory:summary`. A product that records its instructions as
+parts, through agentturn/session's `WithInstructionsParts`, gives
+agentsession the memory parts beside its own, and a write to one entry
+is recorded as that entry's part and the last line, the rest by hash;
+the manifest's omissions, named with `PartID`, are its omitted parts.
 
 ## The tools
 
@@ -151,6 +171,18 @@ product allows. The list is in each tool's schema as an enum on
 read rather than a write into whichever scope the product listed
 first. With one scope there is nothing to choose and the argument may
 be left out. A scope outside the list is an error the model sees.
+
+`WithReadScopes(scopes...)` adds scopes the model may read and not
+write, such as project rules the product renders for the model to
+follow: `memory_search` names them in its enum and searches them when
+a call names no scope, so what the block omitted from them is
+reachable, and the three writers refuse them with `scope <name> is
+read-only`, which their descriptions state.
+
+The tools carry `agenttool.Annotations`, so a host can approve the
+search without asking: `memory_search` is read-only, `memory_save` and
+`memory_forget` destructive, `memory_patch` neither, and none is
+open-world.
 
 | tool | arguments | does |
 |---|---|---|
@@ -170,7 +202,12 @@ keeps the metadata the entry has rather than deleting the description
 the block and the index show; `{}` clears it, and the result says which
 happened, what it replaced and what the write was built on. Its write
 is anchored with `BasedOn`, so two channels that save one entry from
-one state leave a journal `LostUpdates` can report.
+one state leave a journal `LostUpdates` can report. The model composed
+the content from the block, not from the tool's read, so a product
+passes `WithRendered` with the manifest of the block it last sent: the
+save is then based on the hash the block showed, a write another
+session made after the render is a lost update the journal reports,
+and the result tells the model the entry had changed.
 
 `memory_patch` is the tool the model is told to prefer for an edit: the
 call is the size of the change, and the edit is anchored in the stored

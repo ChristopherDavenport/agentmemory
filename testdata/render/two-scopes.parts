@@ -1,0 +1,6 @@
+memory 8
+memory/user 7
+memory/user/editor 81
+memory/project 10
+memory/project/build 75
+memory:summary 93

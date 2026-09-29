@@ -5,6 +5,101 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Breaking
+
+- **The rendered block changes.** The line with the counts and the
+  budget, `Entries: … Block: n of m bytes (k free). Entry limit: …`,
+  is the block's last line instead of its second, and the block no
+  longer ends with a newline, so it is one byte shorter. The line
+  changes on every write, and the block is the instructions, the prefix
+  every provider's prompt cache keys on: with it first, a write
+  invalidated the cached prefix at byte 83, before every entry, tool
+  and item; now a write keeps every entry before the one it touched.
+  Everything else in the block is byte for byte what it was, and
+  `Manifest` does not change. Every golden that pins a rendered block,
+  here or in a consumer, moves; a product that joined the block to
+  what follows with a blank line still gets one. `Usage` says the
+  budget is on the block's last line (#23).
+- **`Render` is `RenderParts` joined.** `RenderParts(ctx, s, scopes,
+  opts...)` returns the block as `[]Part`, `Part{ID, Text}`: the title
+  (`memory`, `TitlePartID`), each scope heading (`memory/<scope>`), each
+  entry (`memory/<scope>/<name>`, `PartID`), each scope's omission line
+  (`memory/<scope>:omitted`) and the summary line (`memory:summary`,
+  `SummaryPartID`), with the `Manifest`. `JoinParts` joins them with
+  `PartSeparator`, one blank line, which is agentsession's
+  `PartSeparator`; the type and the constant are this module's own,
+  since it does not import the session format. A product recording its
+  instructions as parts, through agentturn v0.0.10's
+  `session.WithInstructionsParts`, hands agentsession these parts
+  beside its own instead of parsing the block, and a write to one entry
+  is recorded as that entry's part and the summary. An empty scope's
+  `No entries.` is in its heading's part. A scope given twice, which
+  would name its parts twice and which agentsession refuses, is now
+  `ErrInvalid` from `Render` and `RenderParts` (#24; feeds agentturn
+  #114 and agentkit).
+
+### Added
+
+- `WithRendered(func() Manifest)`: `memory_save` names the hash the
+  rendered block showed for the entry as the write's base, rather than
+  the hash of its own read. The model composed the content from the
+  block, and a write another session made after the render is the one
+  the save discards; with the option that save's `Prev` is the block's
+  hash, so `LostUpdates` reports it, and the result line tells the model
+  the entry changed after the render. An entry the block did not show,
+  a create or one it omitted, is based on the save's own read as
+  before. With the option set, the result line ends by saying which base
+  the write took. `memory_patch` is unchanged; its edit is anchored in
+  the stored text. A product sets the option to return the manifest of
+  its last `Render` (#22).
+- `WithReadScopes(scopes...)`: scopes the model may read and not write.
+  They join `memory_search`'s `scopes` enum and are searched when a
+  call names none, so an entry the block omitted from a scope the
+  product renders but does not hand to `Tools` is reachable, as the
+  block says. `memory_save`, `memory_patch` and `memory_forget` refuse
+  them with `scope <name> is read-only`, which their descriptions state.
+  `Tools` panics on a read scope that is not kebab-case, is given twice
+  or is also writable, and now on a writable scope given twice (#26).
+- The four tools carry `agenttool.Annotations`, each with a title:
+  `memory_search` read-only, `memory_save` and `memory_forget`
+  destructive, since a save replaces the entry whole, and
+  `memory_patch` neither; none is open-world. The title keeps
+  `memory_patch`'s annotations from being the zero value, which a host
+  such as mcpserver serves as none, and MCP then defaults to destructive
+  and open-world. The schema check the tools add is built on
+  `agenttool.Wrap`, which forwards every property the tool declares,
+  instead of an embedding that forwarded `Strict` and `Sequential` alone
+  (#27).
+
+### Changed
+
+- `memory_search`'s description says every scope it reaches is searched
+  when the call names none, where with more than one scope it said to
+  name one on every call, which was the writers' rule; with one scope it
+  says `scopes` may be left out. The argument has always been
+  optional. The description, and so the tool's definition hash,
+  changes.
+
+### Fixed
+
+- sqlite: `Open` on a database that does not exist yet no longer fails
+  with `SQLITE_BUSY` when several processes open it at once. Each
+  process's first connection switches the new file to WAL, and SQLite
+  refuses that switch at once, without consulting the busy handler,
+  while another process holds the file; `Open` now retries the schema
+  transaction on `SQLITE_BUSY` with a short growing pause, for as long
+  as the five second busy timeout would have waited. A new test opens
+  a fresh path from four processes at the same instant, which the
+  goroutine test could not reach (#25).
+
+### Dependencies
+
+- agenttool v0.0.8 to v0.0.9, in the root module and in `sqlite`, and
+  agentturn v0.0.9 to v0.0.10, which the tools' integration test alone
+  depends on.
+
 ## v0.0.4 - 2026-09-28
 
 ### Dependencies

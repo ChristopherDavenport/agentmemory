@@ -1,0 +1,10 @@
+memory 8
+memory/user 7
+memory/user/a 281
+memory/user/b 281
+memory/user/e 125
+memory/user:omitted 88
+memory/project 10
+memory/project/build 39
+memory/empty 21
+memory:summary 90

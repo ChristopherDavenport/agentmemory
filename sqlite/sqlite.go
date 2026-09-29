@@ -22,8 +22,14 @@ import (
 	"time"
 
 	"github.com/ChristopherDavenport/agentmemory"
-	_ "modernc.org/sqlite" // registers the "sqlite" driver
+	driver "modernc.org/sqlite" // registers the "sqlite" driver
+	sqlite3 "modernc.org/sqlite/lib"
 )
+
+// busyTimeout is how long a connection waits on another's lock before
+// failing with SQLITE_BUSY, and how long Open keeps retrying the
+// schema when SQLite fails without waiting.
+const busyTimeout = 5 * time.Second
 
 const schema = `
 CREATE TABLE IF NOT EXISTS entries (
@@ -91,7 +97,7 @@ func Open(path string, opts ...Option) (*Store, error) {
 	// database, so a connection that sets it while another process is
 	// writing has to wait rather than fail, and a connection that fails
 	// there never sets the timeout at all.
-	for _, p := range []string{"busy_timeout(5000)", "journal_mode(WAL)", "synchronous(NORMAL)"} {
+	for _, p := range []string{fmt.Sprintf("busy_timeout(%d)", busyTimeout.Milliseconds()), "journal_mode(WAL)", "synchronous(NORMAL)"} {
 		pragmas.Add("_pragma", p)
 	}
 	dsn := "file:" + path + "?" + pragmas.Encode()
@@ -109,7 +115,11 @@ func Open(path string, opts ...Option) (*Store, error) {
 	// The schema goes in through the writer pool's immediate
 	// transaction, so two processes opening one database at once queue
 	// on the database's write lock under the busy timeout instead of
-	// one of them failing with SQLITE_BUSY.
+	// one of them failing with SQLITE_BUSY. On a database that does not
+	// exist yet that is not enough: the first connection of each
+	// process switches the new file to WAL, and SQLite fails that switch
+	// with SQLITE_BUSY at once, without the busy handler, when another
+	// process holds the file. applySchema retries it within the timeout.
 	if err := applySchema(w); err != nil {
 		w.Close()
 		r.Close()
@@ -119,7 +129,30 @@ func Open(path string, opts ...Option) (*Store, error) {
 	return s, nil
 }
 
+// applySchema applies the schema, trying again with a growing pause
+// while SQLite reports the database busy, for as long as the busy
+// timeout would have waited.
 func applySchema(w *sql.DB) error {
+	deadline := time.Now().Add(busyTimeout)
+	pause := time.Millisecond
+	for {
+		err := applySchemaOnce(w)
+		if err == nil || !isBusy(err) || time.Now().Add(pause).After(deadline) {
+			return err
+		}
+		time.Sleep(pause)
+		pause = min(2*pause, 50*time.Millisecond)
+	}
+}
+
+// isBusy reports whether err is SQLite's SQLITE_BUSY, in any of its
+// extended forms.
+func isBusy(err error) bool {
+	var se *driver.Error
+	return errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_BUSY
+}
+
+func applySchemaOnce(w *sql.DB) error {
 	tx, err := w.Begin()
 	if err != nil {
 		return fmt.Errorf("sqlite: begin: %w", err)
