@@ -31,6 +31,13 @@ versions may break the API.
   of one of the store's names has other columns, where before the
   mismatch surfaced as a column error at the first read or write.
 
+### Dependencies
+
+- agenttool v0.0.9 to v0.0.10, in the root module and in `sqlite`, and
+  agentturn v0.0.10 to v0.0.11, which the tools' integration test alone
+  depends on. No API of this module changes with them. modernc.org/sqlite
+  stays at v1.59.0: v1.60 requires Go 1.26, above this module's floor.
+
 ## v0.0.5 - 2026-09-28
 
 ### Breaking
