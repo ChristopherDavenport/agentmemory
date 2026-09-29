@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -68,6 +69,8 @@ type ToolOption func(*toolOptions)
 type toolOptions struct {
 	searchLimit int
 	searchBytes int
+	rendered    func() Manifest
+	readScopes  []Scope
 }
 
 // WithSearchLimit sets the number of entries memory_search returns
@@ -82,6 +85,42 @@ func WithSearchLimit(n int) ToolOption {
 // means the default.
 func WithSearchBytes(n int) ToolOption {
 	return func(o *toolOptions) { o.searchBytes = n }
+}
+
+// WithRendered tells memory_save what the model was shown: fn returns
+// the [Manifest] of the render the model is composing from, which is the
+// last one the product put in the instructions. A save of an entry that
+// manifest holds names the hash the block showed as the write's base,
+// through [BasedOn], so a write another session made after the render
+// and this save replaced is a record [LostUpdates] reports, rather than
+// a base the save claimed by reading it. An entry the manifest does not
+// hold, a create or one the block omitted, is based on the save's own
+// read, as it is without the option. The result line says which base
+// the write took, and says so to the model when the entry changed after
+// the render.
+//
+// fn is called on every save, from the goroutine running the call, so
+// it must be safe to call while the product renders the next turn. A
+// nil fn, or a manifest with no entries, is the same as no option.
+// memory_patch is unchanged: its edit is anchored in the stored text,
+// so it merges with a concurrent write or fails when the anchor is gone.
+func WithRendered(fn func() Manifest) ToolOption {
+	return func(o *toolOptions) { o.rendered = fn }
+}
+
+// WithReadScopes gives memory_search scopes the model may read and not
+// write, such as project rules a product renders into the block for the
+// model to follow and never edit. They join the scopes memory_search
+// names in its schema and searches when a call names none, so an entry
+// the block omitted from them is reachable as the block says it is;
+// memory_save, memory_patch and memory_forget refuse them with "scope
+// <name> is read-only", which their descriptions state. [Render] is
+// unchanged: a product renders the read scopes beside the others.
+//
+// A read scope must not also be one of the scopes passed to [Tools],
+// and must be kebab-case; [Tools] panics otherwise.
+func WithReadScopes(scopes ...Scope) ToolOption {
+	return func(o *toolOptions) { o.readScopes = append(o.readScopes, scopes...) }
 }
 
 type saveArgs struct {
@@ -105,7 +144,7 @@ type forgetArgs struct {
 
 type searchArgs struct {
 	Query  string   `json:"query" desc:"Words that must all appear in an entry's name, description or content, in any case"`
-	Scopes []string `json:"scopes,omitempty" desc:"Which memories to search; all the ones this tool can reach when omitted"`
+	Scopes []string `json:"scopes,omitempty" desc:"Which memories to search; all of them when omitted"`
 	Limit  int      `json:"limit,omitempty" desc:"At most this many entries; keep it low, results stay in the conversation"`
 }
 
@@ -122,6 +161,14 @@ type searchArgs struct {
 // recorder writes beside the call under [WriteNS] and the model never
 // sees. Tools panics with no scopes, since a tool set that can reach
 // nothing is a programming error.
+//
+// memory_search is annotated read-only, memory_save and memory_forget
+// destructive, since a save replaces the entry whole, and memory_patch
+// neither; none is open-world. See [agenttool.Annotations].
+//
+// [WithReadScopes] adds scopes memory_search reaches and the writers
+// refuse, and [WithRendered] anchors memory_save to the block the model
+// read.
 func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	if len(scopes) == 0 {
 		panic("agentmemory.Tools: no scopes")
@@ -135,6 +182,14 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	for _, opt := range opts {
 		opt(&o)
 	}
+	for _, s := range o.readScopes {
+		if !ValidScope(s) {
+			panic(fmt.Sprintf("agentmemory.Tools: read scope %q is not kebab-case", s))
+		}
+		if slices.Contains(scopes, s) {
+			panic(fmt.Sprintf("agentmemory.Tools: scope %q is both writable and read-only", s))
+		}
+	}
 	if o.searchLimit <= 0 {
 		o.searchLimit = DefaultSearchLimit
 	}
@@ -142,48 +197,67 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 		o.searchBytes = DefaultSearchBytes
 	}
 	t := &toolset{store: store, scopes: scopes, opts: o}
+	searchable := slices.Concat(scopes, o.readScopes)
+	destructive := agenttool.Annotations{Destructive: true}
 	return []agenttool.Tool{
-		tool(SaveTool, t.saveDescription(), t.save, scopes),
-		tool(PatchTool, t.patchDescription(), t.patch, scopes),
-		tool(ForgetTool, t.forgetDescription(), t.forget, scopes),
-		tool(SearchTool, t.searchDescription(), t.search, scopes),
+		tool(SaveTool, t.saveDescription(), t.save, scopes, o.readScopes, destructive),
+		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, agenttool.Annotations{}),
+		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, destructive),
+		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, agenttool.Annotations{ReadOnly: true}),
 	}
 }
 
 // tool builds one memory tool over a schema that names the scopes, and
 // checks a call against that schema before it runs.
-func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes []Scope) agenttool.Tool {
+//
+// The check is the tool's own. agenttool validates against the schema
+// it reflected, and skips it for a schema given through WithParameters,
+// since it cannot know what that schema promises; these tools build
+// their own schema to name the scopes, so they check it themselves.
+// Without it every required property and every enum is advice: a
+// memory_patch that omits new_text would decode to the empty string and
+// delete old_text rather than come back as an error the model can read.
+// The check is added with [agenttool.Wrap], which forwards every
+// property the tool declares, its annotations among them.
+//
+// A writer's schema leaves the read scopes out of its enum, so a call
+// naming one would fail the schema with a list of the other scopes;
+// readOnly is checked first, so the model is told the scope is
+// read-only, as the description says.
+func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes, readOnly []Scope, a agenttool.Annotations) agenttool.Tool {
 	tree, schema := scopeSchema[Args](scopes)
-	return checked{
-		Tool: agenttool.New(name, description, fn, agenttool.WithParameters(schema)),
-		tree: tree,
+	inner := agenttool.New(name, description, fn, agenttool.WithParameters(schema), agenttool.WithAnnotations(a))
+	return agenttool.Wrap(inner, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+		if err := refuseReadOnly(call.Args, readOnly); err != nil {
+			return agenttool.Result{}, err
+		}
+		if err := tree.ValidateJSON(call.Args); err != nil {
+			return agenttool.Result{}, err
+		}
+		return inner.Execute(ctx, call)
+	})
+}
+
+// refuseReadOnly returns the read-only refusal when args name one of
+// readOnly as their scope, and nil otherwise, including for arguments
+// the schema check will refuse on their own.
+func refuseReadOnly(args json.RawMessage, readOnly []Scope) error {
+	if len(readOnly) == 0 {
+		return nil
 	}
-}
-
-// checked is a tool that validates a call's arguments against its own
-// schema. agenttool validates against the schema it reflected, and
-// skips it for a schema given through WithParameters, since it cannot
-// know what that schema promises; these tools build their own schema
-// to name the scopes, so they check it themselves. Without it every
-// required property and every enum is advice: a memory_patch that
-// omits new_text would decode to the empty string and delete old_text
-// rather than come back as an error the model can read.
-type checked struct {
-	agenttool.Tool
-	tree *agenttool.Schema
-}
-
-func (c checked) Execute(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
-	if err := c.tree.ValidateJSON(call.Args); err != nil {
-		return agenttool.Result{}, err
+	var a struct {
+		Scope string `json:"scope"`
 	}
-	return c.Tool.Execute(ctx, call)
+	if json.Unmarshal(args, &a) != nil {
+		return nil
+	}
+	if slices.Contains(readOnly, Scope(a.Scope)) {
+		return readOnlyError(Scope(a.Scope))
+	}
+	return nil
 }
 
-// Strict and Sequential keep the wrapped tool's answers, which an
-// embedded interface does not promote.
-func (c checked) Strict() bool     { return agenttool.IsStrict(c.Tool) }
-func (c checked) Sequential() bool { return agenttool.IsSequential(c.Tool) }
+func readOnlyError(s Scope) error { return fmt.Errorf("scope %s is read-only", s) }
 
 // scopeSchema reflects an argument type and writes the scopes a
 // product allows into the schema: an enum on scope, and on the items of
@@ -248,30 +322,57 @@ func (t *toolset) scopeList() string {
 	return fmt.Sprintf("Scopes: %s; name one on every call.", strings.Join(t.scopeNames(), ", "))
 }
 
-func (t *toolset) scopeNames() []string {
-	names := make([]string, 0, len(t.scopes))
-	for _, s := range t.scopes {
-		names = append(names, string(s))
+func (t *toolset) scopeNames() []string { return names(t.scopes) }
+
+func names(scopes []Scope) []string {
+	out := make([]string, 0, len(scopes))
+	for _, s := range scopes {
+		out = append(out, string(s))
 	}
-	return names
+	return out
+}
+
+// writerScopes is the scope sentence of a writer's description: the
+// scopes it writes, and the ones it refuses with the message it gives.
+func (t *toolset) writerScopes() string {
+	list := t.scopeList()
+	for _, s := range t.opts.readScopes {
+		list += fmt.Sprintf(" Scope %s is read-only: memory_search reads it, and a write to it is refused with %q.", s, readOnlyError(s).Error())
+	}
+	return list
+}
+
+// searchScopes is the scope sentence of memory_search's description:
+// every scope it reaches, which are all searched when a call names
+// none.
+func (t *toolset) searchScopes() string {
+	all := slices.Concat(t.scopes, t.opts.readScopes)
+	if len(all) == 1 {
+		return fmt.Sprintf("Scope: %s, the only one; the argument may be left out.", all[0])
+	}
+	list := fmt.Sprintf("Scopes: %s; all of them when scopes is left out.", strings.Join(names(all), ", "))
+	if len(t.opts.readScopes) > 0 {
+		list += fmt.Sprintf(" Read-only, so for reading: %s.", strings.Join(names(t.opts.readScopes), ", "))
+	}
+	return list
 }
 
 func (t *toolset) saveDescription() string {
 	return fmt.Sprintf("Create a memory entry, or replace one whole. To edit an existing entry prefer memory_patch, which sends only the change. Content is Markdown of at most %d bytes; a larger write is refused with the sizes. Give a description in meta so the entry can be found. meta replaces the entry's metadata when you give it and keeps what is there when you leave it out, so send an empty object to clear it. The result says what the write replaced and what became of the metadata. %s",
-		t.store.MaxEntryBytes(), t.scopeList())
+		t.store.MaxEntryBytes(), t.writerScopes())
 }
 
 func (t *toolset) patchDescription() string {
-	return "Edit a memory entry by replacing old_text with new_text. old_text must appear exactly once in the entry, copied exactly; the call fails and says so when it is absent or repeated. Prefer this to memory_save for an edit: the call is the size of the change, and the edit is anchored in the stored text, so a change another session made in the meantime is kept. " + t.scopeList()
+	return "Edit a memory entry by replacing old_text with new_text. old_text must appear exactly once in the entry, copied exactly; the call fails and says so when it is absent or repeated. Prefer this to memory_save for an edit: the call is the size of the change, and the edit is anchored in the stored text, so a change another session made in the meantime is kept. " + t.writerScopes()
 }
 
 func (t *toolset) forgetDescription() string {
-	return "Remove a memory entry. The store's journal keeps its last content. " + t.scopeList()
+	return "Remove a memory entry. The store's journal keeps its last content. " + t.writerScopes()
 }
 
 func (t *toolset) searchDescription() string {
 	return fmt.Sprintf("Find memory entries: the ones the memory block omits, or one to read whole before editing it. Every word of the query must appear in an entry's name, description or content, in any case. Returns up to %d entries unless limit says otherwise, and at most %d bytes of content; the rest are listed by name. Results stay in the conversation, so search for what you need and no more. %s",
-		t.opts.searchLimit, t.opts.searchBytes, t.scopeList())
+		t.opts.searchLimit, t.opts.searchBytes, t.searchScopes())
 }
 
 // scope resolves a call's scope argument to an allowed scope. An
@@ -289,7 +390,19 @@ func (t *toolset) scope(s string) (Scope, error) {
 			return allowed, nil
 		}
 	}
+	if slices.Contains(t.opts.readScopes, Scope(s)) {
+		return "", readOnlyError(Scope(s))
+	}
 	return "", fmt.Errorf("scope %q is not available; %s", s, t.scopeList())
+}
+
+// readScope resolves one of a search's scopes, which may be a read
+// scope as well as a writable one.
+func (t *toolset) readScope(s string) (Scope, error) {
+	if slices.Contains(t.opts.readScopes, Scope(s)) {
+		return Scope(s), nil
+	}
+	return t.scope(s)
 }
 
 // wrote builds a write's result: the line the model reads, and the
@@ -309,6 +422,11 @@ func wrote(tool string, c *Change, format string, args ...any) (agenttool.Result
 // on, so the journal can show a write that lost another's. Put stays a
 // replace of the whole entry, because a store whose write is sometimes
 // a merge cannot keep the journal a list of full states.
+//
+// The state it was built on is the one the model composed from when
+// the product says what that was, see [WithRendered]: the model wrote
+// content from the block, not from this read, and a write that landed
+// between the two is the one this save discards.
 func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error) {
 	scope, err := t.scope(a.Scope)
 	if err != nil {
@@ -322,19 +440,56 @@ func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error
 		stored = nil
 	}
 	e := Entry{Scope: scope, Name: a.Name, Content: a.Content, Meta: a.Meta}
+	if stored != nil && a.Meta == nil {
+		e.Meta = stored.Meta
+	}
+	shown, fromBlock := t.shown(scope, a.Name)
 	var opts []PutOption
-	if stored != nil {
+	switch {
+	case fromBlock:
+		opts = append(opts, BasedOn(shown))
+	case stored != nil:
 		opts = append(opts, BasedOn(stored.Hash))
-		if a.Meta == nil {
-			e.Meta = stored.Meta
-		}
 	}
 	c, err := t.store.Put(ctx, e, opts...)
 	if err != nil {
 		return agenttool.Result{}, err
 	}
-	return wrote(SaveTool, c, "Saved %s/%s (%d of %d bytes) %s — %s; %s",
-		scope, a.Name, len(a.Content), t.store.MaxEntryBytes(), Hash(a.Content), savedWhat(stored), metaWhat(stored, a.Meta, e.Meta))
+	return wrote(SaveTool, c, "Saved %s/%s (%d of %d bytes) %s — %s; %s%s",
+		scope, a.Name, len(a.Content), t.store.MaxEntryBytes(), Hash(a.Content), savedWhat(stored), metaWhat(stored, a.Meta, e.Meta), t.basedWhat(stored, shown, fromBlock))
+}
+
+// shown returns the hash the rendered block showed for the entry, and
+// whether it showed the entry at all; see [WithRendered].
+func (t *toolset) shown(scope Scope, name string) (string, bool) {
+	if t.opts.rendered == nil {
+		return "", false
+	}
+	for _, me := range t.opts.rendered().Entries {
+		if me.Scope == scope && me.Name == name {
+			return me.Hash, true
+		}
+	}
+	return "", false
+}
+
+// basedWhat says which state the write was built on, when the tools
+// know what the block showed: the block's, or, for an entry it did not
+// show, the stored one. When the entry changed after the block was
+// rendered, the model is told that this write replaced the change, so
+// it can read the entry and put back what it needs.
+func (t *toolset) basedWhat(stored *Entry, shown string, fromBlock bool) string {
+	switch {
+	case t.opts.rendered == nil || (!fromBlock && stored == nil):
+		return ""
+	case !fromBlock:
+		return "; built on the stored entry, which the block did not show"
+	case stored == nil:
+		return "; built on the block, but the entry was forgotten after the block was rendered and this write created it again"
+	case stored.Hash != shown:
+		return fmt.Sprintf("; built on the block's %s, but the entry changed to %s after the block was rendered and this write replaced that change; read it with memory_search if the change mattered", shown, stored.Hash)
+	}
+	return "; built on the block"
 }
 
 // savedWhat says what the write did to the entry.
@@ -426,11 +581,11 @@ func (t *toolset) search(ctx context.Context, a searchArgs) (agenttool.Result, e
 	if strings.TrimSpace(a.Query) == "" {
 		return agenttool.Result{}, errors.New("query is empty; give one or more words")
 	}
-	scopes := t.scopes
+	scopes := slices.Concat(t.scopes, t.opts.readScopes)
 	if len(a.Scopes) > 0 {
 		scopes = make([]Scope, 0, len(a.Scopes))
 		for _, s := range a.Scopes {
-			scope, err := t.scope(s)
+			scope, err := t.readScope(s)
 			if err != nil {
 				return agenttool.Result{}, err
 			}
@@ -445,16 +600,13 @@ func (t *toolset) search(ctx context.Context, a searchArgs) (agenttool.Result, e
 	if err != nil {
 		return agenttool.Result{}, err
 	}
-	names := make([]string, 0, len(scopes))
-	for _, s := range scopes {
-		names = append(names, string(s))
-	}
+	searched := strings.Join(names(scopes), ", ")
 	if len(found) == 0 {
 		// A search writes nothing, so its result carries no record.
-		return agenttool.Text(fmt.Sprintf("No entries in %s match %q.", strings.Join(names, ", "), a.Query)), nil
+		return agenttool.Text(fmt.Sprintf("No entries in %s match %q.", searched, a.Query)), nil
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d %s in %s for %q.\n", len(found), plural(len(found), "match", "matches"), strings.Join(names, ", "), a.Query)
+	fmt.Fprintf(&b, "%d %s in %s for %q.\n", len(found), plural(len(found), "match", "matches"), searched, a.Query)
 	shown := 0
 	var unshown []string
 	for _, e := range found {

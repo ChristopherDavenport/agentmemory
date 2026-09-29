@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -41,7 +42,11 @@ func TestToolsShape(t *testing.T) {
 		if tool.Name() != want[i] {
 			t.Errorf("tool %d = %s, want %s", i, tool.Name(), want[i])
 		}
-		if !strings.Contains(tool.Description(), "Scopes: user, project; name one on every call.") {
+		scopes := "Scopes: user, project; name one on every call."
+		if tool.Name() == SearchTool {
+			scopes = "Scopes: user, project; all of them when scopes is left out."
+		}
+		if !strings.Contains(tool.Description(), scopes) {
 			t.Errorf("%s description does not name the scopes: %s", tool.Name(), tool.Description())
 		}
 		if agenttool.IsStrict(tool) {
@@ -542,4 +547,236 @@ func journalLen(s Store) int {
 		n++
 	}
 	return n
+}
+
+// TestToolsAnnotations checks what a host reads to decide what to
+// approve without asking: the search is read-only, the save and the
+// forget are destructive, the patch is neither, and none reaches
+// outside the store. The check the tools add over their schema must not
+// hide any property the tool declares.
+func TestToolsAnnotations(t *testing.T) {
+	tools := Tools(NewMemStore(), []Scope{"user"})
+	want := map[string]agenttool.Annotations{
+		SaveTool:   {Destructive: true},
+		PatchTool:  {},
+		ForgetTool: {Destructive: true},
+		SearchTool: {ReadOnly: true},
+	}
+	for _, tool := range tools {
+		if _, ok := tool.(agenttool.Annotated); !ok {
+			t.Errorf("%s does not implement agenttool.Annotated", tool.Name())
+		}
+		if got := agenttool.AnnotationsOf(tool); got != want[tool.Name()] {
+			t.Errorf("%s annotations = %+v, want %+v", tool.Name(), got, want[tool.Name()])
+		}
+		if agenttool.Unwrap(tool) == nil {
+			t.Errorf("%s is not built on agenttool.Wrap", tool.Name())
+		}
+		if agenttool.IsStrict(tool) || agenttool.IsSequential(tool) {
+			t.Errorf("%s: strict %v, sequential %v", tool.Name(), agenttool.IsStrict(tool), agenttool.IsSequential(tool))
+		}
+	}
+	// The schema check still runs under the wrapper.
+	if _, err := call(t, tools, PatchTool, `{"name":"x","old_text":"a"}`); err == nil || !strings.Contains(err.Error(), "new_text") {
+		t.Errorf("a patch without new_text = %v", err)
+	}
+}
+
+// TestReadScopes is a scope the model may read and not write: the block
+// shows it, memory_search reaches it, by name and by default, and the
+// three writers refuse it with the message their descriptions state.
+func TestReadScopes(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	for i := range 3 {
+		if _, err := store.Put(ctx, Entry{Scope: "project", Name: fmt.Sprintf("rule-%d", i), Content: fmt.Sprintf("Rule %d: run make check.\n", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "style", Content: "Short answers.\n"}); err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(store, []Scope{"user"}, WithReadScopes("project"))
+	if err := agenttool.Set(tools).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	refusal := `scope project is read-only`
+	var schema struct {
+		Required   []string `json:"required"`
+		Properties map[string]struct {
+			Enum  []string `json:"enum"`
+			Items struct {
+				Enum []string `json:"enum"`
+			} `json:"items"`
+		} `json:"properties"`
+	}
+	for _, tool := range tools {
+		if err := json.Unmarshal(tool.Parameters(), &schema); err != nil {
+			t.Fatal(err)
+		}
+		if tool.Name() == SearchTool {
+			if fmt.Sprint(schema.Properties["scopes"].Items.Enum) != "[user project]" {
+				t.Errorf("search scopes enum = %v", schema.Properties["scopes"].Items.Enum)
+			}
+			if d := tool.Description(); !strings.Contains(d, "Scopes: user, project; all of them when scopes is left out. Read-only, so for reading: project.") {
+				t.Errorf("search description: %s", d)
+			}
+			continue
+		}
+		// A writer's enum is the writable scope alone, and the scope
+		// stays optional, since there is still one to write.
+		if fmt.Sprint(schema.Properties["scope"].Enum) != "[user]" || slices.Contains(schema.Required, "scope") {
+			t.Errorf("%s: scope enum %v, required %v", tool.Name(), schema.Properties["scope"].Enum, schema.Required)
+		}
+		if d := tool.Description(); !strings.Contains(d, "Scope project is read-only: memory_search reads it, and a write to it is refused with \""+refusal+"\".") {
+			t.Errorf("%s description does not state the refusal: %s", tool.Name(), d)
+		}
+	}
+	for _, c := range []struct{ tool, args string }{
+		{SaveTool, `{"scope":"project","name":"rule-0","content":"Skip the tests."}`},
+		{PatchTool, `{"scope":"project","name":"rule-0","old_text":"make check","new_text":"nothing"}`},
+		{ForgetTool, `{"scope":"project","name":"rule-0"}`},
+	} {
+		if _, err := call(t, tools, c.tool, c.args); err == nil || err.Error() != refusal {
+			t.Errorf("%s into a read scope = %v, want %q", c.tool, err, refusal)
+		}
+	}
+	if got, _ := store.Get(ctx, "project", "rule-0"); got == nil || got.Content != "Rule 0: run make check.\n" {
+		t.Errorf("a read scope's entry changed: %+v", got)
+	}
+	// The writers' own resolution refuses it too, for a caller that
+	// reaches them without the schema check.
+	ts := &toolset{store: store, scopes: []Scope{"user"}, opts: toolOptions{readScopes: []Scope{"project"}}}
+	if _, err := ts.scope("project"); err == nil || err.Error() != refusal {
+		t.Errorf("scope(project) = %v", err)
+	}
+
+	out, err := call(t, tools, SearchTool, `{"query":"rule 2"}`)
+	if err != nil || !strings.Contains(out, "project/rule-2") || !strings.Contains(out, "in user, project for") {
+		t.Errorf("a search naming no scope = %q, %v", out, err)
+	}
+	out, err = call(t, tools, SearchTool, `{"query":"rule 1","scopes":["project"]}`)
+	if err != nil || !strings.Contains(out, "project/rule-1") {
+		t.Errorf("a search of the read scope = %q, %v", out, err)
+	}
+	if _, err := call(t, tools, SearchTool, `{"query":"rule","scopes":["other"]}`); err == nil {
+		t.Error("a search of a scope the tools do not reach succeeded")
+	}
+
+	for name, opt := range map[string]ToolOption{
+		"both":    WithReadScopes("user"),
+		"invalid": WithReadScopes("Project"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Error("Tools did not panic")
+				}
+			}()
+			Tools(store, []Scope{"user"}, opt)
+		})
+	}
+}
+
+// TestSaveBasedOnTheRender is the round 3 study's lost update: the model
+// composes a save from the block, another channel writes the entry
+// before the save runs, and the save lands on that write. Without
+// WithRendered the save claims the other channel's write as its base
+// and the journal shows nothing; with it the base is what the block
+// showed, LostUpdates reports the save, and the model is told.
+func TestSaveBasedOnTheRender(t *testing.T) {
+	for _, withRender := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rendered=%v", withRender), func(t *testing.T) {
+			ctx := context.Background()
+			store := NewMemStore()
+			scopes := []Scope{"user"}
+			if _, err := store.Put(ctx, Entry{Scope: "user", Name: "profile", Content: "Chris. Timezone Europe/London."}); err != nil {
+				t.Fatal(err)
+			}
+			_, man, err := Render(ctx, store, scopes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var opts []ToolOption
+			if withRender {
+				opts = append(opts, WithRendered(func() Manifest { return man }))
+			}
+			tools := Tools(store, scopes, opts...)
+			shown := man.Entries[0].Hash
+			// Telegram writes after the render.
+			if _, err := store.Put(WithSession(ctx, "telegram"),
+				Entry{Scope: "user", Name: "profile", Content: "Chris. Timezone Europe/London. Prefers Go."},
+				BasedOn(shown)); err != nil {
+				t.Fatal(err)
+			}
+			// Slack's model composed from the block.
+			out, err := call(t, tools, SaveTool, `{"name":"profile","content":"Chris. Timezone Europe/London. Lives in Bristol."}`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lost, err := LostUpdates(ctx, store, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !withRender {
+				if len(lost) != 0 || strings.Contains(out, "built on") {
+					t.Errorf("without WithRendered: LostUpdates %+v, result %q", lost, out)
+				}
+				return
+			}
+			if len(lost) != 1 || lost[0].Change.Prev != shown || lost[0].Over != Hash("Chris. Timezone Europe/London. Prefers Go.") {
+				t.Fatalf("LostUpdates = %+v, want the save built on %s over Telegram's write", lost, shown)
+			}
+			if !strings.Contains(out, "built on the block's "+shown+", but the entry changed to "+lost[0].Over+" after the block was rendered") {
+				t.Errorf("the result does not tell the model: %q", out)
+			}
+		})
+	}
+
+	// The other bases: an unchanged entry the block showed, one it
+	// omitted, a create, and one forgotten after the render.
+	ctx := context.Background()
+	store := NewMemStore(WithMaxEntryBytes(256))
+	scopes := []Scope{"user"}
+	for _, e := range []Entry{
+		{Scope: "user", Name: "a", Content: filler(200, 'a')},
+		{Scope: "user", Name: "b", Content: filler(200, 'b')},
+		{Scope: "user", Name: "c", Content: filler(200, 'c')},
+	} {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, man, err := Render(ctx, store, scopes, WithMaxTotalBytes(700))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(man.Entries) < 2 || len(man.Omitted) == 0 {
+		t.Fatalf("the fixture shows and omits nothing: %+v", man)
+	}
+	tools := Tools(store, scopes, WithRendered(func() Manifest { return man }))
+	shownName, omittedName := man.Entries[0].Name, man.Omitted[0].Name
+	if _, err := store.Forget(ctx, "user", man.Entries[len(man.Entries)-1].Name); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, want string }{
+		{shownName, "; built on the block"},
+		{omittedName, "; built on the stored entry, which the block did not show"},
+		{"new", "created; no meta"},
+		{man.Entries[len(man.Entries)-1].Name, "; built on the block, but the entry was forgotten after the block was rendered and this write created it again"},
+	} {
+		out, err := call(t, tools, SaveTool, fmt.Sprintf(`{"name":%q,"content":"x"}`, c.name))
+		if err != nil || !strings.HasSuffix(out, c.want) {
+			t.Errorf("save %s = %q, %v; want it to end %q", c.name, out, err, c.want)
+		}
+	}
+	lost, err := LostUpdates(ctx, store, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only the save that brought back a forgotten entry was built on a
+	// state the journal no longer held.
+	if len(lost) != 1 || lost[0].Change.Entry.Name != man.Entries[len(man.Entries)-1].Name || lost[0].Over != "" {
+		t.Errorf("LostUpdates = %+v", lost)
+	}
 }

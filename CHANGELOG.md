@@ -7,6 +7,44 @@ versions may break the API.
 
 ## Unreleased
 
+### Added
+
+- `WithRendered(func() Manifest)`: `memory_save` names the hash the
+  rendered block showed for the entry as the write's base, rather than
+  the hash of its own read. The model composed the content from the
+  block, and a write another session made after the render is the one
+  the save discards; with the option that save's `Prev` is the block's
+  hash, so `LostUpdates` reports it, and the result line tells the model
+  the entry changed after the render. An entry the block did not show,
+  a create or one it omitted, is based on the save's own read as
+  before. With the option set, the result line ends by saying which base
+  the write took. `memory_patch` is unchanged; its edit is anchored in
+  the stored text. A product sets the option to return the manifest of
+  its last `Render` (#22).
+- `WithReadScopes(scopes...)`: scopes the model may read and not write.
+  They join `memory_search`'s `scopes` enum and are searched when a
+  call names none, so an entry the block omitted from a scope the
+  product renders but does not hand to `Tools` is reachable, as the
+  block says. `memory_save`, `memory_patch` and `memory_forget` refuse
+  them with `scope <name> is read-only`, which their descriptions state.
+  `Tools` panics on a read scope that is not kebab-case or is also
+  writable (#26).
+- The four tools carry `agenttool.Annotations`: `memory_search`
+  read-only, `memory_save` and `memory_forget` destructive, since a save
+  replaces the entry whole, and `memory_patch` neither; none is
+  open-world. The schema check the tools add is built on
+  `agenttool.Wrap`, which forwards every property the tool declares,
+  instead of an embedding that forwarded `Strict` and `Sequential` alone
+  (#27).
+
+### Changed
+
+- `memory_search`'s description says every scope it reaches is searched
+  when the call names none, where it said to name one on every call,
+  which was the writers' rule; its `scopes` argument has always been
+  optional. The description, and so the tool's definition hash,
+  changes.
+
 ### Fixed
 
 - sqlite: `Open` on a database that does not exist yet no longer fails
