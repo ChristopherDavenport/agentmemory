@@ -1,11 +1,13 @@
 // Package sqlite is an [agentmemory.Store] over one SQLite database
 // file with full-text search. It is a nested module so the driver
 // (modernc.org/sqlite, pure Go) stays out of the root module's
-// dependency graph. Entries are rows, the journal is a table whose
-// line column holds the same JSON record filestore's journal.jsonl
-// would, so a database can be dumped to that file without conversion,
-// and Search runs over an FTS5 index of each entry's name, meta and
-// content, ranked by relevance.
+// dependency graph. Entries are rows of memory_entries, the journal is
+// memory_journal, whose line column holds the same JSON record
+// filestore's journal.jsonl would, so a database can be dumped to that
+// file without conversion, and Search runs over memory_entries_fts, an
+// FTS5 index of each entry's name, meta and content, ranked by
+// relevance. Every table is prefixed memory_, so the file can be
+// shared with other stores, such as agentsession's.
 package sqlite
 
 import (
@@ -17,6 +19,7 @@ import (
 	"iter"
 	"net/url"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -31,8 +34,11 @@ import (
 // schema when SQLite fails without waiting.
 const busyTimeout = 5 * time.Second
 
+// The tables carry the module's prefix so the store can share a
+// database with others, agentsession's sqlite store among them, whose
+// own table is named entries.
 const schema = `
-CREATE TABLE IF NOT EXISTS entries (
+CREATE TABLE IF NOT EXISTS memory_entries (
 	scope   TEXT NOT NULL,
 	name    TEXT NOT NULL,
 	content TEXT NOT NULL,
@@ -41,14 +47,14 @@ CREATE TABLE IF NOT EXISTS entries (
 	updated TEXT NOT NULL,
 	PRIMARY KEY (scope, name)
 ) STRICT;
-CREATE TABLE IF NOT EXISTS journal (
+CREATE TABLE IF NOT EXISTS memory_journal (
 	seq   INTEGER PRIMARY KEY,
 	scope TEXT NOT NULL,
 	name  TEXT NOT NULL,
 	line  TEXT NOT NULL
 ) STRICT;
-CREATE INDEX IF NOT EXISTS journal_entry ON journal(scope, name, seq);
-CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+CREATE INDEX IF NOT EXISTS memory_journal_entry ON memory_journal(scope, name, seq);
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_entries_fts USING fts5(
 	scope UNINDEXED,
 	name,
 	meta,
@@ -56,6 +62,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
 	tokenize = 'unicode61'
 );
 `
+
+// tables names each table the schema creates with the columns it has,
+// in order. Open refuses a database whose table of one of these names
+// has other columns, rather than failing at the first read or write.
+var tables = []struct {
+	name, legacy string
+	columns      []string
+}{
+	{"memory_entries", "entries", []string{"scope", "name", "content", "meta", "hash", "updated"}},
+	{"memory_journal", "journal", []string{"seq", "scope", "name", "line"}},
+	{"memory_entries_fts", "entries_fts", []string{"scope", "name", "meta", "content"}},
+}
 
 // Store is a SQLite-backed [agentmemory.Store]. It is safe for
 // concurrent use within one process, and several processes may share
@@ -158,13 +176,89 @@ func applySchemaOnce(w *sql.DB) error {
 		return fmt.Errorf("sqlite: begin: %w", err)
 	}
 	defer tx.Rollback()
+	if err := migrate(tx); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(schema); err != nil {
 		return fmt.Errorf("sqlite: apply schema: %w", err)
+	}
+	for _, t := range tables {
+		cols, err := columns(tx, t.name)
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(cols, t.columns) {
+			return fmt.Errorf("sqlite: table %s has columns (%s), want (%s): the database holds another program's table of that name",
+				t.name, strings.Join(cols, ", "), strings.Join(t.columns, ", "))
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlite: apply schema: %w", err)
 	}
 	return nil
+}
+
+// migrate renames the tables of a database an earlier release wrote,
+// entries, journal and entries_fts, to the prefixed names, inside the
+// schema transaction. It acts only when none of the prefixed tables
+// exists and all three unprefixed ones have this store's columns, so
+// another program's entries table, agentsession's for one, is left
+// alone. The journal's index has no rename; it is dropped, and the
+// schema creates it again under its new name.
+func migrate(tx *sql.Tx) error {
+	for _, t := range tables {
+		cols, err := columns(tx, t.name)
+		if err != nil {
+			return err
+		}
+		if cols != nil {
+			return nil
+		}
+		cols, err = columns(tx, t.legacy)
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(cols, t.columns) {
+			return nil
+		}
+	}
+	for _, t := range tables {
+		if _, err := tx.Exec(`ALTER TABLE "` + t.legacy + `" RENAME TO "` + t.name + `"`); err != nil {
+			return fmt.Errorf("sqlite: migrate: rename %s: %w", t.legacy, err)
+		}
+	}
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sqlite_schema WHERE type = 'index' AND name = 'journal_entry' AND tbl_name = 'memory_journal'`).Scan(&n); err != nil {
+		return fmt.Errorf("sqlite: migrate: %w", err)
+	}
+	if n > 0 {
+		if _, err := tx.Exec(`DROP INDEX journal_entry`); err != nil {
+			return fmt.Errorf("sqlite: migrate: drop journal_entry: %w", err)
+		}
+	}
+	return nil
+}
+
+// columns returns the named table's columns in order, or nil when
+// there is no such table.
+func columns(tx *sql.Tx, table string) ([]string, error) {
+	rows, err := tx.Query(`SELECT name FROM pragma_table_info(?) ORDER BY cid`, table)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: columns of %s: %w", table, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("sqlite: columns of %s: %w", table, err)
+		}
+		out = append(out, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: columns of %s: %w", table, err)
+	}
+	return out, nil
 }
 
 // Close runs PRAGMA optimize and closes both pools.
@@ -189,7 +283,7 @@ type querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-const selectEntry = `SELECT content, meta, hash, updated FROM entries WHERE scope = ? AND name = ?`
+const selectEntry = `SELECT content, meta, hash, updated FROM memory_entries WHERE scope = ? AND name = ?`
 
 // get loads one entry, or returns nil for none.
 func get(ctx context.Context, q querier, scope agentmemory.Scope, name string) (*agentmemory.Entry, error) {
@@ -249,7 +343,7 @@ func (s *Store) List(ctx context.Context, scope agentmemory.Scope) ([]agentmemor
 	if !agentmemory.ValidScope(scope) {
 		return nil, fmt.Errorf("%w: scope %q is not kebab-case", agentmemory.ErrInvalid, scope)
 	}
-	rows, err := s.r.QueryContext(ctx, `SELECT name, content, meta, hash, updated FROM entries WHERE scope = ? ORDER BY name`, string(scope))
+	rows, err := s.r.QueryContext(ctx, `SELECT name, content, meta, hash, updated FROM memory_entries WHERE scope = ? ORDER BY name`, string(scope))
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list %s: %w", scope, err)
 	}
@@ -311,7 +405,7 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 		}
 		meta = string(data)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO entries (scope, name, content, meta, hash, updated) VALUES (?, ?, ?, ?, ?, ?)
+	_, err = tx.ExecContext(ctx, `INSERT INTO memory_entries (scope, name, content, meta, hash, updated) VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (scope, name) DO UPDATE SET content = excluded.content, meta = excluded.meta, hash = excluded.hash, updated = excluded.updated`,
 		string(e.Scope), e.Name, e.Content, meta, e.Hash, stamp(now))
 	if err != nil {
@@ -352,7 +446,7 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	if stored == nil {
 		return nil, fmt.Errorf("%w: %s/%s", agentmemory.ErrNotFound, scope, name)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM entries WHERE scope = ? AND name = ?`, string(scope), name); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_entries WHERE scope = ? AND name = ?`, string(scope), name); err != nil {
 		return nil, fmt.Errorf("sqlite: remove %s/%s: %w", scope, name, err)
 	}
 	if err := reindex(ctx, tx, scope, name, nil); err != nil {
@@ -376,7 +470,7 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 // reindex replaces the named entry's row in the search index with e,
 // or removes it when e is nil.
 func reindex(ctx context.Context, tx *sql.Tx, scope agentmemory.Scope, name string, e *agentmemory.Entry) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM entries_fts WHERE scope = ? AND name = ?`, string(scope), name); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_entries_fts WHERE scope = ? AND name = ?`, string(scope), name); err != nil {
 		return fmt.Errorf("sqlite: index: %w", err)
 	}
 	if e == nil {
@@ -387,7 +481,7 @@ func reindex(ctx context.Context, tx *sql.Tx, scope agentmemory.Scope, name stri
 		values = append(values, v)
 	}
 	sort.Strings(values)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO entries_fts (scope, name, meta, content) VALUES (?, ?, ?, ?)`,
+	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_entries_fts (scope, name, meta, content) VALUES (?, ?, ?, ?)`,
 		string(e.Scope), e.Name, strings.Join(values, "\n"), e.Content); err != nil {
 		return fmt.Errorf("sqlite: index: %w", err)
 	}
@@ -399,7 +493,7 @@ func reindex(ctx context.Context, tx *sql.Tx, scope agentmemory.Scope, name stri
 // filestore writes it.
 func record(ctx context.Context, tx *sql.Tx, c agentmemory.Change) (*agentmemory.Change, error) {
 	var last sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM journal`).Scan(&last); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM memory_journal`).Scan(&last); err != nil {
 		return nil, fmt.Errorf("sqlite: journal sequence: %w", err)
 	}
 	c.Seq = uint64(last.Int64) + 1
@@ -407,7 +501,7 @@ func record(ctx context.Context, tx *sql.Tx, c agentmemory.Change) (*agentmemory
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: encode journal record: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO journal (seq, scope, name, line) VALUES (?, ?, ?, ?)`,
+	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_journal (seq, scope, name, line) VALUES (?, ?, ?, ?)`,
 		int64(c.Seq), string(c.Entry.Scope), c.Entry.Name, string(line)); err != nil {
 		return nil, fmt.Errorf("sqlite: append journal: %w", err)
 	}
@@ -454,8 +548,8 @@ func (s *Store) Search(ctx context.Context, scopes []agentmemory.Scope, query st
 		args = append(args, string(scope))
 	}
 	q := `SELECT e.scope, e.name, e.content, e.meta, e.hash, e.updated
-		FROM entries_fts f JOIN entries e ON e.scope = f.scope AND e.name = f.name
-		WHERE entries_fts MATCH ? AND f.scope IN (` + strings.Join(marks, ", ") + `)
+		FROM memory_entries_fts f JOIN memory_entries e ON e.scope = f.scope AND e.name = f.name
+		WHERE memory_entries_fts MATCH ? AND f.scope IN (` + strings.Join(marks, ", ") + `)
 		ORDER BY f.rank, e.scope, e.name`
 	if limit > 0 {
 		q += " LIMIT ?"
@@ -487,7 +581,7 @@ func (s *Store) Search(ctx context.Context, scopes []agentmemory.Scope, query st
 // Journal implements agentmemory.Store.
 func (s *Store) Journal(ctx context.Context, after uint64) iter.Seq2[agentmemory.Change, error] {
 	return func(yield func(agentmemory.Change, error) bool) {
-		rows, err := s.r.QueryContext(ctx, `SELECT seq, line FROM journal WHERE seq > ? ORDER BY seq`, int64(after))
+		rows, err := s.r.QueryContext(ctx, `SELECT seq, line FROM memory_journal WHERE seq > ? ORDER BY seq`, int64(after))
 		if err != nil {
 			yield(agentmemory.Change{}, fmt.Errorf("sqlite: journal: %w", err))
 			return
