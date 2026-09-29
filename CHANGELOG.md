@@ -7,6 +7,18 @@ versions may break the API.
 
 ## Unreleased
 
+### Fixed
+
+- sqlite: `Open` on a database that does not exist yet no longer fails
+  with `SQLITE_BUSY` when several processes open it at once. Each
+  process's first connection switches the new file to WAL, and SQLite
+  refuses that switch at once, without consulting the busy handler,
+  while another process holds the file; `Open` now retries the schema
+  transaction on `SQLITE_BUSY` with a short growing pause, for as long
+  as the five second busy timeout would have waited. A new test opens
+  a fresh path from four processes at the same instant, which the
+  goroutine test could not reach (#25).
+
 ### Dependencies
 
 - agenttool v0.0.8 to v0.0.9, in the root module and in `sqlite`, and
