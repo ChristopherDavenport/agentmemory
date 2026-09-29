@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -142,7 +143,8 @@ type Part struct {
 // The IDs of the block's fixed parts.
 const (
 	// TitlePartID is the block's first part, its title, which no write
-	// changes.
+	// changes. Every ID starts "memory", so a product that records its
+	// own parts beside these gives its own some other prefix.
 	TitlePartID = "memory"
 	// SummaryPartID is the block's last part: the counts, the block's
 	// size and the entry limit, which every write changes.
@@ -230,9 +232,14 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 	if o.maxTotal <= 0 {
 		o.maxTotal = DefaultMaxTotalBytes
 	}
-	for _, scope := range scopes {
+	for i, scope := range scopes {
 		if !ValidScope(scope) {
 			return nil, Manifest{}, fmt.Errorf("%w: scope %q is not kebab-case", ErrInvalid, scope)
+		}
+		// A scope rendered twice would name its parts twice, which a
+		// session refuses.
+		if slices.Contains(scopes[:i], scope) {
+			return nil, Manifest{}, fmt.Errorf("%w: scope %q is given twice", ErrInvalid, scope)
 		}
 	}
 	limit := s.MaxEntryBytes()

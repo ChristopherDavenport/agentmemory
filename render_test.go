@@ -488,6 +488,9 @@ func TestRenderErrors(t *testing.T) {
 	if _, _, err := Render(ctx, NewMemStore(), []Scope{"user", "Bad"}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("Render with a bad scope = %v", err)
 	}
+	if _, _, err := RenderParts(ctx, NewMemStore(), []Scope{"user", "user"}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("RenderParts with a scope given twice = %v", err)
+	}
 	if _, _, err := Render(ctx, failing{}, []Scope{"user"}); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("Render over a failing store = %v", err)
 	}

@@ -112,7 +112,7 @@ func TestToolsShape(t *testing.T) {
 }
 
 func TestToolsPanics(t *testing.T) {
-	for name, scopes := range map[string][]Scope{"none": nil, "bad": {"User"}} {
+	for name, scopes := range map[string][]Scope{"none": nil, "bad": {"User"}, "twice": {"user", "user"}} {
 		t.Run(name, func(t *testing.T) {
 			defer func() {
 				if recover() == nil {
@@ -557,14 +557,19 @@ func journalLen(s Store) int {
 func TestToolsAnnotations(t *testing.T) {
 	tools := Tools(NewMemStore(), []Scope{"user"})
 	want := map[string]agenttool.Annotations{
-		SaveTool:   {Destructive: true},
-		PatchTool:  {},
-		ForgetTool: {Destructive: true},
-		SearchTool: {ReadOnly: true},
+		SaveTool:   {Title: "Save memory entry", Destructive: true},
+		PatchTool:  {Title: "Edit memory entry"},
+		ForgetTool: {Title: "Forget memory entry", Destructive: true},
+		SearchTool: {Title: "Search memory", ReadOnly: true},
 	}
 	for _, tool := range tools {
 		if _, ok := tool.(agenttool.Annotated); !ok {
 			t.Errorf("%s does not implement agenttool.Annotated", tool.Name())
+		}
+		// The zero value reads as no annotations to a host, and MCP
+		// defaults a tool without them to destructive and open-world.
+		if agenttool.AnnotationsOf(tool) == (agenttool.Annotations{}) {
+			t.Errorf("%s has the zero annotations", tool.Name())
 		}
 		if got := agenttool.AnnotationsOf(tool); got != want[tool.Name()] {
 			t.Errorf("%s annotations = %+v, want %+v", tool.Name(), got, want[tool.Name()])
@@ -663,9 +668,16 @@ func TestReadScopes(t *testing.T) {
 		t.Error("a search of a scope the tools do not reach succeeded")
 	}
 
+	if _, err := call(t, tools, SearchTool, `{"query":"rule","scopes":[]}`); err != nil {
+		t.Errorf("a search with an empty scope list = %v", err)
+	}
+	if _, err := ts.readScope("other"); err == nil || !strings.Contains(err.Error(), "Scopes: user, project;") {
+		t.Errorf("readScope(other) = %v, want the scopes a search reaches", err)
+	}
 	for name, opt := range map[string]ToolOption{
 		"both":    WithReadScopes("user"),
 		"invalid": WithReadScopes("Project"),
+		"twice":   WithReadScopes("rules", "rules"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			defer func() {

@@ -101,7 +101,11 @@ func WithSearchBytes(n int) ToolOption {
 //
 // fn is called on every save, from the goroutine running the call, so
 // it must be safe to call while the product renders the next turn. A
-// nil fn, or a manifest with no entries, is the same as no option.
+// nil fn is the same as no option. The manifest must be the one the
+// model is reading now: a product that re-renders before every model
+// call, in BeforeModelCall, keeps it so; one that renders once per turn
+// has a second save of an entry in that turn based on the block rather
+// than on the model's own first save, and reported as a lost update.
 // memory_patch is unchanged: its edit is anchored in the stored text,
 // so it merges with a concurrent write or fails when the anchor is gone.
 func WithRendered(fn func() Manifest) ToolOption {
@@ -117,8 +121,8 @@ func WithRendered(fn func() Manifest) ToolOption {
 // <name> is read-only", which their descriptions state. [Render] is
 // unchanged: a product renders the read scopes beside the others.
 //
-// A read scope must not also be one of the scopes passed to [Tools],
-// and must be kebab-case; [Tools] panics otherwise.
+// A read scope must be kebab-case, given once, and not also one of the
+// scopes passed to [Tools]; [Tools] panics otherwise.
 func WithReadScopes(scopes ...Scope) ToolOption {
 	return func(o *toolOptions) { o.readScopes = append(o.readScopes, scopes...) }
 }
@@ -169,22 +173,31 @@ type searchArgs struct {
 // [WithReadScopes] adds scopes memory_search reaches and the writers
 // refuse, and [WithRendered] anchors memory_save to the block the model
 // read.
+//
+// The schema check is the tools' own, added with [agenttool.Wrap]; a
+// host that unwraps a tool and executes what is inside skips it.
 func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	if len(scopes) == 0 {
 		panic("agentmemory.Tools: no scopes")
 	}
-	for _, s := range scopes {
+	for i, s := range scopes {
 		if !ValidScope(s) {
 			panic(fmt.Sprintf("agentmemory.Tools: scope %q is not kebab-case", s))
+		}
+		if slices.Contains(scopes[:i], s) {
+			panic(fmt.Sprintf("agentmemory.Tools: scope %q is given twice", s))
 		}
 	}
 	o := toolOptions{searchLimit: DefaultSearchLimit, searchBytes: DefaultSearchBytes}
 	for _, opt := range opts {
 		opt(&o)
 	}
-	for _, s := range o.readScopes {
+	for i, s := range o.readScopes {
 		if !ValidScope(s) {
 			panic(fmt.Sprintf("agentmemory.Tools: read scope %q is not kebab-case", s))
+		}
+		if slices.Contains(o.readScopes[:i], s) {
+			panic(fmt.Sprintf("agentmemory.Tools: read scope %q is given twice", s))
 		}
 		if slices.Contains(scopes, s) {
 			panic(fmt.Sprintf("agentmemory.Tools: scope %q is both writable and read-only", s))
@@ -198,12 +211,14 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	}
 	t := &toolset{store: store, scopes: scopes, opts: o}
 	searchable := slices.Concat(scopes, o.readScopes)
-	destructive := agenttool.Annotations{Destructive: true}
+	// Every tool carries a title, so none of them has the zero
+	// annotations, which a host such as mcpserver reads as none at all
+	// and MCP then defaults to destructive and open-world.
 	return []agenttool.Tool{
-		tool(SaveTool, t.saveDescription(), t.save, scopes, o.readScopes, destructive),
-		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, agenttool.Annotations{}),
-		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, destructive),
-		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, agenttool.Annotations{ReadOnly: true}),
+		tool(SaveTool, t.saveDescription(), t.save, scopes, o.readScopes, agenttool.Annotations{Title: "Save memory entry", Destructive: true}),
+		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, agenttool.Annotations{Title: "Edit memory entry"}),
+		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}),
+		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}),
 	}
 }
 
@@ -348,7 +363,7 @@ func (t *toolset) writerScopes() string {
 func (t *toolset) searchScopes() string {
 	all := slices.Concat(t.scopes, t.opts.readScopes)
 	if len(all) == 1 {
-		return fmt.Sprintf("Scope: %s, the only one; the argument may be left out.", all[0])
+		return fmt.Sprintf("Scope: %s, the only one; scopes may be left out.", all[0])
 	}
 	list := fmt.Sprintf("Scopes: %s; all of them when scopes is left out.", strings.Join(names(all), ", "))
 	if len(t.opts.readScopes) > 0 {
@@ -399,10 +414,11 @@ func (t *toolset) scope(s string) (Scope, error) {
 // readScope resolves one of a search's scopes, which may be a read
 // scope as well as a writable one.
 func (t *toolset) readScope(s string) (Scope, error) {
-	if slices.Contains(t.opts.readScopes, Scope(s)) {
+	all := slices.Concat(t.scopes, t.opts.readScopes)
+	if slices.Contains(all, Scope(s)) {
 		return Scope(s), nil
 	}
-	return t.scope(s)
+	return "", fmt.Errorf("scope %q is not available; %s", s, t.searchScopes())
 }
 
 // wrote builds a write's result: the line the model reads, and the

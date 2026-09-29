@@ -35,8 +35,10 @@ versions may break the API.
   `session.WithInstructionsParts`, hands agentsession these parts
   beside its own instead of parsing the block, and a write to one entry
   is recorded as that entry's part and the summary. An empty scope's
-  `No entries.` is in its heading's part (#24; feeds agentturn #114 and
-  agentkit).
+  `No entries.` is in its heading's part. A scope given twice, which
+  would name its parts twice and which agentsession refuses, is now
+  `ErrInvalid` from `Render` and `RenderParts` (#24; feeds agentturn
+  #114 and agentkit).
 
 ### Added
 
@@ -58,12 +60,15 @@ versions may break the API.
   product renders but does not hand to `Tools` is reachable, as the
   block says. `memory_save`, `memory_patch` and `memory_forget` refuse
   them with `scope <name> is read-only`, which their descriptions state.
-  `Tools` panics on a read scope that is not kebab-case or is also
-  writable (#26).
-- The four tools carry `agenttool.Annotations`: `memory_search`
-  read-only, `memory_save` and `memory_forget` destructive, since a save
-  replaces the entry whole, and `memory_patch` neither; none is
-  open-world. The schema check the tools add is built on
+  `Tools` panics on a read scope that is not kebab-case, is given twice
+  or is also writable, and now on a writable scope given twice (#26).
+- The four tools carry `agenttool.Annotations`, each with a title:
+  `memory_search` read-only, `memory_save` and `memory_forget`
+  destructive, since a save replaces the entry whole, and
+  `memory_patch` neither; none is open-world. The title keeps
+  `memory_patch`'s annotations from being the zero value, which a host
+  such as mcpserver serves as none, and MCP then defaults to destructive
+  and open-world. The schema check the tools add is built on
   `agenttool.Wrap`, which forwards every property the tool declares,
   instead of an embedding that forwarded `Strict` and `Sequential` alone
   (#27).
@@ -71,8 +76,9 @@ versions may break the API.
 ### Changed
 
 - `memory_search`'s description says every scope it reaches is searched
-  when the call names none, where it said to name one on every call,
-  which was the writers' rule; its `scopes` argument has always been
+  when the call names none, where with more than one scope it said to
+  name one on every call, which was the writers' rule; with one scope it
+  says `scopes` may be left out. The argument has always been
   optional. The description, and so the tool's definition hash,
   changes.
 
