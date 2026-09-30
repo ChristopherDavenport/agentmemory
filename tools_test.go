@@ -587,6 +587,32 @@ func TestToolsAnnotations(t *testing.T) {
 	}
 }
 
+// TestToolsReplay checks what a harness resuming a session reads to
+// decide whether a call a crash cut off runs again: the search does,
+// through the wrapper, and no writer claims it may, with a scope that
+// is read-only among them.
+func TestToolsReplay(t *testing.T) {
+	ctx := context.Background()
+	tools := Tools(NewMemStore(), []Scope{"user"}, WithReadScopes("project"))
+	want := map[string]agenttool.Replay{
+		SaveTool:   agenttool.ReplayUnknown,
+		PatchTool:  agenttool.ReplayUnknown,
+		ForgetTool: agenttool.ReplayUnknown,
+		SearchTool: agenttool.ReplaySafe,
+	}
+	args := map[string]string{
+		SaveTool:   `{"name":"tz","content":"UTC"}`,
+		PatchTool:  `{"name":"tz","old_text":"UTC","new_text":"CET"}`,
+		ForgetTool: `{"name":"tz"}`,
+		SearchTool: `{"query":"timezone","scopes":["project"]}`,
+	}
+	for _, tool := range tools {
+		if got := agenttool.ReplayOf(ctx, tool, json.RawMessage(args[tool.Name()])); got != want[tool.Name()] {
+			t.Errorf("%s replay = %v, want %v", tool.Name(), got, want[tool.Name()])
+		}
+	}
+}
+
 // TestReadScopes is a scope the model may read and not write: the block
 // shows it, memory_search reaches it, by name and by default, and the
 // three writers refuse it with the message their descriptions state.

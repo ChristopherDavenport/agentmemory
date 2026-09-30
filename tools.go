@@ -170,6 +170,16 @@ type searchArgs struct {
 // destructive, since a save replaces the entry whole, and memory_patch
 // neither; none is open-world. See [agenttool.Annotations].
 //
+// memory_search claims [agenttool.ReplaySafe], so a harness resuming a
+// session runs again a search a crash cut off. The writers claim
+// nothing and read as [agenttool.ReplayUnknown]: none of them is safe
+// to run twice as it stands. A save run again is recorded as a second
+// write and, under [WithRendered], based on the block rather than on
+// its own first run, so [LostUpdates] reports the session's own write
+// as lost; a patch run again fails because old_text is gone, or edits
+// twice when new_text contains it; a forget run again removes whatever
+// another session saved under the name in between.
+//
 // [WithReadScopes] adds scopes memory_search reaches and the writers
 // refuse, and [WithRendered] anchors memory_save to the block the model
 // read.
@@ -215,10 +225,10 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	// annotations, which a host such as mcpserver reads as none at all
 	// and MCP then defaults to destructive and open-world.
 	return []agenttool.Tool{
-		tool(SaveTool, t.saveDescription(), t.save, scopes, o.readScopes, agenttool.Annotations{Title: "Save memory entry", Destructive: true}),
-		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, agenttool.Annotations{Title: "Edit memory entry"}),
-		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}),
-		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}),
+		tool(SaveTool, t.saveDescription(), t.save, scopes, o.readScopes, agenttool.Annotations{Title: "Save memory entry", Destructive: true}, agenttool.ReplayUnknown),
+		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, agenttool.Annotations{Title: "Edit memory entry"}, agenttool.ReplayUnknown),
+		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}, agenttool.ReplayUnknown),
+		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}, agenttool.ReplaySafe),
 	}
 }
 
@@ -239,9 +249,16 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 // naming one would fail the schema with a list of the other scopes;
 // readOnly is checked first, so the model is told the scope is
 // read-only, as the description says.
-func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes, readOnly []Scope, a agenttool.Annotations) agenttool.Tool {
+//
+// replay is the tool's claim for every call, forwarded through the
+// wrapper as its annotations are.
+func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes, readOnly []Scope, a agenttool.Annotations, replay agenttool.Replay) agenttool.Tool {
 	tree, schema := scopeSchema[Args](scopes)
-	inner := agenttool.New(name, description, fn, agenttool.WithParameters(schema), agenttool.WithAnnotations(a))
+	opts := []agenttool.Option{agenttool.WithParameters(schema), agenttool.WithAnnotations(a)}
+	if replay != agenttool.ReplayUnknown {
+		opts = append(opts, agenttool.WithReplay(func(context.Context, json.RawMessage) agenttool.Replay { return replay }))
+	}
+	inner := agenttool.New(name, description, fn, opts...)
 	return agenttool.Wrap(inner, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
 		if err := refuseReadOnly(call.Args, readOnly); err != nil {
 			return agenttool.Result{}, err
