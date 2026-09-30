@@ -242,7 +242,11 @@ hashes cannot carry the omitted names, the sizes, the reasons, or a
 store without paths. A product records it when `Manifest.Hash` has
 moved since the last one it recorded, because the render is a pure
 function of the store and the bounds and most turns repeat it, and an
-annotation is compared with nothing the way a config entry is.
+annotation is compared with nothing the way a config entry is. After a
+session's first manifest it records `Manifest.RecordSince` of the last
+one: a delta naming the entries that moved and keeping the runs that
+did not, which a reader folds on with `ApplyManifestRecord`, since the
+whole manifest repeats every entry and a write moves one (#33).
 
 ### `filestore`
 

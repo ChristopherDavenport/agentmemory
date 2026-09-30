@@ -74,7 +74,7 @@ mem, err := filestore.Open(filepath.Join(home, "memory"))
 scopes := []agentmemory.Scope{"user", "project"}
 
 block, manifest, err := agentmemory.Render(ctx, mem, scopes)
-var recorded string // the last manifest this session wrote
+var recorded *agentmemory.Manifest // the last manifest this session wrote
 var shown atomic.Pointer[agentmemory.Manifest]
 shown.Store(&manifest)
 memTools := agentmemory.Tools(mem, scopes,
@@ -97,13 +97,17 @@ cfg := agentturn.Config{
 		// Record the manifest when it has moved. The render is a pure
 		// function of the store and the bounds, so most turns produce
 		// the manifest the turn before produced, and the recorder
-		// compares nothing for an annotation.
-		if h := m.Hash(); h != recorded {
-			recorded = h
-			ns, data := m.Record() // agentmemory:render, and the JSON
-			return rec.Annotate(ctx, ns, json.RawMessage(data))
+		// compares nothing for an annotation. After the first, only
+		// what moved: a delta on the one before.
+		if recorded != nil && m.Hash() == recorded.Hash() {
+			return nil
 		}
-		return nil
+		ns, data := m.Record() // agentmemory:render, and the JSON
+		if recorded != nil {
+			ns, data = m.RecordSince(*recorded)
+		}
+		recorded = &m
+		return rec.Annotate(ctx, ns, json.RawMessage(data))
 	},
 }
 ctx = agentmemory.WithSession(ctx, sessionID) // attributes the journal
@@ -115,6 +119,11 @@ the module's, through `ManifestNS` and `Manifest.Record`, so a reader
 of the session recognises the entry without knowing the product. Each
 omission in the manifest carries its scope, name, size and reason, so
 the record says what the model was not given and why.
+`Manifest.RecordSince` writes a later manifest as a delta on the one the
+session last recorded, the entries that moved and a keep for each run
+that did not, so under a memory past its bound a write costs the entry
+it touched rather than every entry again; `ApplyManifestRecord` folds a
+record of either form onto the manifest in force.
 
 `Render` produces the block: a title, one section per scope, one
 heading per entry with its size and the limit and its description, then

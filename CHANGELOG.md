@@ -5,6 +5,36 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Added
+
+- `Manifest.RecordSince(prev)` records a manifest as a delta on the
+  last one the session recorded: `base` and `hash`, the two manifests'
+  hashes, and `entries` and `omitted` with each run of entries that
+  stayed in place and unchanged written `{"keep":n}` and the rest
+  whole. `Manifest.Record` repeated every entry the block showed or
+  left out, about 140 bytes each, on every write, so under 600 entries
+  a 3 byte patch recorded 84 KB of manifest; its delta is one entry,
+  about 350 bytes. It writes the whole record when that is no larger.
+  `ApplyManifestRecord` folds a record of either form onto the manifest
+  in force, and refuses a delta on another manifest with
+  `ErrManifestBase`. The README's wiring records the delta after a
+  session's first manifest (#33).
+- `memory_search` claims `agenttool.ReplaySafe`, so a harness resuming
+  a session runs again a search a crash cut off, where it answered it
+  as possibly run with its output lost. The writers still claim
+  nothing: a save run again records the session's own first run as a
+  lost update, a patch run again fails or edits twice, and a forget run
+  again removes what another session saved in between (#32).
+
+### Dependencies
+
+- agenttool v0.0.10 to v0.0.11, in the root module and in `sqlite`, and
+  agentturn v0.0.11 to v0.0.12, which the tools' integration test alone
+  depends on and which brings agentsession v0.0.15 to it. No API of this
+  module changes with them.
+
 ## v0.0.6 - 2026-09-29
 
 ### Breaking

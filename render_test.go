@@ -594,3 +594,201 @@ func TestRenderPartsKeepThePrefix(t *testing.T) {
 		t.Errorf("the two blocks share %d bytes; the entry the write touched starts at %d", shared, want)
 	}
 }
+
+// manifestFixture is n entries of scope user, the first shown ones
+// shown and the rest omitted for the budget, as a render over a memory
+// past its bound lists them.
+func manifestFixture(n, shown int) Manifest {
+	var m Manifest
+	for i := range n {
+		e := ManifestEntry{Scope: "user", Name: fmt.Sprintf("fact-%03d", i), Hash: Hash(strconv.Itoa(i)), Bytes: 40 + i}
+		if i < shown {
+			m.Entries = append(m.Entries, e)
+			continue
+		}
+		e.Reason = OmitBudget
+		m.Omitted = append(m.Omitted, e)
+	}
+	return m
+}
+
+// TestManifestRecordSince is the record of a write under a large
+// memory: the delta names what moved, and folding it onto the manifest
+// before gives back the manifest after, for every kind of move.
+func TestManifestRecordSince(t *testing.T) {
+	base := manifestFixture(600, 126)
+	clone := func(m Manifest) Manifest {
+		return Manifest{Entries: append([]ManifestEntry(nil), m.Entries...), Omitted: append([]ManifestEntry(nil), m.Omitted...)}
+	}
+	cases := []struct {
+		name  string
+		edit  func(Manifest) Manifest
+		delta bool
+	}{
+		{name: "unchanged", edit: clone, delta: true},
+		{name: "patch-shown", delta: true, edit: func(m Manifest) Manifest {
+			m = clone(m)
+			m.Entries[60].Hash, m.Entries[60].Bytes = Hash("patched"), 43
+			return m
+		}},
+		{name: "patch-omitted", delta: true, edit: func(m Manifest) Manifest {
+			m = clone(m)
+			m.Omitted[300].Hash = Hash("patched")
+			return m
+		}},
+		{name: "create-at-start", delta: true, edit: func(m Manifest) Manifest {
+			m = clone(m)
+			m.Entries = append([]ManifestEntry{{Scope: "user", Name: "aaa", Hash: Hash("new"), Bytes: 3}}, m.Entries...)
+			return m
+		}},
+		{name: "forget-last-shown", delta: true, edit: func(m Manifest) Manifest {
+			m = clone(m)
+			m.Entries = m.Entries[:len(m.Entries)-1]
+			return m
+		}},
+		{name: "shown-to-omitted", delta: true, edit: func(m Manifest) Manifest {
+			m = clone(m)
+			last := m.Entries[len(m.Entries)-1]
+			last.Reason = OmitBudget
+			m.Entries = m.Entries[:len(m.Entries)-1]
+			m.Omitted = append([]ManifestEntry{last}, m.Omitted...)
+			return m
+		}},
+		{name: "omitted-to-shown", delta: true, edit: func(m Manifest) Manifest {
+			m = clone(m)
+			first := m.Omitted[0]
+			first.Reason = ""
+			m.Entries = append(m.Entries, first)
+			m.Omitted = m.Omitted[1:]
+			return m
+		}},
+		{name: "swap", delta: true, edit: func(m Manifest) Manifest {
+			m = clone(m)
+			m.Entries[10], m.Entries[11] = m.Entries[11], m.Entries[10]
+			return m
+		}},
+		{name: "truncated", delta: true, edit: func(Manifest) Manifest { return manifestFixture(3, 3) }},
+		// Nothing to keep, so the whole record is the smaller.
+		{name: "emptied", delta: false, edit: func(Manifest) Manifest { return Manifest{} }},
+		{name: "all-new", delta: false, edit: func(Manifest) Manifest {
+			return Manifest{Entries: []ManifestEntry{{Scope: "project", Name: "rule", Hash: Hash("r"), Bytes: 1}}}
+		}},
+		{name: "name-twice", delta: false, edit: func(m Manifest) Manifest {
+			m = clone(m)
+			m.Entries = append(m.Entries, m.Entries[0])
+			return m
+		}},
+	}
+	whole := len(must(base.Record()))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			next := tc.edit(base)
+			ns, data := next.RecordSince(base)
+			if ns != ManifestNS {
+				t.Errorf("namespace = %q", ns)
+			}
+			if got := bytes.Contains(data, []byte(`"base"`)); got != tc.delta {
+				t.Fatalf("delta = %v, want %v: %s", got, tc.delta, data)
+			}
+			if tc.delta && len(data) > whole/100 {
+				t.Errorf("the delta is %d bytes, the whole record %d: %s", len(data), whole, data)
+			}
+			got, err := ApplyManifestRecord(base, data)
+			if err != nil {
+				t.Fatalf("ApplyManifestRecord: %v\n%s", err, data)
+			}
+			if got.Hash() != next.Hash() {
+				t.Errorf("the folded manifest hashes differently:\n%s", data)
+			}
+		})
+	}
+	// The case the delta is for: a patch under 126 shown and 474
+	// omitted entries is one entry, where the whole record is every one.
+	patched := cases[1].edit(base)
+	_, data := patched.RecordSince(base)
+	t.Logf("one patch: whole record %d bytes, delta %d: %s", whole, len(data), data)
+}
+
+// TestManifestRecordSinceRandom folds a chain of random edits, each
+// recorded as a delta on the last, and ends at the last manifest.
+func TestManifestRecordSinceRandom(t *testing.T) {
+	r := rand.New(rand.NewSource(1))
+	edit := func(list []ManifestEntry) []ManifestEntry {
+		out := append([]ManifestEntry(nil), list...)
+		switch op := r.Intn(4); {
+		case op == 0 && len(out) > 0:
+			i := r.Intn(len(out))
+			out = append(out[:i], out[i+1:]...)
+		case op == 1 && len(out) > 0:
+			out[r.Intn(len(out))].Hash = Hash(strconv.Itoa(r.Int()))
+		case op == 2 && len(out) > 1:
+			i := r.Intn(len(out) - 1)
+			out[i], out[i+1] = out[i+1], out[i]
+		default:
+			i := r.Intn(len(out) + 1)
+			e := ManifestEntry{Scope: "user", Name: fmt.Sprintf("new-%d", r.Int()), Hash: Hash("x"), Bytes: 1}
+			out = append(out[:i], append([]ManifestEntry{e}, out[i:]...)...)
+		}
+		return out
+	}
+	have := manifestFixture(40, 15)
+	recorded := have
+	for i := range 500 {
+		next := Manifest{Entries: have.Entries, Omitted: have.Omitted}
+		if r.Intn(2) == 0 {
+			next.Entries = edit(have.Entries)
+		} else {
+			next.Omitted = edit(have.Omitted)
+		}
+		_, data := next.RecordSince(have)
+		folded, err := ApplyManifestRecord(recorded, data)
+		if err != nil {
+			t.Fatalf("step %d: %v\n%s", i, err, data)
+		}
+		if folded.Hash() != next.Hash() {
+			t.Fatalf("step %d: folded to another manifest:\n%s", i, data)
+		}
+		have, recorded = next, folded
+	}
+}
+
+// TestApplyManifestRecordRefuses is a delta a reader cannot fold: on
+// another manifest, or malformed.
+func TestApplyManifestRecordRefuses(t *testing.T) {
+	base := manifestFixture(20, 10)
+	next := Manifest{Entries: base.Entries[1:], Omitted: base.Omitted}
+	_, delta := next.RecordSince(base)
+	if !bytes.Contains(delta, []byte(`"base"`)) {
+		t.Fatalf("not a delta: %s", delta)
+	}
+	if _, err := ApplyManifestRecord(Manifest{}, delta); !errors.Is(err, ErrManifestBase) {
+		t.Errorf("a delta on another manifest = %v, want ErrManifestBase", err)
+	}
+	h := base.Hash()
+	cases := []struct {
+		name, data, want string
+	}{
+		{"not-json", `{`, "manifest record"},
+		{"keep-past-end", `{"base":"` + h + `","hash":"x","entries":[{"keep":11}]}`, "keeps 11 entries and 10 are left"},
+		{"keep-zero", `{"base":"` + h + `","hash":"x","entries":[{"keep":0}]}`, "neither a positive keep nor an entry"},
+		{"keep-and-entry", `{"base":"` + h + `","hash":"x","entries":[{"keep":1,"scope":"user","name":"a"}]}`, "both a keep and an entry"},
+		{"no-name", `{"base":"` + h + `","hash":"x","omitted":[{"scope":"user","hash":"h"}]}`, "names no entry"},
+		{"wrong-hash", `{"base":"` + h + `","hash":"sha256:00","entries":[{"keep":10}],"omitted":[{"keep":10}]}`, "the result hashes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ApplyManifestRecord(base, []byte(tc.data))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want it to say %q", err, tc.want)
+			}
+		})
+	}
+	// A whole record is the manifest it holds, whatever is in force.
+	_, whole := next.Record()
+	got, err := ApplyManifestRecord(manifestFixture(3, 1), whole)
+	if err != nil || got.Hash() != next.Hash() {
+		t.Errorf("a whole record folds to %v, %v", got.Hash(), err)
+	}
+}
+
+func must(_ string, data []byte) []byte { return data }

@@ -3,6 +3,7 @@ package agentmemory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -104,15 +105,215 @@ func (m Manifest) Hash() string {
 //
 // A manifest is strings and numbers, so encoding it cannot fail; a
 // caller that wants an error of its own marshals the value itself.
+//
+// A session that already holds a manifest records the next one with
+// [Manifest.RecordSince], which writes what moved rather than every
+// entry again.
 func (m Manifest) Record() (ns string, data []byte) {
-	data, err := json.Marshal(m)
+	return ManifestNS, marshalRecord(m)
+}
+
+// RecordSince returns the namespace and the JSON of the manifest as a
+// delta on prev, the last manifest the product recorded in this
+// session: a write moves one entry's hash, and under a memory at its
+// bound the whole record repeats hundreds of entries that did not move
+// to say so.
+//
+// The delta is an object with base, prev's [Manifest.Hash]; hash, this
+// manifest's; and entries and omitted, each the list with every run of
+// prev's entries that stays in place and unchanged written as
+// {"keep":n}, and every other entry written whole. An entry prev holds
+// and this manifest does not is neither kept nor written. A reader
+// folds it onto the manifest in force with [ApplyManifestRecord]; the
+// member base is what tells it from a whole record.
+//
+// It returns the whole record, as [Manifest.Record] does, when that is
+// no larger than the delta, which it is for a first manifest, and when
+// either manifest names one entry twice in a list, since a keep could
+// not say which of the two it means.
+//
+// The product keeps prev per session, and records a session's first
+// manifest whole: a delta resolves only against the manifest in force
+// in the session that reads it.
+func (m Manifest) RecordSince(prev Manifest) (ns string, data []byte) {
+	whole := marshalRecord(m)
+	entries, ok1 := manifestDiff(prev.Entries, m.Entries)
+	omitted, ok2 := manifestDiff(prev.Omitted, m.Omitted)
+	if !ok1 || !ok2 {
+		return ManifestNS, whole
+	}
+	delta := marshalRecord(manifestDelta{Base: prev.Hash(), Hash: m.Hash(), Entries: entries, Omitted: omitted})
+	if len(delta) >= len(whole) {
+		return ManifestNS, whole
+	}
+	return ManifestNS, delta
+}
+
+// ErrManifestBase is returned by [ApplyManifestRecord] for a delta
+// whose base is not the manifest it was given: the reader missed a
+// record, or the delta belongs to another session.
+var ErrManifestBase = errors.New("agentmemory: manifest delta is not based on the manifest in force")
+
+// ApplyManifestRecord returns the manifest in force after the record
+// data, the bytes of an entry under [ManifestNS], given m, the one in
+// force before it. A whole record, from [Manifest.Record], is the
+// manifest it holds, whatever m is. A delta, from
+// [Manifest.RecordSince], is folded onto m: one whose base is not
+// m's hash is refused with [ErrManifestBase], and one whose keeps run
+// past m, or whose result does not hash as the delta says, is refused
+// as malformed.
+func ApplyManifestRecord(m Manifest, data []byte) (Manifest, error) {
+	var probe struct {
+		Base *string `json:"base"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return Manifest{}, fmt.Errorf("agentmemory: manifest record: %w", err)
+	}
+	if probe.Base == nil {
+		var whole Manifest
+		if err := json.Unmarshal(data, &whole); err != nil {
+			return Manifest{}, fmt.Errorf("agentmemory: manifest record: %w", err)
+		}
+		return whole, nil
+	}
+	var d manifestDelta
+	if err := json.Unmarshal(data, &d); err != nil {
+		return Manifest{}, fmt.Errorf("agentmemory: manifest delta: %w", err)
+	}
+	if have := m.Hash(); d.Base != have {
+		return Manifest{}, fmt.Errorf("%w: the delta is based on %s, the manifest in force is %s", ErrManifestBase, d.Base, have)
+	}
+	var out Manifest
+	var err error
+	if out.Entries, err = manifestApply(m.Entries, d.Entries); err != nil {
+		return Manifest{}, fmt.Errorf("agentmemory: manifest delta entries: %w", err)
+	}
+	if out.Omitted, err = manifestApply(m.Omitted, d.Omitted); err != nil {
+		return Manifest{}, fmt.Errorf("agentmemory: manifest delta omitted: %w", err)
+	}
+	if got := out.Hash(); got != d.Hash {
+		return Manifest{}, fmt.Errorf("agentmemory: manifest delta: the result hashes %s, the delta says %s", got, d.Hash)
+	}
+	return out, nil
+}
+
+// manifestDelta is the delta form of the record; see
+// [Manifest.RecordSince].
+type manifestDelta struct {
+	Base    string       `json:"base"`
+	Hash    string       `json:"hash"`
+	Entries []manifestOp `json:"entries,omitempty"`
+	Omitted []manifestOp `json:"omitted,omitempty"`
+}
+
+// manifestOp is one element of a delta's list: a keep of the next Keep
+// entries in force, alone, or an entry written whole.
+type manifestOp struct {
+	Keep int `json:"keep,omitempty"`
+	*ManifestEntry
+}
+
+type manifestKey struct {
+	scope Scope
+	name  string
+}
+
+// manifestIndex maps each entry of list to its position, and reports
+// false when an entry is named twice.
+func manifestIndex(list []ManifestEntry) (map[manifestKey]int, bool) {
+	at := make(map[manifestKey]int, len(list))
+	for i, e := range list {
+		k := manifestKey{e.Scope, e.Name}
+		if _, dup := at[k]; dup {
+			return nil, false
+		}
+		at[k] = i
+	}
+	return at, true
+}
+
+// manifestDiff writes next as a delta on prev: a run of entries that
+// stand, unchanged, at the cursor in prev is a keep, and anything else
+// is written whole and moves the cursor past its place in prev, if it
+// has one. [manifestApply] reads it with the same cursor. It reports
+// false when either list names an entry twice.
+func manifestDiff(prev, next []ManifestEntry) ([]manifestOp, bool) {
+	at, ok := manifestIndex(prev)
+	if !ok {
+		return nil, false
+	}
+	if _, ok := manifestIndex(next); !ok {
+		return nil, false
+	}
+	var out []manifestOp
+	cursor, run := 0, 0
+	flush := func() {
+		if run > 0 {
+			out = append(out, manifestOp{Keep: run})
+			cursor += run
+			run = 0
+		}
+	}
+	for _, e := range next {
+		j, ok := at[manifestKey{e.Scope, e.Name}]
+		if ok && prev[j] == e && j == cursor+run {
+			run++
+			continue
+		}
+		flush()
+		out = append(out, manifestOp{ManifestEntry: &e})
+		if ok {
+			cursor = j + 1
+		}
+	}
+	flush()
+	return out, true
+}
+
+// manifestApply folds ops onto prev, as [manifestDiff] wrote them.
+func manifestApply(prev []ManifestEntry, ops []manifestOp) ([]ManifestEntry, error) {
+	at, ok := manifestIndex(prev)
+	if !ok {
+		return nil, errors.New("the manifest in force names an entry twice")
+	}
+	var out []ManifestEntry
+	cursor := 0
+	for i, op := range ops {
+		switch {
+		case op.ManifestEntry != nil && op.Keep != 0:
+			return nil, fmt.Errorf("element %d is both a keep and an entry", i)
+		case op.ManifestEntry != nil:
+			e := *op.ManifestEntry
+			if e.Scope == "" || e.Name == "" {
+				return nil, fmt.Errorf("element %d names no entry", i)
+			}
+			out = append(out, e)
+			if j, ok := at[manifestKey{e.Scope, e.Name}]; ok {
+				cursor = j + 1
+			}
+		case op.Keep > 0 && op.Keep <= len(prev)-cursor:
+			out = append(out, prev[cursor:cursor+op.Keep]...)
+			cursor += op.Keep
+		case op.Keep > 0:
+			return nil, fmt.Errorf("element %d keeps %d entries and %d are left", i, op.Keep, len(prev)-cursor)
+		default:
+			return nil, fmt.Errorf("element %d is neither a positive keep nor an entry", i)
+		}
+	}
+	return out, nil
+}
+
+// marshalRecord encodes a record, which is strings and numbers and so
+// cannot fail to encode.
+func marshalRecord(v any) []byte {
+	data, err := json.Marshal(v)
 	if err != nil {
 		// Unreachable: every field is a string, an int or a slice of
 		// them. Recording something a reader can see went wrong beats
 		// recording nothing.
 		data = fmt.Appendf(nil, "{%q:%q}", "error", err.Error())
 	}
-	return ManifestNS, data
+	return data
 }
 
 // PartSeparator joins the parts [RenderParts] returns into the block
