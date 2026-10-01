@@ -3,7 +3,7 @@ module github.com/ChristopherDavenport/agentmemory/sqlite
 go 1.25.0
 
 require (
-	github.com/ChristopherDavenport/agentmemory v0.0.7
+	github.com/ChristopherDavenport/agentmemory v0.0.8
 	modernc.org/sqlite v1.59.0
 )
 
