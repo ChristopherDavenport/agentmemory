@@ -4,4 +4,3 @@ github.com/ChristopherDavenport/agentturn v0.0.13 h1:zUjZbH8nywWfYk4nyc0OPbGmeVN
 github.com/ChristopherDavenport/agentturn v0.0.13/go.mod h1:CBOE+DRjWP4BKCApROaXcjkfhZzyRf9VGVXrnYF9b0w=
 github.com/ChristopherDavenport/openresponses v0.0.12 h1:Cg4gYqf1ZMVQhYRmD94f068OLUQEv4rIK/9bl8EBUA4=
 github.com/ChristopherDavenport/openresponses v0.0.12/go.mod h1:oZT6GCySXw3+vL5LzrJrRI5qagBumqvwDZdp6Kr++a8=
-github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
