@@ -130,7 +130,10 @@ heading per entry with its size and the limit and its description, then
 the content verbatim, and last a line with the counts and the budget.
 `MaxTotalBytes` (32 KiB by default) bounds the block itself, headings,
 descriptions and that last line included, and the line reports the
-block's own size. The line is last because every write changes it, and
+block's own size. The block never comes out over it: a bound under one
+byte, or under what the title, that line and a heading per scope take,
+is refused with `ErrBudget`, so a product sharing one budget among
+instruction layers leaves memory out when its share reaches zero. The line is last because every write changes it, and
 the instructions are the prefix a provider caches: a write keeps every
 entry before the one it touched in the cached prefix. An
 entry whose rendered form does not fit is skipped and the next is
@@ -250,7 +253,10 @@ holder's lock removes it, so no two writers hold the store and take the
 same sequence number.
 `Reconcile` journals what a person changed by hand, reading the
 journal from the cursor in `.state.json` rather than whole, so a turn
-does not pay for the store's whole history; and a write records the
+does not pay for the store's whole history. It still opens every
+entry file to notice an edit, so its cost grows with the number of
+entries, a few milliseconds at five hundred, which a product that
+reconciles before every render pays on every turn. And a write records the
 person's version of the entry it is about to replace, under
 `Source: "reconciled"` and no session, because once the agent has
 written, the file and the journal agree again and no later `Reconcile`

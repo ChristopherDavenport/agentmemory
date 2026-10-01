@@ -385,6 +385,12 @@ func (s *Store) Journal(_ context.Context, after uint64) iter.Seq2[agentmemory.C
 // recorded. A product that lets people edit the directory runs it
 // before it renders.
 //
+// The cursor bounds the journal read, not the call: Reconcile still
+// opens every entry file, since a file edited in place need not move
+// its directory's modification time and a time and size can miss an
+// edit within the clock's resolution, so its cost grows with the
+// number of entries, a few milliseconds at five hundred.
+//
 // It is not the only thing that closes the gap. A write through this
 // store records the person's version of the entry it is about to
 // replace, because once the agent has written, the file and the

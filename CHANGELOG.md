@@ -7,6 +7,26 @@ versions may break the API.
 
 ## Unreleased
 
+### Breaking
+
+- `Render` and `RenderParts` refuse a bound they cannot meet with the
+  new `ErrBudget` and no block. `WithMaxTotalBytes(n)` with `n` under
+  one meant the 32 KiB default, so a caller whose share of a budget
+  came to zero or less, which is when there is no room, got the
+  largest block the module renders; and a bound under what the title,
+  the summary and one heading per scope take was exceeded without a
+  word. Leaving the option out still means `DefaultMaxTotalBytes`
+  (#17).
+
+### Documentation
+
+- `filestore.Reconcile`'s doc and the README say that it opens every
+  entry file, so its cost grows with the number of entries, a few
+  milliseconds at five hundred. The 44 µs v0.0.2 reported is the
+  journal read from the cursor, not the call. Comparing modification
+  times instead would miss an edit made in place, so the scan stays
+  (#18).
+
 ### Dependencies
 
 - agenttool v0.0.11 to v0.0.12, in the root module and in `sqlite`, and
