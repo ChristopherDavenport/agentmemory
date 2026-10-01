@@ -5,6 +5,14 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Dependencies
+
+- agenttool v0.0.11 to v0.0.12, in the root module and in `sqlite`, and
+  agentturn v0.0.12 to v0.0.13, which the tools' integration test alone
+  depends on. No API of this module changes with them.
+
 ## v0.0.7 - 2026-09-29
 
 ### Added
