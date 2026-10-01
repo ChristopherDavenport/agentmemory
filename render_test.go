@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,6 +26,7 @@ type renderCase struct {
 	maxTotal int
 	max      int // the store's entry bound
 	entries  []Entry
+	scopeMax map[Scope]int
 }
 
 // filler returns content of exactly n bytes of one letter, ending in
@@ -71,7 +73,20 @@ func renderCases() []renderCase {
 		// Many short entries with descriptions: the headings and the
 		// descriptions are the block, and the bound counts them.
 		{name: "many-small", scopes: []Scope{"user"}, maxTotal: 700, max: 256, entries: manySmall(12)},
+		// A full scope rendered first, capped, leaves the scope after it
+		// its room: the cap counts its entries and its omission line.
+		{name: "scope-cap", scopes: []Scope{"environment", "user"}, maxTotal: 1000, max: 256, scopeMax: map[Scope]int{"environment": 400},
+			entries: append(scopeEntries("environment", 8, 60), scopeEntries("user", 2, 40)...)},
 	}
+}
+
+// scopeEntries returns n entries of size bytes in scope.
+func scopeEntries(scope Scope, n, size int) []Entry {
+	out := make([]Entry, 0, n)
+	for i := range n {
+		out = append(out, Entry{Scope: scope, Name: fmt.Sprintf("%s-%02d", scope, i), Content: filler(size, byte('a'+i))})
+	}
+	return out
 }
 
 // manySmall returns n short entries, each with a description of its
@@ -106,6 +121,9 @@ func TestRenderGolden(t *testing.T) {
 			var ropts []RenderOption
 			if tc.maxTotal > 0 {
 				ropts = append(ropts, WithMaxTotalBytes(tc.maxTotal))
+			}
+			for scope, n := range tc.scopeMax {
+				ropts = append(ropts, WithScopeMaxBytes(scope, n))
 			}
 			block, man, err := Render(ctx, store, tc.scopes, ropts...)
 			if err != nil {
@@ -846,3 +864,173 @@ func TestApplyManifestRecordRefuses(t *testing.T) {
 }
 
 func must(_ string, data []byte) []byte { return data }
+
+// TestRenderScopeMaxBytes is a full scope rendered before a small one
+// under one bound: without a cap the later scope gets nothing, and
+// with one on the full scope it gets its room, the full scope keeps
+// inside its cap, and neither moves the block past its bound.
+func TestRenderScopeMaxBytes(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	for _, e := range append(scopeEntries("environment", 20, 150), scopeEntries("user", 2, 80)...) {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scopes := []Scope{"environment", "user"}
+	const bound = 3575
+	shown := func(man Manifest, scope Scope) int {
+		n := 0
+		for _, me := range man.Entries {
+			if me.Scope == scope {
+				n++
+			}
+		}
+		return n
+	}
+	// scopeBytes is what a scope's parts after its heading add.
+	scopeBytes := func(parts []Part, scope Scope) int {
+		n := 0
+		for _, p := range parts {
+			if strings.HasPrefix(p.ID, scopePartID(scope)+"/") || p.ID == omittedPartID(scope) {
+				n += cost(p.Text)
+			}
+		}
+		return n
+	}
+	cases := []struct {
+		name      string
+		opts      []RenderOption
+		env, user int
+		envCap    int
+	}{
+		{name: "uncapped", env: 17, user: 0},
+		{name: "env-capped", opts: []RenderOption{WithScopeMaxBytes("environment", 2400)}, env: 12, user: 2, envCap: 2400},
+		{name: "both-capped", opts: []RenderOption{WithScopeMaxBytes("environment", 2400), WithScopeMaxBytes("user", 1000)}, env: 12, user: 2, envCap: 2400},
+		{name: "env-zero", opts: []RenderOption{WithScopeMaxBytes("environment", 0)}, env: 0, user: 2},
+		{name: "last-wins", opts: []RenderOption{WithScopeMaxBytes("environment", 0), WithScopeMaxBytes("environment", 2400)}, env: 12, user: 2, envCap: 2400},
+		{name: "cap-over-bound", opts: []RenderOption{WithScopeMaxBytes("environment", 1<<20)}, env: 17, user: 0},
+		{name: "unlisted-scope", opts: []RenderOption{WithScopeMaxBytes("project", 0)}, env: 17, user: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := append([]RenderOption{WithMaxTotalBytes(bound)}, tc.opts...)
+			parts, man, err := RenderParts(ctx, store, scopes, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(JoinParts(parts)); got > bound {
+				t.Errorf("block is %d bytes, over the %d byte bound", got, bound)
+			}
+			if e, u := shown(man, "environment"), shown(man, "user"); e != tc.env || u != tc.user {
+				t.Errorf("shown: %d environment, %d user; want %d, %d", e, u, tc.env, tc.user)
+			}
+			if tc.envCap > 0 {
+				if n := scopeBytes(parts, "environment"); n > tc.envCap {
+					t.Errorf("environment takes %d bytes, over its %d byte cap", n, tc.envCap)
+				}
+			}
+			if len(man.Entries)+len(man.Omitted) != 22 {
+				t.Errorf("the manifest names %d entries, want 22", len(man.Entries)+len(man.Omitted))
+			}
+			for _, me := range man.Omitted {
+				if me.Reason != OmitBudget {
+					t.Errorf("omitted %s/%s has reason %q", me.Scope, me.Name, me.Reason)
+				}
+			}
+		})
+	}
+	if _, _, err := Render(ctx, store, scopes, WithScopeMaxBytes("user", -1)); !errors.Is(err, ErrBudget) {
+		t.Errorf("a cap under zero = %v, want ErrBudget", err)
+	}
+}
+
+// TestManifestFold is two agents with their own memories taking turns
+// in one session: each records a delta on its own last manifest, which
+// a fold resolves and ApplyManifestRecord does not, and the records
+// after the first hand-back stay small.
+func TestManifestFold(t *testing.T) {
+	a := manifestFixture(600, 126)
+	b := Manifest{Entries: []ManifestEntry{{Scope: "billing", Name: "plan", Hash: Hash("p"), Bytes: 10}}}
+	var f ManifestFold
+	if f.Manifest().Hash() != (Manifest{}).Hash() {
+		t.Fatal("a new fold holds a manifest")
+	}
+	apply := func(data []byte) {
+		t.Helper()
+		if err := f.Apply(data); err != nil {
+			t.Fatalf("Apply: %v\n%s", err, data)
+		}
+	}
+	_, data := a.Record()
+	apply(data)
+	_, data = b.RecordSince(a) // b on taking over, on the manifest in force
+	apply(data)
+	whole := len(must(a.Record()))
+	// Hand back to a, then to b, ten times: each on its own last manifest.
+	lastA, lastB := a, b
+	for i := range 10 {
+		nextA := Manifest{Entries: slices.Clone(lastA.Entries), Omitted: lastA.Omitted}
+		if i%2 == 1 {
+			nextA.Entries[i].Hash = Hash(fmt.Sprint("patched", i))
+		}
+		_, data = nextA.RecordSince(lastA)
+		if !bytes.Contains(data, []byte(`"base"`)) || len(data) > whole/100 {
+			t.Fatalf("hand-back %d to a records %d bytes, the whole is %d", i, len(data), whole)
+		}
+		if _, err := ApplyManifestRecord(f.Manifest(), data); !errors.Is(err, ErrManifestBase) {
+			t.Errorf("ApplyManifestRecord on the manifest in force = %v, want ErrManifestBase", err)
+		}
+		apply(data)
+		if f.Manifest().Hash() != nextA.Hash() {
+			t.Fatalf("hand-back %d: the fold holds another manifest", i)
+		}
+		_, data = lastB.RecordSince(lastB)
+		apply(data)
+		if f.Manifest().Hash() != lastB.Hash() {
+			t.Fatalf("hand-back %d: the fold does not hold b's manifest", i)
+		}
+		lastA = nextA
+	}
+	// A base the fold no longer holds, or never did, is refused, and
+	// leaves the fold as it was.
+	var g ManifestFold
+	_, data = a.Record()
+	if err := g.Apply(data); err != nil {
+		t.Fatal(err)
+	}
+	for i := range ManifestFoldDepth {
+		_, data = manifestFixture(3+i, 1).Record()
+		if err := g.Apply(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := g.Manifest().Hash()
+	next := Manifest{Entries: a.Entries[1:], Omitted: a.Omitted}
+	_, data = next.RecordSince(a)
+	if err := g.Apply(data); !errors.Is(err, ErrManifestBase) {
+		t.Errorf("a delta on a manifest past the depth = %v, want ErrManifestBase", err)
+	}
+	if g.Manifest().Hash() != before {
+		t.Error("a refused delta moved the fold")
+	}
+	if err := g.Apply([]byte(`{"base":"` + before + `","hash":"sha256:00"}`)); err == nil || errors.Is(err, ErrManifestBase) {
+		t.Errorf("a malformed delta = %v, want a malformed refusal", err)
+	}
+	// Within the depth it resolves: the oldest of the last eight.
+	_, data = manifestFixture(3, 1).Record()
+	if err := g.Apply(data); err != nil {
+		t.Fatal(err)
+	}
+	old := manifestFixture(4, 1)
+	_, data = Manifest{Entries: old.Entries, Omitted: old.Omitted[1:]}.RecordSince(old)
+	if err := g.Apply(data); err != nil {
+		t.Errorf("a delta on a manifest within the depth: %v", err)
+	}
+	// The manifest returned is the fold's copy, not its own.
+	m := g.Manifest()
+	m.Entries[0].Name = "changed"
+	if g.Manifest().Entries[0].Name == "changed" {
+		t.Error("Manifest returned the fold's own slice")
+	}
+}

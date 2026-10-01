@@ -19,6 +19,7 @@ type RenderOption func(*renderOptions)
 
 type renderOptions struct {
 	maxTotal int
+	scopeMax map[Scope]int
 }
 
 // WithMaxTotalBytes sets the block's bound; without it the bound is
@@ -30,10 +31,34 @@ func WithMaxTotalBytes(n int) RenderOption {
 	return func(o *renderOptions) { o.maxTotal = n }
 }
 
+// WithScopeMaxBytes caps what one scope's entries may take of the
+// block, inside its bound: the bytes the scope's entries and the line
+// naming its omissions add, separators included, and not its heading,
+// which the block holds whatever it shows. The scope packs against the
+// smaller of its cap and what the scopes before it left, and an entry
+// the cap leaves out is [OmitBudget], as one the bound leaves out is.
+//
+// A scope without a cap gets what is left, so with one bound for every
+// scope the scope rendered last gets what the others did not take, and
+// a full scope early in the order starves it. Capping the early scope,
+// or each, keeps room for the later ones; a cap of zero shows none of
+// the scope's entries and names them, room permitting. A cap under
+// zero is refused with [ErrBudget]. A cap on a scope the render does
+// not list does nothing, and the last cap given for a scope is the one
+// that holds.
+func WithScopeMaxBytes(scope Scope, n int) RenderOption {
+	return func(o *renderOptions) {
+		if o.scopeMax == nil {
+			o.scopeMax = map[Scope]int{}
+		}
+		o.scopeMax[scope] = n
+	}
+}
+
 // ErrBudget is returned by [Render] and [RenderParts] for a bound the
 // block cannot meet: one under one byte, or one under what the block
 // holds whatever it shows, its title, its summary and a heading per
-// scope. The block is never returned over its bound; a product that
+// scope; or for a scope cap under zero. The block is never returned over its bound; a product that
 // gets ErrBudget has no room for memory on this call and leaves the
 // block out.
 var ErrBudget = errors.New("agentmemory: render bound is too small for the block")
@@ -41,6 +66,14 @@ var ErrBudget = errors.New("agentmemory: render bound is too small for the block
 // ManifestNS is the namespace a [Manifest] is recorded under, so a
 // reader of a session recognises one without knowing the product that
 // wrote it. See [Manifest.Record].
+//
+// A record under it is a whole manifest, from [Manifest.Record], or a
+// delta, from [Manifest.RecordSince], whose base is the hash of a
+// manifest earlier on the path: the one in force, or, since v0.0.9,
+// any of the last [ManifestFoldDepth] distinct manifests in force. A
+// reader before v0.0.9 folds with [ApplyManifestRecord] and refuses a
+// delta of the second kind, so a writer records one only once the
+// session's readers fold with [ManifestFold].
 const ManifestNS = "agentmemory:render"
 
 // Manifest lists what [Render] put in the block, for the session's
@@ -144,8 +177,12 @@ func (m Manifest) Record() (ns string, data []byte) {
 // not say which of the two it means.
 //
 // The product keeps prev per session, and records a session's first
-// manifest whole: a delta resolves only against the manifest in force
-// in the session that reads it.
+// manifest whole. prev is the manifest in force on the session's path,
+// which every reader resolves, or, where more than one agent records
+// into the session, the agent's own last manifest when it is among the
+// last [ManifestFoldDepth] distinct manifests in force and the delta on
+// it is the smaller: a reader resolves that base with a
+// [ManifestFold], and [ApplyManifestRecord] refuses it.
 func (m Manifest) RecordSince(prev Manifest) (ns string, data []byte) {
 	whole := marshalRecord(m)
 	entries, ok1 := manifestDiff(prev.Entries, m.Entries)
@@ -161,9 +198,10 @@ func (m Manifest) RecordSince(prev Manifest) (ns string, data []byte) {
 }
 
 // ErrManifestBase is returned by [ApplyManifestRecord] for a delta
-// whose base is not the manifest it was given: the reader missed a
-// record, or the delta belongs to another session.
-var ErrManifestBase = errors.New("agentmemory: manifest delta is not based on the manifest in force")
+// whose base is not the manifest it was given, and by
+// [ManifestFold.Apply] for one whose base is none the fold holds: the
+// reader missed a record, or the delta belongs to another session.
+var ErrManifestBase = errors.New("agentmemory: manifest delta is not based on a manifest the reader holds")
 
 // ApplyManifestRecord returns the manifest in force after the record
 // data, the bytes of an entry under [ManifestNS], given m, the one in
@@ -173,27 +211,135 @@ var ErrManifestBase = errors.New("agentmemory: manifest delta is not based on th
 // m's hash is refused with [ErrManifestBase], and one whose keeps run
 // past m, or whose result does not hash as the delta says, is refused
 // as malformed.
+//
+// A delta may be based on an earlier manifest on the path than the one
+// in force, as a writer handed back to after a handoff records one; a
+// reader of a session more than one agent records into folds with a
+// [ManifestFold], which resolves those.
 func ApplyManifestRecord(m Manifest, data []byte) (Manifest, error) {
-	var probe struct {
-		Base *string `json:"base"`
+	whole, d, err := parseManifestRecord(data)
+	if err != nil {
+		return Manifest{}, err
 	}
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return Manifest{}, fmt.Errorf("agentmemory: manifest record: %w", err)
-	}
-	if probe.Base == nil {
-		var whole Manifest
-		if err := json.Unmarshal(data, &whole); err != nil {
-			return Manifest{}, fmt.Errorf("agentmemory: manifest record: %w", err)
-		}
+	if d == nil {
 		return whole, nil
-	}
-	var d manifestDelta
-	if err := json.Unmarshal(data, &d); err != nil {
-		return Manifest{}, fmt.Errorf("agentmemory: manifest delta: %w", err)
 	}
 	if have := m.Hash(); d.Base != have {
 		return Manifest{}, fmt.Errorf("%w: the delta is based on %s, the manifest in force is %s", ErrManifestBase, d.Base, have)
 	}
+	return applyManifestDelta(m, d)
+}
+
+// ManifestFoldDepth is how many distinct manifests a [ManifestFold]
+// resolves a delta's base against: the one in force and those in force
+// before it, most recent first. A writer records a delta on a manifest
+// other than the one in force only when it is among the last
+// ManifestFoldDepth distinct manifests on the session's path, and
+// otherwise on the one in force.
+const ManifestFoldDepth = 8
+
+// ManifestFold reads the records under [ManifestNS] on a session's
+// path, in order, and keeps the manifest in force. Unlike
+// [ApplyManifestRecord] it resolves a delta whose base is any of the
+// last [ManifestFoldDepth] distinct manifests in force, not only the
+// current one: when two agents with their own memories take turns in
+// one session, each records on its own last manifest rather than the
+// other agent's, which shares nothing with it, and writes what moved
+// rather than every entry at each hand-back.
+//
+// The zero value is ready to use and holds the empty manifest. A fold
+// is not safe for concurrent use.
+type ManifestFold struct {
+	// recent are the distinct manifests in force, most recent first,
+	// the one in force at 0, and hashes their hashes.
+	recent []Manifest
+	hashes []string
+}
+
+// Apply folds the record data, the bytes of an entry under
+// [ManifestNS]. A whole record becomes the manifest in force. A delta
+// whose base is none of the manifests the fold holds is refused with
+// [ErrManifestBase], and a malformed one as [ApplyManifestRecord]
+// refuses it; a refused record leaves the fold as it was.
+func (f *ManifestFold) Apply(data []byte) error {
+	whole, d, err := parseManifestRecord(data)
+	if err != nil {
+		return err
+	}
+	if d == nil {
+		f.push(whole, whole.Hash())
+		return nil
+	}
+	i := slices.Index(f.hashes, d.Base)
+	var base Manifest
+	switch {
+	case i >= 0:
+		base = f.recent[i]
+	case len(f.recent) == 0 && d.Base == (Manifest{}).Hash():
+		// Nothing folded yet: the empty manifest is in force.
+	default:
+		return fmt.Errorf("%w: the delta is based on %s, which is not among the %d manifests last in force", ErrManifestBase, d.Base, len(f.recent))
+	}
+	out, err := applyManifestDelta(base, d)
+	if err != nil {
+		return err
+	}
+	f.push(out, d.Hash)
+	return nil
+}
+
+// Manifest returns the manifest in force: the empty one before any
+// record is folded.
+func (f *ManifestFold) Manifest() Manifest {
+	if len(f.recent) == 0 {
+		return Manifest{}
+	}
+	m := f.recent[0]
+	return Manifest{Entries: slices.Clone(m.Entries), Omitted: slices.Clone(m.Omitted)}
+}
+
+// push makes m, whose hash is h, the manifest in force, moving it to
+// the front if the fold holds it and dropping the oldest past the
+// depth.
+func (f *ManifestFold) push(m Manifest, h string) {
+	if i := slices.Index(f.hashes, h); i >= 0 {
+		f.recent = slices.Delete(f.recent, i, i+1)
+		f.hashes = slices.Delete(f.hashes, i, i+1)
+	}
+	f.recent = slices.Insert(f.recent, 0, m)
+	f.hashes = slices.Insert(f.hashes, 0, h)
+	if len(f.recent) > ManifestFoldDepth {
+		f.recent = f.recent[:ManifestFoldDepth]
+		f.hashes = f.hashes[:ManifestFoldDepth]
+	}
+}
+
+// parseManifestRecord decodes a record under [ManifestNS]: a whole
+// manifest, with a nil delta, or a delta.
+func parseManifestRecord(data []byte) (Manifest, *manifestDelta, error) {
+	var probe struct {
+		Base *string `json:"base"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return Manifest{}, nil, fmt.Errorf("agentmemory: manifest record: %w", err)
+	}
+	if probe.Base == nil {
+		var whole Manifest
+		if err := json.Unmarshal(data, &whole); err != nil {
+			return Manifest{}, nil, fmt.Errorf("agentmemory: manifest record: %w", err)
+		}
+		return whole, nil, nil
+	}
+	var d manifestDelta
+	if err := json.Unmarshal(data, &d); err != nil {
+		return Manifest{}, nil, fmt.Errorf("agentmemory: manifest delta: %w", err)
+	}
+	return Manifest{}, &d, nil
+}
+
+// applyManifestDelta folds d onto m, whose hash is d's base, and checks
+// the result against d's hash.
+func applyManifestDelta(m Manifest, d *manifestDelta) (Manifest, error) {
 	var out Manifest
 	var err error
 	if out.Entries, err = manifestApply(m.Entries, d.Entries); err != nil {
@@ -412,7 +558,8 @@ func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) 
 // their descriptions, the list of what was left out and the separators
 // are all counted, because they are all sent to the model, and the
 // summary reports the block's own size so what the model reads is what
-// the window pays. An entry whose part does not fit is skipped,
+// the window pays. An entry whose part does not fit in what is left of
+// the bound, or of its scope's cap under [WithScopeMaxBytes], is skipped,
 // recorded in [Manifest.Omitted] with [OmitBudget] and listed by name
 // after its scope's entries so the model knows what memory_search can
 // fetch; entries after it are still considered, so one large entry
@@ -444,6 +591,11 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 	}
 	if o.maxTotal < 1 {
 		return nil, Manifest{}, fmt.Errorf("%w: the bound is %d bytes", ErrBudget, o.maxTotal)
+	}
+	for scope, n := range o.scopeMax {
+		if n < 0 {
+			return nil, Manifest{}, fmt.Errorf("%w: scope %q is capped at %d bytes", ErrBudget, scope, n)
+		}
 	}
 	for i, scope := range scopes {
 		if !ValidScope(scope) {
@@ -489,6 +641,9 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 			continue
 		}
 		room := o.maxTotal - fixed - spent
+		if n, ok := o.scopeMax[scope]; ok {
+			room = min(room, n)
+		}
 		// Packing twice is how the line naming the omissions pays for
 		// itself: the first pass says whether there will be one, the
 		// second holds room for it. A pass that holds room back can only
@@ -509,13 +664,13 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 			man.Omitted = append(man.Omitted, me)
 			dropped = append(dropped, e)
 		}
-		spent += used
 		if len(dropped) > 0 {
-			if line := omitLine(dropped, o.maxTotal-fixed-spent); line != "" {
+			if line := omitLine(dropped, room-used); line != "" {
 				parts = append(parts, Part{ID: omittedPartID(scope), Text: line})
-				spent += cost(line)
+				used += cost(line)
 			}
 		}
+		spent += used
 	}
 	// The summary reports the block's own size, so settling it is a
 	// fixed point: the reservation above is as wide as the summary can

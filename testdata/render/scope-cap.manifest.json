@@ -1,0 +1,71 @@
+{
+  "entries": [
+    {
+      "scope": "environment",
+      "name": "environment-00",
+      "hash": "sha256:e5dd3b59204097dadb945d0e70fef2eab7a50fb4ac0968bf4bc0f2f48a4ef775",
+      "bytes": 60
+    },
+    {
+      "scope": "environment",
+      "name": "environment-01",
+      "hash": "sha256:cf249a4fbe7e08bcdf01b2bce484f73e1cf785467f13eaa3bafd1ec732557cf2",
+      "bytes": 60
+    },
+    {
+      "scope": "environment",
+      "name": "environment-02",
+      "hash": "sha256:2fed286e0726c49fe125301c4a12330d05131cf3b6b378e0d30285cde2e11493",
+      "bytes": 60
+    },
+    {
+      "scope": "user",
+      "name": "user-00",
+      "hash": "sha256:965e27a2084ef37e50203d17c52968f71ec7e0563dab9e4128b51b97795a7ba0",
+      "bytes": 40
+    },
+    {
+      "scope": "user",
+      "name": "user-01",
+      "hash": "sha256:2eab9870dee11acbc195b6c26d31d662446aee34faa7097e20a0504f40d86fc6",
+      "bytes": 40
+    }
+  ],
+  "omitted": [
+    {
+      "scope": "environment",
+      "name": "environment-03",
+      "hash": "sha256:ab9bbe3c3c30267b3aa76c51f19691bb903456203a3a5224765593967fb402cf",
+      "bytes": 60,
+      "reason": "budget"
+    },
+    {
+      "scope": "environment",
+      "name": "environment-04",
+      "hash": "sha256:cff889bd9318ae257a44cbe5ebb80016062371ed769991d76e09d725b536674b",
+      "bytes": 60,
+      "reason": "budget"
+    },
+    {
+      "scope": "environment",
+      "name": "environment-05",
+      "hash": "sha256:2a43d015d8755d9ad575f5686378df417126977889fb77830eb1d5d9a990b237",
+      "bytes": 60,
+      "reason": "budget"
+    },
+    {
+      "scope": "environment",
+      "name": "environment-06",
+      "hash": "sha256:8d491a60060ceb994b29d7330a89b517a8b3a41c16578206316b566461a250cc",
+      "bytes": 60,
+      "reason": "budget"
+    },
+    {
+      "scope": "environment",
+      "name": "environment-07",
+      "hash": "sha256:2f7f40fe3c6db31096756582666f3a8ce74dfcffb84cc20e448b0e72710ee3dc",
+      "bytes": 60,
+      "reason": "budget"
+    }
+  ]
+}
