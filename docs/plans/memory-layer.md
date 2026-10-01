@@ -246,7 +246,11 @@ annotation is compared with nothing the way a config entry is. After a
 session's first manifest it records `Manifest.RecordSince` of the last
 one: a delta naming the entries that moved and keeping the runs that
 did not, which a reader folds on with `ApplyManifestRecord`, since the
-whole manifest repeats every entry and a write moves one (#33).
+whole manifest repeats every entry and a write moves one (#33). Where
+more than one agent records into a session, an agent handed back to
+records on its own last manifest rather than the other agent's, and a
+reader folds with a `ManifestFold`, which resolves a base among the
+last `ManifestFoldDepth` distinct manifests in force (#37).
 
 ### `filestore`
 

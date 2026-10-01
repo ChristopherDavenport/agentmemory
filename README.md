@@ -123,7 +123,14 @@ the record says what the model was not given and why.
 session last recorded, the entries that moved and a keep for each run
 that did not, so under a memory past its bound a write costs the entry
 it touched rather than every entry again; `ApplyManifestRecord` folds a
-record of either form onto the manifest in force.
+record of either form onto the manifest in force. Where two agents with
+their own memories take turns in one session, the manifest in force at
+a hand-back is the other agent's, which shares nothing with this one's,
+so each agent records on its own last manifest instead when that is the
+smaller delta, and a reader folds with a `ManifestFold`, which resolves
+a delta on any of the last `ManifestFoldDepth` distinct manifests in
+force. `ApplyManifestRecord` refuses such a delta, so a writer uses one
+only once its session's readers fold with `ManifestFold` (v0.0.9).
 
 `Render` produces the block: a title, one section per scope, one
 heading per entry with its size and the limit and its description, then
@@ -139,7 +146,11 @@ entry before the one it touched in the cached prefix. An
 entry whose rendered form does not fit is skipped and the next is
 still considered, so one large entry cannot hide the small ones after
 it; what was left out is listed under its scope so the model knows what
-`memory_search` can fetch. The output is determined by the store's
+`memory_search` can fetch. Every scope shares the one bound, in the
+order given, so a full scope starves the scopes after it;
+`WithScopeMaxBytes(scope, n)` caps what one scope's entries may take
+inside the bound, so a growing scope of facts about the environment
+cannot push the user's preferences out of the block. The output is determined by the store's
 state and the bounds alone, so an unchanged store renders the same
 bytes, and the `Manifest` lists what the block held and omitted, by
 scope, name, hash, size and, for an omission, the reason, for the

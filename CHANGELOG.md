@@ -7,6 +7,34 @@ versions may break the API.
 
 ## Unreleased
 
+### Added
+
+- `WithScopeMaxBytes(scope, n)` caps what one scope's entries, and the
+  line naming its omissions, may take of the block, inside
+  `WithMaxTotalBytes`. Every scope packed against the one bound in
+  order, so a full scope starved the scopes after it: 20 environment
+  entries under 3,575 bytes left no room for 2 user entries, and
+  reordering moved the starvation onto the other scope. An entry a cap
+  leaves out is `OmitBudget`; a cap under zero is refused with
+  `ErrBudget`. Without it nothing changes (#38).
+- `ManifestFold` folds a session's records under `ManifestNS` and
+  resolves a delta whose base is any of the last `ManifestFoldDepth`
+  (eight) distinct manifests in force, not only the current one. In a
+  handoff between two agents with their own memories, the manifest in
+  force at a hand-back is the other agent's, so `RecordSince` on it
+  wrote the whole manifest every time: 84 KB per hand-back for 600
+  entries. The agent's own last manifest is now a base a reader
+  resolves, so a writer passes it to `RecordSince` when that delta is
+  the smaller (#37).
+
+### Changed
+
+- The record format under `ManifestNS`: a delta may be based on any of
+  the last `ManifestFoldDepth` distinct manifests in force.
+  `ApplyManifestRecord` still resolves only the manifest in force and
+  refuses such a delta with `ErrManifestBase`, so a writer records one
+  only once the session's readers fold with `ManifestFold`.
+
 ### Dependencies
 
 - agenttool v0.0.12 to v0.0.14, in the root module and in `sqlite`, and
