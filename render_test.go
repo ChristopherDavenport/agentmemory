@@ -496,6 +496,60 @@ func TestRenderErrors(t *testing.T) {
 	}
 }
 
+// TestRenderBudgetRefused is #17: a bound the block cannot meet is
+// refused with ErrBudget, never answered with a block over it, and a
+// bound of zero or less is not read as the default.
+func TestRenderBudgetRefused(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	for i := range 20 {
+		if _, err := store.Put(ctx, Entry{Scope: "user", Name: fmt.Sprintf("n-%02d", i), Content: filler(300, 'x')}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scopes := []Scope{"user", "project"}
+	for _, max := range []int{0, -100, 1, 80} {
+		t.Run(strconv.Itoa(max), func(t *testing.T) {
+			block, man, err := Render(ctx, store, scopes, WithMaxTotalBytes(max))
+			if !errors.Is(err, ErrBudget) {
+				t.Errorf("Render under a %d byte bound = %d bytes, %v; want ErrBudget", max, len(block), err)
+			}
+			if block != "" || len(man.Entries) != 0 || len(man.Omitted) != 0 {
+				t.Errorf("a refused render returned a block or a manifest")
+			}
+			if _, _, err := RenderParts(ctx, store, scopes, WithMaxTotalBytes(max)); !errors.Is(err, ErrBudget) {
+				t.Errorf("RenderParts under a %d byte bound = %v; want ErrBudget", max, err)
+			}
+		})
+	}
+	// The smallest bound that renders gives a block inside it, and the
+	// byte under it is refused: there is no bound the block exceeds.
+	floor := 0
+	for max := 1; max <= 1024; max++ {
+		block, _, err := Render(ctx, store, scopes, WithMaxTotalBytes(max))
+		if errors.Is(err, ErrBudget) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(block) > max {
+			t.Fatalf("block is %d bytes, over the %d byte bound", len(block), max)
+		}
+		floor = max
+		break
+	}
+	if floor == 0 {
+		t.Fatal("no bound up to 1024 bytes renders")
+	}
+	for max := floor; max < floor+64; max++ {
+		block, _, err := Render(ctx, store, scopes, WithMaxTotalBytes(max))
+		if err != nil || len(block) > max {
+			t.Errorf("a %d byte bound, over the %d byte floor: %d bytes, %v", max, floor, len(block), err)
+		}
+	}
+}
+
 type failing struct{ Store }
 
 func (failing) List(context.Context, Scope) ([]Entry, error) { return nil, errors.New("boom") }

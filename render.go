@@ -21,11 +21,22 @@ type renderOptions struct {
 	maxTotal int
 }
 
-// WithMaxTotalBytes sets the block's bound; the default is
-// [DefaultMaxTotalBytes], and a value under one means the default.
+// WithMaxTotalBytes sets the block's bound; without it the bound is
+// [DefaultMaxTotalBytes]. A bound under one holds no block, and
+// [Render] refuses it with [ErrBudget] rather than reading it as the
+// default: a caller dividing a budget among layers reaches zero or
+// less exactly when there is no room.
 func WithMaxTotalBytes(n int) RenderOption {
 	return func(o *renderOptions) { o.maxTotal = n }
 }
+
+// ErrBudget is returned by [Render] and [RenderParts] for a bound the
+// block cannot meet: one under one byte, or one under what the block
+// holds whatever it shows, its title, its summary and a heading per
+// scope. The block is never returned over its bound; a product that
+// gets ErrBudget has no room for memory on this call and leaves the
+// block out.
+var ErrBudget = errors.New("agentmemory: render bound is too small for the block")
 
 // ManifestNS is the namespace a [Manifest] is recorded under, so a
 // reader of a session recognises one without knowing the product that
@@ -416,9 +427,10 @@ func Render(ctx context.Context, s Store, scopes []Scope, opts ...RenderOption) 
 // differs from the last one it recorded, under [ManifestNS]; see
 // [Manifest.Record]. The summary's own width is reserved before the
 // entries are placed, at the widest the counts could be, so a block can
-// come out a few bytes under the bound; it never comes out over it,
-// except that the title, the summary and one heading per scope are
-// always written, so a bound too small for those cannot be met.
+// come out a few bytes under the bound; it never comes out over it. The
+// title, the summary and one heading per scope are always written, so
+// a bound too small for those, or under one, is refused with
+// [ErrBudget] and no block.
 //
 // Content is not transformed, except that one trailing newline is
 // dropped, since the separator after the part supplies it. A heading
@@ -430,8 +442,8 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 	for _, opt := range opts {
 		opt(&o)
 	}
-	if o.maxTotal <= 0 {
-		o.maxTotal = DefaultMaxTotalBytes
+	if o.maxTotal < 1 {
+		return nil, Manifest{}, fmt.Errorf("%w: the bound is %d bytes", ErrBudget, o.maxTotal)
 	}
 	for i, scope := range scopes {
 		if !ValidScope(scope) {
@@ -462,6 +474,9 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 	fixed := len(title) + cost(summary(total, total, o.maxTotal, o.maxTotal, o.maxTotal, limit))
 	for i, scope := range scopes {
 		fixed += cost(scopeText(scope, len(lists[i]) == 0))
+	}
+	if fixed > o.maxTotal {
+		return nil, Manifest{}, fmt.Errorf("%w: the title, the summary and %d scope headings take %d bytes, the bound is %d", ErrBudget, len(scopes), fixed, o.maxTotal)
 	}
 
 	man := Manifest{Entries: []ManifestEntry{}}
