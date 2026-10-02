@@ -66,6 +66,13 @@ versions may break the API.
   `filestore/format_test.go` reads the document's examples and holds
   the package to them (#12).
 
+### Dependencies
+
+- agenttool v0.0.14 to v0.0.15 and openresponses v0.0.12 to v0.0.14,
+  in the root module and in `sqlite`, and agentturn v0.0.15 to
+  v0.0.16, which the tools' integration test alone depends on. No API
+  of this module changes with them.
+
 ## v0.0.9 - 2026-10-01
 
 ### Added
