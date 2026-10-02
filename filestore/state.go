@@ -90,6 +90,16 @@ func (st *journalState) note(e agentmemory.Entry) {
 	st.Entries[k] = stateEntry{Hash: e.Hash, Meta: metaHash(e.Meta)}
 }
 
+// held returns the entry the journal last recorded as live for the
+// name, hash alone, or nil for none: what a write to the name replaces.
+func (st *journalState) held(scope agentmemory.Scope, name string) *agentmemory.Entry {
+	se, ok := st.Entries[key(scope, name)]
+	if !ok {
+		return nil
+	}
+	return &agentmemory.Entry{Scope: scope, Name: name, Hash: se.Hash}
+}
+
 // agrees reports whether the entry a file holds is the state the
 // journal last recorded for it.
 func (se stateEntry) agrees(e agentmemory.Entry) bool {
@@ -208,11 +218,14 @@ func (s *Store) appendChange(st *journalState, c agentmemory.Change) (*agentmemo
 	if err != nil {
 		return nil, err
 	}
+	first := st.Off == 0
 	st.Seq = c.Seq
 	st.Off = off
 	st.note(c.Entry)
-	if st.Head == agentmemory.Hash("") {
-		// The journal had no first line to hash before this record.
+	if first {
+		// The journal had no complete line before this record: it was
+		// empty, or held one partial line the write has just terminated,
+		// so its first line is only now what it will stay.
 		head, err := s.headLine()
 		if err != nil {
 			return nil, err

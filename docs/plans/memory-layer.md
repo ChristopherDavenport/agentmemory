@@ -250,7 +250,10 @@ whole manifest repeats every entry and a write moves one (#33). Where
 more than one agent records into a session, an agent handed back to
 records on its own last manifest rather than the other agent's, and a
 reader folds with a `ManifestFold`, which resolves a base among the
-last `ManifestFoldDepth` distinct manifests in force (#37).
+last `ManifestFoldDepth` distinct manifests in force (#37). An agent
+that has folded the path but kept no manifest of its own, as one taking
+a session up after a restart has, records `ManifestFold.Record`, the
+smallest record over the manifests its fold holds (agentkit#68).
 
 ### `filestore`
 

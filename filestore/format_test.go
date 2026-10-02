@@ -194,6 +194,8 @@ func TestFormatReplay(t *testing.T) {
 	if err := os.WriteFile(hand, ex.trees["memory"]["user/style.md"], 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The person's time is the file's modification time, to the half
+	// second: a file system with one-second times would fail here.
 	at := formatT0.Add(3500 * time.Millisecond)
 	if err := os.Chtimes(hand, at, at); err != nil {
 		t.Fatal(err)
@@ -256,18 +258,31 @@ func TestFormatRead(t *testing.T) {
 	if len(records) != 6 {
 		t.Fatalf("%d records, the document describes 6", len(records))
 	}
-	// What the document says of each record.
+	// What the document says of each record: prevOf and replacedOf are
+	// the seq of the record whose hash prev and replaced name, 0 for
+	// none.
+	hashOfSeq := func(seq int) string {
+		if seq == 0 {
+			return ""
+		}
+		return records[seq-1].Entry.Hash
+	}
 	for i, want := range []struct {
-		create, fork, reconciled, tombstone bool
+		prevOf, replacedOf int
+		reconciled         bool
+		tombstone          bool
+		updated            time.Time
 	}{
-		{create: true}, {create: true}, {}, {fork: true}, {reconciled: true}, {tombstone: true},
+		{0, 0, false, false, formatT0},
+		{0, 0, false, false, formatT0.Add(time.Second)},
+		{2, 2, false, false, formatT0.Add(2 * time.Second)},
+		{2, 3, false, false, formatT0.Add(3 * time.Second)}, // the fork
+		{4, 4, true, false, formatT0.Add(3500 * time.Millisecond)},
+		{6, 6, false, true, formatT0.Add(5 * time.Second)},
 	} {
 		c := records[i]
-		if got := c.Replaced == ""; got != want.create {
-			t.Errorf("record %d: create = %v", c.Seq, got)
-		}
-		if got := c.Prev != c.Replaced; got != want.fork {
-			t.Errorf("record %d: fork = %v", c.Seq, got)
+		if c.Prev != hashOfSeq(want.prevOf) || c.Replaced != hashOfSeq(want.replacedOf) {
+			t.Errorf("record %d: prev %s replaced %s, want record %d's and %d's", c.Seq, c.Prev, c.Replaced, want.prevOf, want.replacedOf)
 		}
 		if got := c.Source == agentmemory.SourceReconciled && c.Session == ""; got != want.reconciled {
 			t.Errorf("record %d: reconciled = %v", c.Seq, got)
@@ -275,15 +290,9 @@ func TestFormatRead(t *testing.T) {
 		if c.Entry.Deleted != want.tombstone {
 			t.Errorf("record %d: tombstone = %v", c.Seq, c.Entry.Deleted)
 		}
-	}
-	if records[3].Prev != records[1].Entry.Hash || records[3].Replaced != records[2].Entry.Hash {
-		t.Error("record 4 is not the fork the document describes")
-	}
-	if records[5].Prev != records[5].Entry.Hash || records[5].Replaced != records[5].Entry.Hash {
-		t.Error("record 6 is not the tombstone the document describes")
-	}
-	if !records[4].Entry.Updated.Equal(formatT0.Add(3500 * time.Millisecond)) {
-		t.Errorf("record 5 updated = %s, want the file's time", records[4].Entry.Updated)
+		if !c.Entry.Updated.Equal(want.updated) {
+			t.Errorf("record %d: updated = %s, want %s", c.Seq, c.Entry.Updated, want.updated)
+		}
 	}
 
 	// The store reads the same records, and the one lost update.
@@ -460,6 +469,7 @@ func TestFormatNames(t *testing.T) {
 		fmt.Sprintf("%d bytes by default", agentmemory.DefaultMaxEntryBytes),
 		fmt.Sprintf("first %d bytes", headLimit),
 		fmt.Sprintf("`DefaultLockTimeout`, %d s", int(DefaultLockTimeout/time.Second)),
+		fmt.Sprintf("from 1 ms and doubling to %d ms", int(maxLockWait/time.Millisecond)),
 		"`" + agentmemory.SourceReconciled + "`",
 		"`\\u003c`, `\\u003e` and `\\u0026`",
 		"`\\u2028` and `\\u2029`",

@@ -172,17 +172,24 @@ func tailLines(f *os.File, fn func(line []byte) bool) error {
 }
 
 // decodeRecord parses one journal line as a record: a JSON object in
-// the shape of [agentmemory.Change] with a positive seq. A line that
-// is anything else is damage, which readers report and skip and a
-// writer walks back past; a line without a sequence number cannot be a
-// record, since it could neither be resumed from nor numbered after.
+// the shape of [agentmemory.Change] with a positive seq and an entry
+// with a scope, a name and a hash. A line that is anything else is
+// damage, which readers report and skip and a writer walks back past:
+// a line without a sequence number could neither be resumed from nor
+// numbered after, and one without an entry names nothing the cursor
+// could hold a state for.
 func decodeRecord(line []byte) (agentmemory.Change, error) {
 	var c agentmemory.Change
 	if err := json.Unmarshal(line, &c); err != nil {
 		return agentmemory.Change{}, err
 	}
-	if c.Seq == 0 {
+	switch {
+	case c.Seq == 0:
 		return agentmemory.Change{}, errors.New("record has no seq")
+	case !agentmemory.ValidScope(c.Entry.Scope) || !agentmemory.ValidName(c.Entry.Name):
+		return agentmemory.Change{}, errors.New("record names no entry")
+	case c.Entry.Hash == "":
+		return agentmemory.Change{}, errors.New("record has no hash")
 	}
 	return c, nil
 }

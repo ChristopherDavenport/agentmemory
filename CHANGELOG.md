@@ -29,8 +29,18 @@ versions may break the API.
   readers already did (#12).
 - `filestore`: a journal line that decoded but carried no `seq`, such
   as `{}`, counted as record 0 and reset the cursor, so the next write
-  took a number already used. A record has a positive `seq`; a line
-  without one is damage, reported and skipped (#12).
+  took a number already used; one with a `seq` and no entry became a
+  state for the name `/` that the next `Reconcile` tombstoned. A record
+  has a positive `seq`, an entry with a scope and a name, and a hash; a
+  line without them is damage, reported and skipped (#12).
+- `filestore`: a write over a hand-written file the store cannot
+  journal, empty or over the bound, recorded `replaced` as the hash of
+  that file, which no record held, so `LostUpdates` reported the write
+  as lost and a `Forget` kept content no record had. `replaced` is now
+  the journal's last state for the name, and such a tombstone carries
+  the journal's last record (#12).
+- `filestore`: a waiting writer's back-off doubled past the 50 ms the
+  documentation gives, to 64 ms; it now stops at 50 ms.
 
 ### Documentation
 

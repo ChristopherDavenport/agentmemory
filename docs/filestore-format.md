@@ -212,7 +212,7 @@ the whole store, whatever the scope.
 | `entry.content` | string | required | the whole content after the change; for a tombstone, the last content the entry held |
 | `entry.meta` | object of string to string | omitted when empty | the metadata after the change |
 | `entry.hash` | string | required | `sha256:` and the digest of `entry.content` |
-| `entry.updated` | RFC 3339 time | required | when the entry was last written; for a reconciled change, the file's modification time |
+| `entry.updated` | RFC 3339 time | required | when the entry was last written; for a reconciled edit or add, the file's modification time |
 | `entry.deleted` | `true` | omitted when false | the record is a tombstone |
 | `prev` | string | omitted when empty | the hash of the content the write was built on, as the writer claims it |
 | `replaced` | string | omitted when empty | the hash of the content the journal held for this entry when the change landed |
@@ -282,10 +282,15 @@ Records for one entry chain through `replaced`: a record's `replaced`
 is the `entry.hash` of the previous record for the same scope and name,
 or is empty when there is none or the previous one is a tombstone. A
 writer MUST keep the chain. When the file it is about to replace does
-not hold the content the journal last recorded for the entry, because
-a person edited the file, it MUST first append a reconciled record for
-the state it found, and then its own record with `replaced` naming
-that state. The reference does this inside every `Put` and `Forget`.
+not hold the content and metadata the journal last recorded for the
+entry, because a person edited the file, it MUST first append a
+reconciled record for the state it found, and then its own record with
+`replaced` naming that state. The reference does this inside every
+`Put` and `Forget`. When the file is one the store cannot journal (see
+*Reconciled changes*), nothing is appended for it and `replaced` names
+the journal's last state as before, so the chain never names a hash no
+record holds; the tombstone for such a file carries the journal's last
+record for the name, or the file's content when there is none.
 
 `prev` is the writer's claim about the state it built the write on: the
 hash the caller anchored the write to, with `IfHash` or `BasedOn`, or,
@@ -302,15 +307,19 @@ when the caller claimed nothing, the hash the store held, which is
   the hash it read, since a write that claims nothing is recorded as
   built on whatever it landed on and the loss is invisible.
 
-Records 2, 3 and 4 of the worked example are a fork: two sessions read
-the entry at the same hash, each wrote whole, and the second to land
-has `prev` naming the first's `replaced` rather than its `hash`.
+Record 4 of the worked example is a fork: two sessions read the entry
+at record 2's hash, each wrote whole, record 3 landed first, and record
+4 has `prev` naming record 2 where its `replaced` names record 3.
+`LostUpdates` reads the journal through `Journal` and stops at the
+first damaged line it yields, so over a journal with damage it reports
+the forks before the damage.
 
 ### Tombstones
 
 `Forget` appends a tombstone: the entry's last record with
 `entry.deleted` set to `true`, `entry.updated` set to the time of the
-change, and `prev` and `replaced` both the hash of the content it held.
+change, and `prev` and `replaced` both the hash the journal last held
+for the name, which is the hash of the content the file held.
 The content and metadata are kept in the record, so the journal still
 has them. The entry file is removed and the name leaves `Get`, `List`
 and the index. The next write to the name is a create, with `replaced`
@@ -356,7 +365,9 @@ last line with no terminating `\n`. The rules:
   whole. The reference reads the file's last byte and prepends `\n` to
   its record when that byte is not one.
 - A line that is not a record, because it is not valid JSON, is not an
-  object of the shape above, or has no positive `seq`, is *damaged*. A
+  object of the shape above, has no positive `seq`, has no `entry` with
+  a scope and a name that are names, or has no `entry.hash`, is
+  *damaged*. A
   reader MUST NOT stop at a damaged line: the reference `Journal`
   yields an error naming the line and goes on to the records after it,
   and the cursor skips it. A writer allocating `seq` walks back past
@@ -435,7 +446,9 @@ one JSON object:
 
 `pid` is the holder's process ID, `host` its host name, and `since`
 when it took the lock, as RFC 3339 to the nanosecond, which together
-identify one holder: a host and a PID repeat, the time does not.
+identify one holder: a host and a PID repeat, the time does not. `host`
+MAY be absent when the holder could not learn its host name; such a
+lock is never stale.
 Releasing is removing the file, after reading it to check it still
 names the releaser; a lock that names another holder, or is empty
 because a new holder has created but not yet written it, is left alone.
@@ -522,8 +535,10 @@ MUST:
 2. Allocate `seq` as above: one more than the last record in the
    journal, walking back past a partial or damaged tail.
 3. Keep the chain: before replacing or removing an entry whose file
-   does not hold the content the journal last recorded for it, append
-   a reconciled record for the state found.
+   does not hold the content and metadata the journal last recorded for
+   it, append a reconciled record for the state found, unless the file
+   is one the store cannot journal, and name the journal's last state
+   in `replaced`.
 4. Write the entry file atomically, with the content byte for byte, and
    remove it for a tombstone.
 5. Append its record with `entry.hash` the digest of `entry.content`,

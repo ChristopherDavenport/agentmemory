@@ -32,6 +32,10 @@ type LockInfo struct {
 // a session.
 const DefaultLockTimeout = 2 * time.Second
 
+// maxLockWait is the longest a waiting writer sleeps between looks at
+// the lock; it starts at a millisecond and doubles up to this.
+const maxLockWait = 50 * time.Millisecond
+
 // lockName is the lock file at the store's root. The leading dot keeps
 // it out of the scope directories' entries, which are kebab-case.
 const lockName = ".lock"
@@ -101,9 +105,7 @@ func acquireFile(ctx context.Context, path string, timeout time.Duration) (func(
 			return nil, ctx.Err()
 		case <-time.After(wait):
 		}
-		if wait < 50*time.Millisecond {
-			wait *= 2
-		}
+		wait = min(2*wait, maxLockWait)
 	}
 }
 

@@ -130,7 +130,10 @@ so each agent records on its own last manifest instead when that is the
 smaller delta, and a reader folds with a `ManifestFold`, which resolves
 a delta on any of the last `ManifestFoldDepth` distinct manifests in
 force. `ApplyManifestRecord` refuses such a delta, so a writer uses one
-only once its session's readers fold with `ManifestFold` (v0.0.9).
+only once its session's readers fold with `ManifestFold` (v0.0.9). A
+writer that has folded the session's path and kept no manifest of its
+own, after a restart, records `fold.Record(m)`: the smallest of the
+whole record and the delta on each manifest the fold holds.
 
 `Render` produces the block: a title, one section per scope, one
 heading per entry with its size and the limit and its description, then

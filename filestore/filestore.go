@@ -263,14 +263,16 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	if err := s.noteOutside(st, e.Scope, e.Name, stored, now); err != nil {
 		return nil, err
 	}
-	replaced := ""
-	if stored != nil {
-		replaced = stored.Hash
-	}
+	// What the write replaced is the journal's last word for the entry,
+	// which is the file's hash now that the file has been noted, unless
+	// the file was one the store cannot journal, an empty or over-bound
+	// one a person wrote; then it is the state before that, so the chain
+	// never names a hash no record holds.
+	held := st.held(e.Scope, e.Name)
 	c, err := s.appendChange(st, agentmemory.Change{
 		Entry:    e,
-		Prev:     o.BaseFor(stored),
-		Replaced: replaced,
+		Prev:     o.BaseFor(held),
+		Replaced: hashOf(held),
 		Session:  agentmemory.SessionFrom(ctx),
 		At:       now,
 	})
@@ -328,13 +330,25 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	if err := s.noteOutside(st, scope, name, stored, now); err != nil {
 		return nil, err
 	}
+	// The tombstone is the entry's last record with Deleted set. That is
+	// the file, once noted; for a file the store could not journal it is
+	// the journal's last record for the name, when there is one, so the
+	// content a tombstone keeps is content a record held.
 	e := *stored
+	held := st.held(scope, name)
+	if hashOf(held) != stored.Hash {
+		if last, err := s.lastRecordFor(scope, name); err != nil {
+			return nil, err
+		} else if last != nil {
+			e = last.Entry
+		}
+	}
 	e.Deleted = true
 	e.Updated = now
 	c, err := s.appendChange(st, agentmemory.Change{
 		Entry:    e,
-		Prev:     stored.Hash,
-		Replaced: stored.Hash,
+		Prev:     hashOf(held),
+		Replaced: hashOf(held),
 		Session:  agentmemory.SessionFrom(ctx),
 		At:       now,
 	})
@@ -493,6 +507,14 @@ func (s *Store) scopes() ([]agentmemory.Scope, error) {
 }
 
 func key(scope agentmemory.Scope, name string) string { return string(scope) + "/" + name }
+
+// hashOf returns e's hash, or "" for nil.
+func hashOf(e *agentmemory.Entry) string {
+	if e == nil {
+		return ""
+	}
+	return e.Hash
+}
 
 // reindex rewrites a scope's INDEX.md: one line per live entry with
 // its description, for the person reading the directory. The caller
