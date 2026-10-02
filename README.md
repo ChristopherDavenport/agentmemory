@@ -118,7 +118,10 @@ that writes the entry is the product's; the namespace and the bytes are
 the module's, through `ManifestNS` and `Manifest.Record`, so a reader
 of the session recognises the entry without knowing the product. Each
 omission in the manifest carries its scope, name, size and reason, so
-the record says what the model was not given and why.
+the record says what the model was not given and why: `OmitBudget` for
+an entry the block's bound left out, and `OmitBlock`, which a product
+writes itself, for every entry of a turn on which it had no room for
+the block at all.
 `Manifest.RecordSince` writes a later manifest as a delta on the one the
 session last recorded, the entries that moved and a keep for each run
 that did not, so under a memory past its bound a write costs the entry
@@ -130,7 +133,10 @@ so each agent records on its own last manifest instead when that is the
 smaller delta, and a reader folds with a `ManifestFold`, which resolves
 a delta on any of the last `ManifestFoldDepth` distinct manifests in
 force. `ApplyManifestRecord` refuses such a delta, so a writer uses one
-only once its session's readers fold with `ManifestFold` (v0.0.9).
+only once its session's readers fold with `ManifestFold` (v0.0.9). A
+writer that has folded the session's path and kept no manifest of its
+own, after a restart, records `fold.Record(m)`: the smallest of the
+whole record and the delta on each manifest the fold holds.
 
 `Render` produces the block: a title, one section per scope, one
 heading per entry with its size and the limit and its description, then
@@ -271,7 +277,11 @@ reconciles before every render pays on every turn. And a write records the
 person's version of the entry it is about to replace, under
 `Source: "reconciled"` and no session, because once the agent has
 written, the file and the journal agree again and no later `Reconcile`
-could tell that anything was there. `sqlite.Open(path)`
+could tell that anything was there. The directory is a format a
+second program may read and append to: `docs/filestore-format.md`
+specifies the layout, the entry file, the journal record, how a record
+is numbered and chained, the lock, and how a torn tail is read, and a
+test holds the package to the document's examples. `sqlite.Open(path)`
 keeps the same rows and the same journal lines in one database and
 searches an FTS5 index in relevance order. `NewMemStore()` is the
 in-memory store. All three pass `storetest.Run`.

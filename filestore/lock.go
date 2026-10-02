@@ -32,6 +32,13 @@ type LockInfo struct {
 // a session.
 const DefaultLockTimeout = 2 * time.Second
 
+// A waiting writer sleeps between looks at the lock, from minLockWait
+// doubling up to maxLockWait.
+const (
+	minLockWait = time.Millisecond
+	maxLockWait = 50 * time.Millisecond
+)
+
 // lockName is the lock file at the store's root. The leading dot keeps
 // it out of the scope directories' entries, which are kebab-case.
 const lockName = ".lock"
@@ -62,7 +69,7 @@ func (s *Store) acquire(ctx context.Context) (func(), error) {
 
 func acquireFile(ctx context.Context, path string, timeout time.Duration) (func(), error) {
 	deadline := time.Now().Add(timeout)
-	wait := time.Millisecond
+	wait := minLockWait
 	for {
 		mine, taken, err := createLock(path)
 		if err != nil {
@@ -101,9 +108,7 @@ func acquireFile(ctx context.Context, path string, timeout time.Duration) (func(
 			return nil, ctx.Err()
 		case <-time.After(wait):
 		}
-		if wait < 50*time.Millisecond {
-			wait *= 2
-		}
+		wait = min(2*wait, maxLockWait)
 	}
 }
 
@@ -220,11 +225,12 @@ func readLock(path string) (LockInfo, error) {
 }
 
 // stale reports whether the holder is a process on this host that no
-// longer runs. A holder on another host is never stale: this process
-// cannot tell, and the caller must break the lock deliberately.
+// longer runs. A holder on another host, or one that could not say
+// which host it was on, is never stale: this process cannot tell, and
+// the caller must break the lock deliberately.
 func (l LockInfo) stale() bool {
 	host, _ := os.Hostname()
-	if l.Host != host || l.PID <= 0 {
+	if l.Host == "" || l.Host != host || l.PID <= 0 {
 		return false
 	}
 	return !processAlive(l.PID)

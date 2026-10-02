@@ -5,6 +5,67 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Added
+
+- `ManifestFold.Record(m)` returns the smallest record of a manifest
+  over the manifests the fold holds: the whole, or the delta on
+  whichever of the last `ManifestFoldDepth` manifests in force gives
+  the smaller, a tie going to the one in force. A writer that has
+  folded the session's path but kept no manifest of its own, as a kit
+  taking a session up after a restart has, wrote `RecordSince` the
+  manifest in force, the other agent's, and so the whole manifest at
+  its first hand-back; the fold held its own last manifest all along
+  (agentkit#68).
+- `OmitBlock`, the omission reason for an entry left out because the
+  product left the whole block out, as when its share of an
+  instruction budget reached zero or `Render` refused the bound with
+  `ErrBudget`. `Render` never writes it; a product records a manifest
+  with every entry omitted under it for a turn the model saw no memory
+  on, so a reader tells that turn apart from one whose store was empty
+  without resting on an empty reason (agentkit#69).
+
+### Fixed
+
+- `filestore`: a journal whose last complete line was not a record, as
+  two writes cut off in a row leave it, refused every later write with
+  "journal's last record is not a change", for ever, since nothing
+  repairs the journal. The next sequence number is now read from the
+  last line that is a record, walking back past damaged lines as
+  readers already did (#12).
+- `filestore`: a journal line that decoded but carried no `seq`, such
+  as `{}`, counted as record 0 and reset the cursor, so the next write
+  took a number already used; one with a `seq` and no entry became a
+  state for the name `/` that the next `Reconcile` tombstoned. A record
+  has a positive `seq`, an entry with a scope and a name, and a hash; a
+  line without them is damage, reported and skipped (#12).
+- `filestore`: a write over a hand-written file the store cannot
+  journal, empty or over the bound, recorded `replaced` as the hash of
+  that file, which no record held, so `LostUpdates` reported the write
+  as lost and a `Forget` kept content no record had. `replaced` is now
+  the journal's last state for the name, and such a tombstone carries
+  the journal's last record (#12).
+- `filestore`: a waiting writer's back-off doubled past the 50 ms the
+  documentation gives, to 64 ms; it now stops at 50 ms. A lock whose
+  holder could not name its host is never taken over.
+- `filestore`: the cursor's hash of the journal's first line was
+  computed before a write that terminated a lone partial line, so the
+  next write rebuilt the cursor once; it is computed after.
+
+### Documentation
+
+- `docs/filestore-format.md` specifies the file store's on-disk format
+  for a program that reads or appends to the directory beside the
+  reference store: the layout and names, the entry file and its
+  frontmatter, the journal record's members and encoding, how `seq` is
+  allocated and recovered, what `prev` and `replaced` chain and what a
+  fork is, tombstones, reconciled changes, the torn-tail and damaged
+  line rules, the order and durability of a write, the lock and its
+  takeover, the cursor, and the rules a second writer follows.
+  `filestore/format_test.go` reads the document's examples and holds
+  the package to them (#12).
+
 ## v0.0.9 - 2026-10-01
 
 ### Added

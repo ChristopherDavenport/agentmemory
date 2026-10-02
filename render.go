@@ -109,7 +109,7 @@ type ManifestEntry struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// Reasons [Render] leaves an entry out of the block, carried on
+// Reasons an entry is left out of the block, carried on
 // [ManifestEntry.Reason].
 const (
 	// OmitBudget is an entry whose rendered form did not fit in what
@@ -117,6 +117,15 @@ const (
 	// so the block holds what it can and the model is told the rest by
 	// name.
 	OmitBudget = "budget"
+	// OmitBlock is an entry left out because the product left the whole
+	// block out: it had no room for memory on this call, as when its
+	// share of an instruction budget reached zero or [Render] refused
+	// the bound with [ErrBudget]. Render never writes it; a product does,
+	// in the manifest it records for a turn the model saw no memory on,
+	// with every entry under Omitted and none under Entries, so a reader
+	// of the session tells a block dropped whole from a block that held
+	// nothing because the store did.
+	OmitBlock = "block"
 )
 
 // Hash is the manifest's identity: "sha256:" and the hex digest of the
@@ -296,6 +305,31 @@ func (f *ManifestFold) Manifest() Manifest {
 	}
 	m := f.recent[0]
 	return Manifest{Entries: slices.Clone(m.Entries), Omitted: slices.Clone(m.Omitted)}
+}
+
+// Record returns the namespace and the JSON of m for a session whose
+// readers fold with a ManifestFold: the smallest of the whole record
+// and the delta on each manifest the fold holds, every one of which
+// such a reader resolves. A writer that has folded the session's path
+// so far, as one taking a session up after a restart has, calls it in
+// place of [Manifest.RecordSince] on a manifest it kept itself, which
+// it has not got; the fold holds its last manifest, when that is among
+// the last [ManifestFoldDepth] distinct manifests in force, and the
+// record is the delta on it when that is the smaller. Equal sizes
+// prefer the manifest in force, whose delta [ApplyManifestRecord]
+// resolves as well. An empty fold gives the whole record.
+//
+// The fold is the reader's state and this writes nothing into it: the
+// caller folds the record it then writes, as every reader of the
+// session does.
+func (f *ManifestFold) Record(m Manifest) (ns string, data []byte) {
+	ns, data = m.Record()
+	for _, base := range f.recent {
+		if _, d := m.RecordSince(base); len(d) < len(data) {
+			data = d
+		}
+	}
+	return ns, data
 }
 
 // push makes m, whose hash is h, the manifest in force, moving it to

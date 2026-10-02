@@ -614,21 +614,214 @@ func TestJournalDamage(t *testing.T) {
 	}
 }
 
-// TestLastLine covers the backwards read over chunk boundaries.
-func TestLastLine(t *testing.T) {
+// TestDamagedTailDoesNotBlockWrites is the second torn write: a write
+// cut off leaves a partial line, the next write terminates it and is
+// itself cut off, and the journal ends with one damaged complete line
+// and a partial one. The next write must follow the last record rather
+// than refuse because the last complete line is not one, since nothing
+// else repairs the journal and the refusal would hold for ever.
+func TestDamagedTailDoesNotBlockWrites(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		tail string
+	}{
+		{"damaged line then partial", `{"seq":2,"partial` + "\n" + `{"seq":2,"ent`},
+		{"damaged line", "{not json\n"},
+		{"json that is not an object", "[1,2]\n"},
+		{"two damaged lines", "garbage\n{\n"},
+		{"an object without a seq", "{}\n"},
+		{"a seq without an entry", `{"seq":7}` + "\n"},
+		{"a seq with a null entry", `{"seq":5,"entry":null}` + "\n"},
+		{"an entry without a hash", `{"seq":5,"entry":{"scope":"user","name":"x","content":"c"}}` + "\n"},
+		{"an object with another member", `{"foo":1}` + "\n"},
+		{"null", "null\n"},
+		{"blank lines", "\n  \n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := open(t)
+			if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "first", Content: "c"}); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.OpenFile(s.journalPath(), os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.WriteString(tt.tail); err != nil {
+				t.Fatal(err)
+			}
+			f.Close()
+			c, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "second", Content: "c"})
+			if err != nil {
+				t.Fatalf("Put after a damaged tail: %v", err)
+			}
+			if c.Seq != 2 {
+				t.Errorf("Seq = %d, want 2", c.Seq)
+			}
+			var seqs []uint64
+			var errs int
+			for c, err := range s.Journal(ctx, 0) {
+				if err != nil {
+					errs++
+					continue
+				}
+				seqs = append(seqs, c.Seq)
+			}
+			if fmt.Sprint(seqs) != "[1 2]" {
+				t.Errorf("seqs = %v, want [1 2]", seqs)
+			}
+			// Every damaged line is reported, the partial one included
+			// once the write has terminated it; blank lines are not.
+			wantErrs := 0
+			for _, line := range strings.SplitAfter(tt.tail, "\n") {
+				if strings.TrimSpace(line) != "" {
+					wantErrs++
+				}
+			}
+			if errs != wantErrs {
+				t.Errorf("damaged lines reported = %d, want %d", errs, wantErrs)
+			}
+		})
+	}
+}
+
+// TestUnstorableHandFileKeepsTheChain is a person writing an entry file
+// the store cannot journal, empty, over the bound, or with metadata over
+// its bound, which Reconcile and a write leave out of the journal. The
+// agent's next write to the name, anchored in the file it read or not,
+// and its tombstone must still chain to the journal's last record, not
+// to the hash of a file no record holds, or LostUpdates reports a
+// legitimate write as lost and a tombstone keeps content or metadata no
+// record had.
+func TestUnstorableHandFileKeepsTheChain(t *testing.T) {
+	ctx := agentmemory.WithSession(context.Background(), "s")
+	tests := []struct {
+		name string
+		hand func(content string) string // the file the person leaves
+	}{
+		{"empty", func(string) string { return "" }},
+		{"over the bound", func(string) string { return strings.Repeat("x", agentmemory.DefaultMaxEntryBytes+1) }},
+		{"metadata over its bound", func(content string) string {
+			return "---\ndescription: " + strings.Repeat("x", agentmemory.MaxMetaBytes) + "\n---\n" + content
+		}},
+		// Storable content the journal still cannot take, because of the
+		// metadata beside it: a write anchored in the file's hash must not
+		// name a hash no record holds either.
+		{"new content and metadata over its bound", func(content string) string {
+			return "---\ndescription: " + strings.Repeat("x", agentmemory.MaxMetaBytes) + "\n---\n" + content + " edited"
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := open(t)
+			write := func(name, content string) {
+				t.Helper()
+				if err := os.WriteFile(s.entryPath("user", name), []byte(tt.hand(content)), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// What the caller read: the file, through Get.
+			read := func(name string) string {
+				t.Helper()
+				e, err := s.Get(ctx, "user", name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return e.Hash
+			}
+			want := func(c *agentmemory.Change, err error, seq uint64, base string) {
+				t.Helper()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if c.Seq != seq || c.Prev != base || c.Replaced != base {
+					t.Errorf("seq %d prev %s replaced %s; want %d and the journal's last hash %s", c.Seq, c.Prev, c.Replaced, seq, base)
+				}
+			}
+			put := func(content string, opts ...agentmemory.PutOption) (*agentmemory.Change, error) {
+				return s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "hand", Content: content}, opts...)
+			}
+			first, err := put("ok")
+			if err != nil {
+				t.Fatal(err)
+			}
+			write("hand", "ok")
+			second, err := put("new")
+			want(second, err, 2, first.Entry.Hash)
+			write("hand", "new")
+			third, err := put("third", agentmemory.IfHash(read("hand")))
+			want(third, err, 3, second.Entry.Hash)
+			write("hand", "third")
+			fourth, err := put("fourth", agentmemory.BasedOn(read("hand")))
+			want(fourth, err, 4, third.Entry.Hash)
+			write("hand", "fourth")
+			tomb, err := s.Forget(ctx, "user", "hand")
+			want(tomb, err, 5, fourth.Entry.Hash)
+			if !tomb.Entry.Deleted || tomb.Entry.Content != "fourth" || agentmemory.CheckEntry(tomb.Entry, s.max, nil) != nil {
+				t.Errorf("tombstone = %+v; want the journal's last record, storable", tomb.Entry)
+			}
+			// A name the journal has never seen: the write is a create,
+			// and the tombstone of such a file keeps what the file held.
+			write("fresh", "")
+			if c, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "fresh", Content: "x"}, agentmemory.IfHash(read("fresh"))); err != nil || c.Prev != "" || c.Replaced != "" {
+				t.Errorf("Put over a never-journaled unstorable file = %+v, %v; want a create", c, err)
+			}
+			write("never", "")
+			if c, err := s.Forget(ctx, "user", "never"); err != nil || c.Prev != "" || c.Replaced != "" || c.Entry.Hash != agentmemory.Hash(c.Entry.Content) {
+				t.Errorf("Forget of a never-journaled unstorable file = %+v, %v", c, err)
+			}
+			// A name the journal last tombstoned, under an unstorable file
+			// again: the tombstone is the file's, not the old tombstone's.
+			write("hand", "")
+			if c, err := s.Forget(ctx, "user", "hand"); err != nil || c.Prev != "" || c.Replaced != "" || c.Entry.Hash != agentmemory.Hash(c.Entry.Content) || c.Entry.Content == "fourth" {
+				t.Errorf("Forget of an unstorable file over a tombstone = %+v, %v", c, err)
+			}
+			lost, err := agentmemory.LostUpdates(context.Background(), s, 0)
+			if err != nil || len(lost) != 0 {
+				t.Errorf("LostUpdates = %+v, %v; want none", lost, err)
+			}
+			// The chain holds along the journal.
+			last := map[string]string{}
+			for c, err := range s.Journal(context.Background(), 0) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				k := key(c.Entry.Scope, c.Entry.Name)
+				if c.Replaced != last[k] {
+					t.Errorf("record %d: replaced %q, the chain holds %q", c.Seq, c.Replaced, last[k])
+				}
+				if c.Entry.Deleted {
+					last[k] = ""
+				} else {
+					last[k] = c.Entry.Hash
+				}
+			}
+		})
+	}
+}
+
+// TestTailLines covers the backwards read over chunk boundaries.
+func TestTailLines(t *testing.T) {
+	long := strings.Repeat("x", 20000)
 	tests := []struct {
 		name string
 		data string
-		want string
+		want []string // every complete line, last first
+		stop int      // stop after this many lines; 0 for none
 	}{
-		{"empty", "", ""},
-		{"one line", "a\n", "a"},
-		{"two lines", "a\nb\n", "b"},
-		{"partial tail", "a\nb\nc", "b"},
-		{"no newline", "abc", ""},
-		{"long last", "a\n" + strings.Repeat("x", 20000) + "\n", strings.Repeat("x", 20000)},
-		{"long first", strings.Repeat("x", 20000) + "\nb\n", "b"},
-		{"long both", strings.Repeat("x", 9000) + "\n" + strings.Repeat("y", 9000) + "\n", strings.Repeat("y", 9000)},
+		{"empty", "", nil, 0},
+		{"one line", "a\n", []string{"a"}, 0},
+		{"two lines", "a\nb\n", []string{"b", "a"}, 0},
+		{"partial tail", "a\nb\nc", []string{"b", "a"}, 0},
+		{"no newline", "abc", nil, 0},
+		{"empty first line", "\na\n", []string{"a", ""}, 0},
+		{"long last", "a\n" + long + "\n", []string{long, "a"}, 0},
+		{"long first", long + "\nb\n", []string{"b", long}, 0},
+		{"long both", strings.Repeat("x", 9000) + "\n" + strings.Repeat("y", 9000) + "\n", []string{strings.Repeat("y", 9000), strings.Repeat("x", 9000)}, 0},
+		{"long partial", "a\nb\n" + long, []string{"b", "a"}, 0},
+		{"stops", "a\nb\nc\n", []string{"c"}, 1},
+		{"stops across chunks", long + "\n" + long + "\nc\n", []string{"c", long}, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -641,12 +834,21 @@ func TestLastLine(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer f.Close()
-			got, err := lastLine(f)
+			var got []string
+			err = tailLines(f, func(line []byte) bool {
+				got = append(got, string(line))
+				return tt.stop == 0 || len(got) < tt.stop
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(got) != tt.want {
-				t.Errorf("lastLine = %q (%d bytes), want %d bytes", truncate(string(got)), len(got), len(tt.want))
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d lines, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("line %d = %q (%d bytes), want %d bytes", i, truncate(got[i]), len(got[i]), len(tt.want[i]))
+				}
 			}
 		})
 	}

@@ -945,6 +945,149 @@ func TestRenderScopeMaxBytes(t *testing.T) {
 	}
 }
 
+// TestOmitBlock is a product that had no room for the block on one
+// turn: it records a manifest with every entry omitted under OmitBlock,
+// which hashes apart from the same entries omitted for budget and from
+// the empty manifest, records and folds as any manifest does, and is
+// told apart by its reason rather than by an empty one.
+func TestOmitBlock(t *testing.T) {
+	shown := manifestFixture(5, 3)
+	dropped := Manifest{}
+	for _, e := range append(slices.Clone(shown.Entries), shown.Omitted...) {
+		e.Reason = OmitBlock
+		dropped.Omitted = append(dropped.Omitted, e)
+	}
+	budget := Manifest{Omitted: slices.Clone(dropped.Omitted)}
+	for i := range budget.Omitted {
+		budget.Omitted[i].Reason = OmitBudget
+	}
+	tests := []struct {
+		name   string
+		m      Manifest
+		differ Manifest
+	}{
+		{"dropped block against the empty manifest", dropped, Manifest{}},
+		{"dropped block against the same entries over budget", dropped, budget},
+		{"dropped block against the block shown", dropped, shown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.m.Hash() == tt.differ.Hash() {
+				t.Error("the manifests hash the same")
+			}
+			_, data := tt.m.RecordSince(tt.differ)
+			got, err := ApplyManifestRecord(tt.differ, data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Hash() != tt.m.Hash() || len(got.Entries) != 0 {
+				t.Errorf("folded %+v", got)
+			}
+			for _, e := range got.Omitted {
+				if e.Reason != OmitBlock {
+					t.Errorf("%s/%s omitted for %q, want %q", e.Scope, e.Name, e.Reason, OmitBlock)
+				}
+			}
+		})
+	}
+	if OmitBlock == OmitBudget || OmitBlock == "" {
+		t.Error("OmitBlock is not its own reason")
+	}
+}
+
+// TestManifestFoldRecord is a kit restarted into a handoff: it has
+// folded the session's path, so the fold holds its own last manifest
+// behind the other agent's, and it has kept nothing itself. The record
+// it writes is the delta on its own last manifest, not the whole.
+func TestManifestFoldRecord(t *testing.T) {
+	a := manifestFixture(600, 126)
+	b := Manifest{Entries: []ManifestEntry{{Scope: "billing", Name: "plan", Hash: Hash("p"), Bytes: 10}}}
+	nextA := Manifest{Entries: slices.Clone(a.Entries), Omitted: a.Omitted}
+	nextA.Entries[7].Hash = Hash("patched")
+	tests := []struct {
+		name     string
+		path     [][]byte // the records on the session's path, in order
+		m        Manifest
+		wantBase string // "" for the whole record
+	}{
+		{"empty fold, first manifest", nil, a, ""},
+		{"own manifest in force", [][]byte{must(a.Record())}, nextA, a.Hash()},
+		{"own manifest behind the other agent's", [][]byte{must(a.Record()), must(b.RecordSince(a))}, nextA, a.Hash()},
+		{"own manifest behind seven others", append([][]byte{must(a.Record())}, fixtures(7)...), nextA, a.Hash()},
+		{"own manifest past the depth", append([][]byte{must(a.Record())}, fixtures(ManifestFoldDepth)...), nextA, ""},
+		{"nothing in common with any", [][]byte{must(a.Record()), must(b.RecordSince(a))}, manifestFixture(3, 0), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var f ManifestFold
+			for _, data := range tt.path {
+				if err := f.Apply(data); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ns, data := f.Record(tt.m)
+			if ns != ManifestNS {
+				t.Errorf("ns = %q", ns)
+			}
+			var probe struct {
+				Base string `json:"base"`
+			}
+			if err := json.Unmarshal(data, &probe); err != nil {
+				t.Fatal(err)
+			}
+			if probe.Base != tt.wantBase {
+				t.Errorf("base = %q, want %q (%d bytes)", probe.Base, tt.wantBase, len(data))
+			}
+			if tt.wantBase != "" && len(data) >= len(must(tt.m.Record())) {
+				t.Errorf("the delta is %d bytes, no smaller than the whole", len(data))
+			}
+			// Every reader folding the path resolves it, and the fold
+			// that wrote it did not move.
+			before := f.Manifest().Hash()
+			var g ManifestFold
+			for _, data := range tt.path {
+				if err := g.Apply(data); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := g.Apply(data); err != nil {
+				t.Fatalf("a reader's fold refused the record: %v", err)
+			}
+			if g.Manifest().Hash() != tt.m.Hash() {
+				t.Error("the reader's fold holds another manifest")
+			}
+			if f.Manifest().Hash() != before {
+				t.Error("Record moved the writer's fold")
+			}
+		})
+	}
+	// Equal sizes prefer the manifest in force, which a reader with
+	// ApplyManifestRecord resolves as well.
+	x := Manifest{Entries: []ManifestEntry{{Scope: "s", Name: "a1", Hash: Hash("1"), Bytes: 1}, {Scope: "s", Name: "b", Hash: Hash("b"), Bytes: 1}}}
+	y := Manifest{Entries: []ManifestEntry{{Scope: "s", Name: "a2", Hash: Hash("2"), Bytes: 1}, {Scope: "s", Name: "b", Hash: Hash("b"), Bytes: 1}}}
+	m := Manifest{Entries: []ManifestEntry{{Scope: "s", Name: "a3", Hash: Hash("3"), Bytes: 1}, {Scope: "s", Name: "b", Hash: Hash("b"), Bytes: 1}}}
+	var f ManifestFold
+	for _, r := range [][]byte{must(y.Record()), must(x.Record())} {
+		if err := f.Apply(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, data := f.Record(m)
+	if _, err := ApplyManifestRecord(f.Manifest(), data); err != nil {
+		t.Errorf("the tie did not go to the manifest in force: %v\n%s", err, data)
+	}
+}
+
+// fixtures returns n whole records of manifests that share nothing
+// with each other or with manifestFixture's defaults.
+func fixtures(n int) [][]byte {
+	var out [][]byte
+	for i := range n {
+		out = append(out, must(manifestFixture(3+i, 1).Record()))
+	}
+	return out
+}
+
 // TestManifestFold is two agents with their own memories taking turns
 // in one session: each records a delta on its own last manifest, which
 // a fold resolves and ApplyManifestRecord does not, and the records

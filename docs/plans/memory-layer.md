@@ -152,7 +152,10 @@ it hits it. The bound is on the block and not on the content it holds:
 the last line, the headings, the descriptions and the list of omissions
 are counted, because the window pays for them, and the last line reports
 the block's own size. The manifest's omissions carry the reason, so a
-session can record what the model was not given.
+session can record what the model was not given: `OmitBudget` from
+`Render`, and `OmitBlock` from a product that left the block out whole
+on a turn it had no room for it, recorded with every entry omitted so a
+reader tells that turn from an empty store (agentkit#69).
 
 ### The tools
 
@@ -250,7 +253,10 @@ whole manifest repeats every entry and a write moves one (#33). Where
 more than one agent records into a session, an agent handed back to
 records on its own last manifest rather than the other agent's, and a
 reader folds with a `ManifestFold`, which resolves a base among the
-last `ManifestFoldDepth` distinct manifests in force (#37).
+last `ManifestFoldDepth` distinct manifests in force (#37). An agent
+that has folded the path but kept no manifest of its own, as one taking
+a session up after a restart has, records `ManifestFold.Record`, the
+smallest record over the manifests its fold holds (agentkit#68).
 
 ### `filestore`
 
@@ -299,7 +305,10 @@ a `Prev` naming a hash no record held.
 
 The directory is a valid `agentskill.Source` in reverse: a person can
 read it, and git can diff it. That is the transparency argument for
-files over a database as the reference store.
+files over a database as the reference store. It is also a format a
+second writer can follow: `../filestore-format.md` specifies the files,
+the record, the sequence, the chain, the lock and the torn-tail rules,
+and `filestore/format_test.go` holds the code to its examples (#12).
 
 ## Conventions shared with the siblings
 
