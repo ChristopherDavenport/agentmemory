@@ -104,8 +104,8 @@ func (s *Store) lastSeq() (uint64, error) {
 	defer f.Close()
 	var seq uint64
 	err = tailLines(f, func(line []byte) bool {
-		var c agentmemory.Change
-		if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &c) != nil {
+		c, err := decodeRecord(line)
+		if len(bytes.TrimSpace(line)) == 0 || err != nil {
 			return true
 		}
 		seq = c.Seq
@@ -169,6 +169,22 @@ func tailLines(f *os.File, fn func(line []byte) bool) error {
 		buf = buf[:limit+1]
 	}
 	return nil
+}
+
+// decodeRecord parses one journal line as a record: a JSON object in
+// the shape of [agentmemory.Change] with a positive seq. A line that
+// is anything else is damage, which readers report and skip and a
+// writer walks back past; a line without a sequence number cannot be a
+// record, since it could neither be resumed from nor numbered after.
+func decodeRecord(line []byte) (agentmemory.Change, error) {
+	var c agentmemory.Change
+	if err := json.Unmarshal(line, &c); err != nil {
+		return agentmemory.Change{}, err
+	}
+	if c.Seq == 0 {
+		return agentmemory.Change{}, errors.New("record has no seq")
+	}
+	return c, nil
 }
 
 // readJournal calls fn with each record in order, starting after the
@@ -238,8 +254,8 @@ func (s *Store) scanJournal(off int64, fn func(agentmemory.Change, error) bool) 
 			}
 			continue
 		}
-		var c agentmemory.Change
-		if uerr := json.Unmarshal(line, &c); uerr != nil {
+		c, uerr := decodeRecord(line)
+		if uerr != nil {
 			if !fn(agentmemory.Change{}, fmt.Errorf("filestore: journal line %d: %w", lineNo, uerr)) {
 				return end, nil
 			}

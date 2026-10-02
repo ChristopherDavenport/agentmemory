@@ -630,6 +630,9 @@ func TestDamagedTailDoesNotBlockWrites(t *testing.T) {
 		{"damaged line", "{not json\n"},
 		{"json that is not an object", "[1,2]\n"},
 		{"two damaged lines", "garbage\n{\n"},
+		{"an object without a seq", "{}\n"},
+		{"an object with another member", `{"foo":1}` + "\n"},
+		{"null", "null\n"},
 		{"blank lines", "\n  \n"},
 	}
 	for _, tt := range tests {
