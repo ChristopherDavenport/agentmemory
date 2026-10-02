@@ -758,17 +758,18 @@ func TestUnstorableHandFileKeepsTheChain(t *testing.T) {
 			// A name the journal has never seen: the write is a create,
 			// and the tombstone of such a file keeps what the file held.
 			write("fresh", "")
-			create, err := put("x")
-			if err != nil {
-				t.Fatal(err)
-			}
 			if c, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "fresh", Content: "x"}, agentmemory.IfHash(read("fresh"))); err != nil || c.Prev != "" || c.Replaced != "" {
 				t.Errorf("Put over a never-journaled unstorable file = %+v, %v; want a create", c, err)
 			}
-			_ = create
 			write("never", "")
 			if c, err := s.Forget(ctx, "user", "never"); err != nil || c.Prev != "" || c.Replaced != "" || c.Entry.Hash != agentmemory.Hash(c.Entry.Content) {
 				t.Errorf("Forget of a never-journaled unstorable file = %+v, %v", c, err)
+			}
+			// A name the journal last tombstoned, under an unstorable file
+			// again: the tombstone is the file's, not the old tombstone's.
+			write("hand", "")
+			if c, err := s.Forget(ctx, "user", "hand"); err != nil || c.Prev != "" || c.Replaced != "" || c.Entry.Hash != agentmemory.Hash(c.Entry.Content) || c.Entry.Content == "fourth" {
+				t.Errorf("Forget of an unstorable file over a tombstone = %+v, %v", c, err)
 			}
 			lost, err := agentmemory.LostUpdates(context.Background(), s, 0)
 			if err != nil || len(lost) != 0 {

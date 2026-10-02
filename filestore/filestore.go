@@ -347,7 +347,7 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	if known, ok := st.Entries[key(scope, name)]; !ok || !known.agrees(*stored) {
 		if last, err := s.lastRecordFor(scope, name); err != nil {
 			return nil, err
-		} else if last != nil {
+		} else if last != nil && !last.Entry.Deleted {
 			e = last.Entry
 		}
 	}

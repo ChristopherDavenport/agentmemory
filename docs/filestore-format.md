@@ -291,8 +291,11 @@ reconciled record for the state it found, and then its own record with
 the journal's last state as before, so the chain never names a hash no
 record holds, and a write anchored in such a file's hash records the
 journal's last state as `prev`, since a base no record holds would read
-as a fork; the tombstone for such a file carries the journal's last
-record for the name, or the file's content when there is none.
+as a fork. The journal cannot tell such a file whose content is an older
+recorded state from that state, so a write anchored in it is recorded
+as built on the journal's last state too. The tombstone for such a file
+carries the journal's last live record for the name, or the file's
+content when there is none.
 
 `prev` is the writer's claim about the state it built the write on: the
 hash the caller anchored the write to, with `IfHash` or `BasedOn`, or,
@@ -355,10 +358,11 @@ modification time says.
 
 `Reconcile` records the differences it finds in byte order of
 `scope/name`, all with one `at`, and rewrites the index of each scope
-it touched. A removed file whose last record the journal no longer
-holds whole, because that line is damaged, is not tombstoned: the name
-stays in the cursor and each run reads the journal for it again until
-a record for the name appears.
+it touched. A removed file is tombstoned with the last record the
+journal still holds whole for the name; when it holds none, because the
+only record's line is damaged, nothing is appended, and a cursor saved
+before the damage keeps the name and reads the journal for it on each
+run until a record for the name appears.
 
 ### Damage and the torn tail
 
