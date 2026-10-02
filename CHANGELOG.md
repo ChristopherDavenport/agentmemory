@@ -18,6 +18,13 @@ versions may break the API.
   manifest in force, the other agent's, and so the whole manifest at
   its first hand-back; the fold held its own last manifest all along
   (agentkit#68).
+- `OmitBlock`, the omission reason for an entry left out because the
+  product left the whole block out, as when its share of an
+  instruction budget reached zero or `Render` refused the bound with
+  `ErrBudget`. `Render` never writes it; a product records a manifest
+  with every entry omitted under it for a turn the model saw no memory
+  on, so a reader tells that turn apart from one whose store was empty
+  without resting on an empty reason (agentkit#69).
 
 ### Fixed
 

@@ -117,6 +117,15 @@ const (
 	// so the block holds what it can and the model is told the rest by
 	// name.
 	OmitBudget = "budget"
+	// OmitBlock is an entry left out because the product left the whole
+	// block out: it had no room for memory on this call, as when its
+	// share of an instruction budget reached zero or [Render] refused
+	// the bound with [ErrBudget]. Render never writes it; a product does,
+	// in the manifest it records for a turn the model saw no memory on,
+	// with every entry under Omitted and none under Entries, so a reader
+	// of the session tells a block dropped whole from a block that held
+	// nothing because the store did.
+	OmitBlock = "block"
 )
 
 // Hash is the manifest's identity: "sha256:" and the hex digest of the

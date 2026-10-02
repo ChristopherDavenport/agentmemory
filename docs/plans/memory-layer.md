@@ -152,7 +152,10 @@ it hits it. The bound is on the block and not on the content it holds:
 the last line, the headings, the descriptions and the list of omissions
 are counted, because the window pays for them, and the last line reports
 the block's own size. The manifest's omissions carry the reason, so a
-session can record what the model was not given.
+session can record what the model was not given: `OmitBudget` from
+`Render`, and `OmitBlock` from a product that left the block out whole
+on a turn it had no room for it, recorded with every entry omitted so a
+reader tells that turn from an empty store (agentkit#69).
 
 ### The tools
 

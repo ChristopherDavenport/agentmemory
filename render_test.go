@@ -945,6 +945,56 @@ func TestRenderScopeMaxBytes(t *testing.T) {
 	}
 }
 
+// TestOmitBlock is a product that had no room for the block on one
+// turn: it records a manifest with every entry omitted under OmitBlock,
+// which hashes apart from the same entries omitted for budget and from
+// the empty manifest, records and folds as any manifest does, and is
+// told apart by its reason rather than by an empty one.
+func TestOmitBlock(t *testing.T) {
+	shown := manifestFixture(5, 3)
+	dropped := Manifest{}
+	for _, e := range append(slices.Clone(shown.Entries), shown.Omitted...) {
+		e.Reason = OmitBlock
+		dropped.Omitted = append(dropped.Omitted, e)
+	}
+	budget := Manifest{Omitted: slices.Clone(dropped.Omitted)}
+	for i := range budget.Omitted {
+		budget.Omitted[i].Reason = OmitBudget
+	}
+	tests := []struct {
+		name   string
+		m      Manifest
+		differ Manifest
+	}{
+		{"dropped block against the empty manifest", dropped, Manifest{}},
+		{"dropped block against the same entries over budget", dropped, budget},
+		{"dropped block against the block shown", dropped, shown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.m.Hash() == tt.differ.Hash() {
+				t.Error("the manifests hash the same")
+			}
+			_, data := tt.m.RecordSince(tt.differ)
+			got, err := ApplyManifestRecord(tt.differ, data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Hash() != tt.m.Hash() || len(got.Entries) != 0 {
+				t.Errorf("folded %+v", got)
+			}
+			for _, e := range got.Omitted {
+				if e.Reason != OmitBlock {
+					t.Errorf("%s/%s omitted for %q, want %q", e.Scope, e.Name, e.Reason, OmitBlock)
+				}
+			}
+		})
+	}
+	if OmitBlock == OmitBudget || OmitBlock == "" {
+		t.Error("OmitBlock is not its own reason")
+	}
+}
+
 // TestManifestFoldRecord is a kit restarted into a handoff: it has
 // folded the session's path, so the fold holds its own last manifest
 // behind the other agent's, and it has kept nothing itself. The record

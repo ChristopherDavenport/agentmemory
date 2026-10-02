@@ -118,7 +118,10 @@ that writes the entry is the product's; the namespace and the bytes are
 the module's, through `ManifestNS` and `Manifest.Record`, so a reader
 of the session recognises the entry without knowing the product. Each
 omission in the manifest carries its scope, name, size and reason, so
-the record says what the model was not given and why.
+the record says what the model was not given and why: `OmitBudget` for
+an entry the block's bound left out, and `OmitBlock`, which a product
+writes itself, for every entry of a turn on which it had no room for
+the block at all.
 `Manifest.RecordSince` writes a later manifest as a delta on the one the
 session last recorded, the entries that moved and a keep for each run
 that did not, so under a memory past its bound a write costs the entry
