@@ -289,7 +289,9 @@ reconciled record for the state it found, and then its own record with
 `Put` and `Forget`. When the file is one the store cannot journal (see
 *Reconciled changes*), nothing is appended for it and `replaced` names
 the journal's last state as before, so the chain never names a hash no
-record holds; the tombstone for such a file carries the journal's last
+record holds, and a write anchored in such a file's hash records the
+journal's last state as `prev`, since a base no record holds would read
+as a fork; the tombstone for such a file carries the journal's last
 record for the name, or the file's content when there is none.
 
 `prev` is the writer's claim about the state it built the write on: the
@@ -319,7 +321,9 @@ the forks before the damage.
 `Forget` appends a tombstone: the entry's last record with
 `entry.deleted` set to `true`, `entry.updated` set to the time of the
 change, and `prev` and `replaced` both the hash the journal last held
-for the name, which is the hash of the content the file held.
+for the name, which is the hash of the content the file held once the
+file has been noted; see *Chains and forks* for a file the store cannot
+journal.
 The content and metadata are kept in the record, so the journal still
 has them. The entry file is removed and the name leaves `Get`, `List`
 and the index. The next write to the name is a create, with `replaced`
@@ -351,7 +355,10 @@ modification time says.
 
 `Reconcile` records the differences it finds in byte order of
 `scope/name`, all with one `at`, and rewrites the index of each scope
-it touched.
+it touched. A removed file whose last record the journal no longer
+holds whole, because that line is damaged, is not tombstoned: the name
+stays in the cursor and each run reads the journal for it again until
+a record for the name appears.
 
 ### Damage and the torn tail
 

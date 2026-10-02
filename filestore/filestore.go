@@ -269,9 +269,17 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	// one a person wrote; then it is the state before that, so the chain
 	// never names a hash no record holds.
 	held := st.held(e.Scope, e.Name)
+	prev := o.BaseFor(held)
+	if stored != nil && prev == stored.Hash && hashOf(held) != stored.Hash {
+		// Anchored in the file the caller read, which the journal could
+		// not take: as far as the journal can say, the write was built
+		// on its last state, and a base no record holds would read as a
+		// fork in LostUpdates.
+		prev = hashOf(held)
+	}
 	c, err := s.appendChange(st, agentmemory.Change{
 		Entry:    e,
-		Prev:     o.BaseFor(held),
+		Prev:     prev,
 		Replaced: hashOf(held),
 		Session:  agentmemory.SessionFrom(ctx),
 		At:       now,
@@ -336,7 +344,7 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	// content a tombstone keeps is content a record held.
 	e := *stored
 	held := st.held(scope, name)
-	if hashOf(held) != stored.Hash {
+	if known, ok := st.Entries[key(scope, name)]; !ok || !known.agrees(*stored) {
 		if last, err := s.lastRecordFor(scope, name); err != nil {
 			return nil, err
 		} else if last != nil {

@@ -109,7 +109,7 @@ type ManifestEntry struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// Reasons [Render] leaves an entry out of the block, carried on
+// Reasons an entry is left out of the block, carried on
 // [ManifestEntry.Reason].
 const (
 	// OmitBudget is an entry whose rendered form did not fit in what

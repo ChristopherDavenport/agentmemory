@@ -469,7 +469,7 @@ func TestFormatNames(t *testing.T) {
 		fmt.Sprintf("%d bytes by default", agentmemory.DefaultMaxEntryBytes),
 		fmt.Sprintf("first %d bytes", headLimit),
 		fmt.Sprintf("`DefaultLockTimeout`, %d s", int(DefaultLockTimeout/time.Second)),
-		fmt.Sprintf("from 1 ms and doubling to %d ms", int(maxLockWait/time.Millisecond)),
+		fmt.Sprintf("from %d ms and doubling to %d ms", int(minLockWait/time.Millisecond), int(maxLockWait/time.Millisecond)),
 		"`" + agentmemory.SourceReconciled + "`",
 		"`\\u003c`, `\\u003e` and `\\u0026`",
 		"`\\u2028` and `\\u2029`",

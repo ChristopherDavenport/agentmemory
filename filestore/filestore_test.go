@@ -687,61 +687,87 @@ func TestDamagedTailDoesNotBlockWrites(t *testing.T) {
 }
 
 // TestUnstorableHandFileKeepsTheChain is a person writing an entry file
-// the store cannot journal, empty or over the bound, which Reconcile and
-// a write leave out of the journal. The agent's next write to the name
+// the store cannot journal, empty, over the bound, or with metadata over
+// its bound, which Reconcile and a write leave out of the journal. The
+// agent's next write to the name, anchored in the file it read or not,
 // and its tombstone must still chain to the journal's last record, not
 // to the hash of a file no record holds, or LostUpdates reports a
-// legitimate write as lost and a tombstone keeps content no record had.
+// legitimate write as lost and a tombstone keeps content or metadata no
+// record had.
 func TestUnstorableHandFileKeepsTheChain(t *testing.T) {
 	ctx := agentmemory.WithSession(context.Background(), "s")
 	tests := []struct {
 		name string
-		hand string
+		hand func(content string) string // the file the person leaves
 	}{
-		{"empty", ""},
-		{"over the bound", strings.Repeat("x", agentmemory.DefaultMaxEntryBytes+1)},
+		{"empty", func(string) string { return "" }},
+		{"over the bound", func(string) string { return strings.Repeat("x", agentmemory.DefaultMaxEntryBytes+1) }},
+		{"metadata over its bound", func(content string) string {
+			return "---\ndescription: " + strings.Repeat("x", agentmemory.MaxMetaBytes) + "\n---\n" + content
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := open(t)
-			first, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "hand", Content: "ok"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			write := func(name string) {
+			write := func(name, content string) {
 				t.Helper()
-				if err := os.WriteFile(s.entryPath("user", name), []byte(tt.hand), 0o644); err != nil {
+				if err := os.WriteFile(s.entryPath("user", name), []byte(tt.hand(content)), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
-			write("hand")
-			second, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "hand", Content: "new"})
+			// What the caller read: the file, through Get.
+			read := func(name string) string {
+				t.Helper()
+				e, err := s.Get(ctx, "user", name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return e.Hash
+			}
+			want := func(c *agentmemory.Change, err error, seq uint64, base string) {
+				t.Helper()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if c.Seq != seq || c.Prev != base || c.Replaced != base {
+					t.Errorf("seq %d prev %s replaced %s; want %d and the journal's last hash %s", c.Seq, c.Prev, c.Replaced, seq, base)
+				}
+			}
+			put := func(content string, opts ...agentmemory.PutOption) (*agentmemory.Change, error) {
+				return s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "hand", Content: content}, opts...)
+			}
+			first, err := put("ok")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if second.Seq != 2 || second.Prev != first.Entry.Hash || second.Replaced != first.Entry.Hash {
-				t.Errorf("Put over an unstorable file = seq %d prev %s replaced %s; want 2 and the journal's last hash", second.Seq, second.Prev, second.Replaced)
-			}
-			write("hand")
+			write("hand", "ok")
+			second, err := put("new")
+			want(second, err, 2, first.Entry.Hash)
+			write("hand", "new")
+			third, err := put("third", agentmemory.IfHash(read("hand")))
+			want(third, err, 3, second.Entry.Hash)
+			write("hand", "third")
+			fourth, err := put("fourth", agentmemory.BasedOn(read("hand")))
+			want(fourth, err, 4, third.Entry.Hash)
+			write("hand", "fourth")
 			tomb, err := s.Forget(ctx, "user", "hand")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tomb.Seq != 3 || !tomb.Entry.Deleted || tomb.Entry.Content != "new" || tomb.Prev != second.Entry.Hash || tomb.Replaced != second.Entry.Hash {
-				t.Errorf("Forget over an unstorable file = %+v; want a tombstone for the journal's last record", tomb)
+			want(tomb, err, 5, fourth.Entry.Hash)
+			if !tomb.Entry.Deleted || tomb.Entry.Content != "fourth" || agentmemory.CheckEntry(tomb.Entry, s.max, nil) != nil {
+				t.Errorf("tombstone = %+v; want the journal's last record, storable", tomb.Entry)
 			}
 			// A name the journal has never seen: the write is a create,
 			// and the tombstone of such a file keeps what the file held.
-			write("fresh")
-			create, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "fresh", Content: "x"})
+			write("fresh", "")
+			create, err := put("x")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if create.Prev != "" || create.Replaced != "" {
-				t.Errorf("Put over a never-journaled unstorable file: prev %q replaced %q, want a create", create.Prev, create.Replaced)
+			if c, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "fresh", Content: "x"}, agentmemory.IfHash(read("fresh"))); err != nil || c.Prev != "" || c.Replaced != "" {
+				t.Errorf("Put over a never-journaled unstorable file = %+v, %v; want a create", c, err)
 			}
-			write("never")
-			if c, err := s.Forget(ctx, "user", "never"); err != nil || c.Prev != "" || c.Replaced != "" || c.Entry.Content != tt.hand {
+			_ = create
+			write("never", "")
+			if c, err := s.Forget(ctx, "user", "never"); err != nil || c.Prev != "" || c.Replaced != "" || c.Entry.Hash != agentmemory.Hash(c.Entry.Content) {
 				t.Errorf("Forget of a never-journaled unstorable file = %+v, %v", c, err)
 			}
 			lost, err := agentmemory.LostUpdates(context.Background(), s, 0)

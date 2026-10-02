@@ -47,7 +47,11 @@ versions may break the API.
   the journal's last state for the name, and such a tombstone carries
   the journal's last record (#12).
 - `filestore`: a waiting writer's back-off doubled past the 50 ms the
-  documentation gives, to 64 ms; it now stops at 50 ms.
+  documentation gives, to 64 ms; it now stops at 50 ms. A lock whose
+  holder could not name its host is never taken over.
+- `filestore`: the cursor's hash of the journal's first line was
+  computed before a write that terminated a lone partial line, so the
+  next write rebuilt the cursor once; it is computed after.
 
 ### Documentation
 
