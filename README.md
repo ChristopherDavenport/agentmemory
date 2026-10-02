@@ -271,7 +271,11 @@ reconciles before every render pays on every turn. And a write records the
 person's version of the entry it is about to replace, under
 `Source: "reconciled"` and no session, because once the agent has
 written, the file and the journal agree again and no later `Reconcile`
-could tell that anything was there. `sqlite.Open(path)`
+could tell that anything was there. The directory is a format a
+second program may read and append to: `docs/filestore-format.md`
+specifies the layout, the entry file, the journal record, how a record
+is numbered and chained, the lock, and how a torn tail is read, and a
+test holds the package to the document's examples. `sqlite.Open(path)`
 keeps the same rows and the same journal lines in one database and
 searches an FTS5 index in relevance order. `NewMemStore()` is the
 in-memory store. All three pass `storetest.Run`.

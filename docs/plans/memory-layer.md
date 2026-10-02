@@ -299,7 +299,10 @@ a `Prev` naming a hash no record held.
 
 The directory is a valid `agentskill.Source` in reverse: a person can
 read it, and git can diff it. That is the transparency argument for
-files over a database as the reference store.
+files over a database as the reference store. It is also a format a
+second writer can follow: `../filestore-format.md` specifies the files,
+the record, the sequence, the chain, the lock and the torn-tail rules,
+and `filestore/format_test.go` holds the code to its examples (#12).
 
 ## Conventions shared with the siblings
 

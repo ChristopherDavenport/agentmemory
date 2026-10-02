@@ -5,6 +5,46 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Added
+
+- `ManifestFold.Record(m)` returns the smallest record of a manifest
+  over the manifests the fold holds: the whole, or the delta on
+  whichever of the last `ManifestFoldDepth` manifests in force gives
+  the smaller, a tie going to the one in force. A writer that has
+  folded the session's path but kept no manifest of its own, as a kit
+  taking a session up after a restart has, wrote `RecordSince` the
+  manifest in force, the other agent's, and so the whole manifest at
+  its first hand-back; the fold held its own last manifest all along
+  (agentkit#68).
+
+### Fixed
+
+- `filestore`: a journal whose last complete line was not a record, as
+  two writes cut off in a row leave it, refused every later write with
+  "journal's last record is not a change", for ever, since nothing
+  repairs the journal. The next sequence number is now read from the
+  last line that is a record, walking back past damaged lines as
+  readers already did (#12).
+- `filestore`: a journal line that decoded but carried no `seq`, such
+  as `{}`, counted as record 0 and reset the cursor, so the next write
+  took a number already used. A record has a positive `seq`; a line
+  without one is damage, reported and skipped (#12).
+
+### Documentation
+
+- `docs/filestore-format.md` specifies the file store's on-disk format
+  for a program that reads or appends to the directory beside the
+  reference store: the layout and names, the entry file and its
+  frontmatter, the journal record's members and encoding, how `seq` is
+  allocated and recovered, what `prev` and `replaced` chain and what a
+  fork is, tombstones, reconciled changes, the torn-tail and damaged
+  line rules, the order and durability of a write, the lock and its
+  takeover, the cursor, and the rules a second writer follows.
+  `filestore/format_test.go` reads the document's examples and holds
+  the package to them (#12).
+
 ## v0.0.9 - 2026-10-01
 
 ### Added

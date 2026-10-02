@@ -25,6 +25,10 @@
 // a rename is atomic, so a reader sees an entry before or after a
 // write, never torn.
 //
+// The directory is a format other programs may read and append to;
+// docs/filestore-format.md specifies it, and format_test.go holds the
+// code to that document's examples.
+//
 // The package imports agentmemory and the standard library only.
 package filestore
 
