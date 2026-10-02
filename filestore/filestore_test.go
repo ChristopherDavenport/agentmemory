@@ -614,21 +614,93 @@ func TestJournalDamage(t *testing.T) {
 	}
 }
 
-// TestLastLine covers the backwards read over chunk boundaries.
-func TestLastLine(t *testing.T) {
+// TestDamagedTailDoesNotBlockWrites is the second torn write: a write
+// cut off leaves a partial line, the next write terminates it and is
+// itself cut off, and the journal ends with one damaged complete line
+// and a partial one. The next write must follow the last record rather
+// than refuse because the last complete line is not one, since nothing
+// else repairs the journal and the refusal would hold for ever.
+func TestDamagedTailDoesNotBlockWrites(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		tail string
+	}{
+		{"damaged line then partial", `{"seq":2,"partial` + "\n" + `{"seq":2,"ent`},
+		{"damaged line", "{not json\n"},
+		{"json that is not an object", "[1,2]\n"},
+		{"two damaged lines", "garbage\n{\n"},
+		{"blank lines", "\n  \n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := open(t)
+			if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "first", Content: "c"}); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.OpenFile(s.journalPath(), os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.WriteString(tt.tail); err != nil {
+				t.Fatal(err)
+			}
+			f.Close()
+			c, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "second", Content: "c"})
+			if err != nil {
+				t.Fatalf("Put after a damaged tail: %v", err)
+			}
+			if c.Seq != 2 {
+				t.Errorf("Seq = %d, want 2", c.Seq)
+			}
+			var seqs []uint64
+			var errs int
+			for c, err := range s.Journal(ctx, 0) {
+				if err != nil {
+					errs++
+					continue
+				}
+				seqs = append(seqs, c.Seq)
+			}
+			if fmt.Sprint(seqs) != "[1 2]" {
+				t.Errorf("seqs = %v, want [1 2]", seqs)
+			}
+			// Every damaged line is reported, the partial one included
+			// once the write has terminated it; blank lines are not.
+			wantErrs := 0
+			for _, line := range strings.SplitAfter(tt.tail, "\n") {
+				if strings.TrimSpace(line) != "" {
+					wantErrs++
+				}
+			}
+			if errs != wantErrs {
+				t.Errorf("damaged lines reported = %d, want %d", errs, wantErrs)
+			}
+		})
+	}
+}
+
+// TestTailLines covers the backwards read over chunk boundaries.
+func TestTailLines(t *testing.T) {
+	long := strings.Repeat("x", 20000)
 	tests := []struct {
 		name string
 		data string
-		want string
+		want []string // every complete line, last first
+		stop int      // stop after this many lines; 0 for none
 	}{
-		{"empty", "", ""},
-		{"one line", "a\n", "a"},
-		{"two lines", "a\nb\n", "b"},
-		{"partial tail", "a\nb\nc", "b"},
-		{"no newline", "abc", ""},
-		{"long last", "a\n" + strings.Repeat("x", 20000) + "\n", strings.Repeat("x", 20000)},
-		{"long first", strings.Repeat("x", 20000) + "\nb\n", "b"},
-		{"long both", strings.Repeat("x", 9000) + "\n" + strings.Repeat("y", 9000) + "\n", strings.Repeat("y", 9000)},
+		{"empty", "", nil, 0},
+		{"one line", "a\n", []string{"a"}, 0},
+		{"two lines", "a\nb\n", []string{"b", "a"}, 0},
+		{"partial tail", "a\nb\nc", []string{"b", "a"}, 0},
+		{"no newline", "abc", nil, 0},
+		{"empty first line", "\na\n", []string{"a", ""}, 0},
+		{"long last", "a\n" + long + "\n", []string{long, "a"}, 0},
+		{"long first", long + "\nb\n", []string{"b", long}, 0},
+		{"long both", strings.Repeat("x", 9000) + "\n" + strings.Repeat("y", 9000) + "\n", []string{strings.Repeat("y", 9000), strings.Repeat("x", 9000)}, 0},
+		{"long partial", "a\nb\n" + long, []string{"b", "a"}, 0},
+		{"stops", "a\nb\nc\n", []string{"c"}, 1},
+		{"stops across chunks", long + "\n" + long + "\nc\n", []string{"c", long}, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -641,12 +713,21 @@ func TestLastLine(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer f.Close()
-			got, err := lastLine(f)
+			var got []string
+			err = tailLines(f, func(line []byte) bool {
+				got = append(got, string(line))
+				return tt.stop == 0 || len(got) < tt.stop
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(got) != tt.want {
-				t.Errorf("lastLine = %q (%d bytes), want %d bytes", truncate(string(got)), len(got), len(tt.want))
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d lines, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("line %d = %q (%d bytes), want %d bytes", i, truncate(got[i]), len(got[i]), len(tt.want[i]))
+				}
 			}
 		})
 	}

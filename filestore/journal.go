@@ -85,9 +85,14 @@ func (s *Store) headLine() ([]byte, error) {
 // whole.
 const headLimit = 64 << 10
 
-// lastSeq returns the Seq of the journal's last record, or 0 for no
-// journal. It reads the file's tail rather than the whole file, since
-// the journal is unbounded and a write needs one number from it.
+// lastSeq returns the Seq of the journal's last record, or 0 for a
+// journal with none. It reads the file's tail rather than the whole
+// file, since the journal is unbounded and a write needs one number
+// from it. A trailing partial line is a write that was cut off and a
+// line that is not a record is damage; neither carries a number, so
+// the read walks back past them to the last record. A write that
+// refused on a damaged tail would refuse for ever, since nothing
+// repairs the journal.
 func (s *Store) lastSeq() (uint64, error) {
 	f, err := os.Open(s.journalPath())
 	if err != nil {
@@ -97,54 +102,73 @@ func (s *Store) lastSeq() (uint64, error) {
 		return 0, fmt.Errorf("filestore: open journal: %w", err)
 	}
 	defer f.Close()
-	line, err := lastLine(f)
+	var seq uint64
+	err = tailLines(f, func(line []byte) bool {
+		var c agentmemory.Change
+		if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &c) != nil {
+			return true
+		}
+		seq = c.Seq
+		return false
+	})
 	if err != nil {
 		return 0, fmt.Errorf("filestore: read journal tail: %w", err)
 	}
-	if len(line) == 0 {
-		return 0, nil
-	}
-	var probe struct {
-		Seq uint64 `json:"seq"`
-	}
-	if err := json.Unmarshal(line, &probe); err != nil {
-		return 0, fmt.Errorf("filestore: journal's last record is not a change: %w", err)
-	}
-	return probe.Seq, nil
+	return seq, nil
 }
 
-// lastLine returns the last newline-terminated line of f, reading
-// backwards in growing chunks. A trailing partial line, from a write
-// that was cut off, is ignored.
-func lastLine(f *os.File) ([]byte, error) {
+// tailLines calls fn with each complete line of f, without its
+// newline, from the last to the first, until fn returns false. A
+// trailing partial line, from a write that was cut off, is not a line.
+// It reads backwards in growing chunks, so a caller that stops at the
+// last line reads the file's tail and not the file.
+func tailLines(f *os.File, fn func(line []byte) bool) error {
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	size := info.Size()
+	start := info.Size()
 	chunk := int64(4 << 10)
-	for {
-		start := max(size-chunk, 0)
-		buf := make([]byte, size-start)
-		if _, err := f.ReadAt(buf, start); err != nil && !errors.Is(err, io.EOF) {
-			return nil, err
+	var buf []byte // the file from start to the end of the last line kept
+	limit := -1    // index in buf of the newline ending the next line to yield
+	for start > 0 {
+		n := min(chunk, start)
+		more := make([]byte, int(n)+len(buf))
+		if _, err := f.ReadAt(more[:n], start-n); err != nil && !errors.Is(err, io.EOF) {
+			return err
 		}
-		// Drop a trailing partial line, then find the line before it.
-		end := bytes.LastIndexByte(buf, '\n')
-		if end < 0 {
-			if start == 0 {
-				return nil, nil
+		copy(more[n:], buf)
+		buf = more
+		start -= n
+		chunk *= 2
+		if limit < 0 {
+			// Drop the trailing partial line: lines end at the last
+			// newline, and a file without one holds no line.
+			limit = bytes.LastIndexByte(buf, '\n')
+			if limit < 0 {
+				continue
 			}
-			chunk *= 2
-			continue
+		} else {
+			limit += int(n)
 		}
-		begin := bytes.LastIndexByte(buf[:end], '\n')
-		if begin < 0 && start > 0 {
-			chunk *= 2
-			continue
+		for {
+			begin := bytes.LastIndexByte(buf[:limit], '\n')
+			if begin < 0 {
+				if start == 0 {
+					// The file's first line.
+					fn(buf[:limit])
+					return nil
+				}
+				break // its start is in bytes not read yet
+			}
+			if !fn(buf[begin+1 : limit]) {
+				return nil
+			}
+			limit = begin
 		}
-		return buf[begin+1 : end], nil
+		buf = buf[:limit+1]
 	}
+	return nil
 }
 
 // readJournal calls fn with each record in order, starting after the
