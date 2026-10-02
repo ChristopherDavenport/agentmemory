@@ -298,6 +298,31 @@ func (f *ManifestFold) Manifest() Manifest {
 	return Manifest{Entries: slices.Clone(m.Entries), Omitted: slices.Clone(m.Omitted)}
 }
 
+// Record returns the namespace and the JSON of m for a session whose
+// readers fold with a ManifestFold: the smallest of the whole record
+// and the delta on each manifest the fold holds, every one of which
+// such a reader resolves. A writer that has folded the session's path
+// so far, as one taking a session up after a restart has, calls it in
+// place of [Manifest.RecordSince] on a manifest it kept itself, which
+// it has not got; the fold holds its last manifest, when that is among
+// the last [ManifestFoldDepth] distinct manifests in force, and the
+// record is the delta on it when that is the smaller. Equal sizes
+// prefer the manifest in force, whose delta [ApplyManifestRecord]
+// resolves as well. An empty fold gives the whole record.
+//
+// The fold is the reader's state and this writes nothing into it: the
+// caller folds the record it then writes, as every reader of the
+// session does.
+func (f *ManifestFold) Record(m Manifest) (ns string, data []byte) {
+	ns, data = m.Record()
+	for _, base := range f.recent {
+		if _, d := m.RecordSince(base); len(d) < len(data) {
+			data = d
+		}
+	}
+	return ns, data
+}
+
 // push makes m, whose hash is h, the manifest in force, moving it to
 // the front if the fold holds it and dropping the oldest past the
 // depth.
