@@ -705,6 +705,12 @@ func TestUnstorableHandFileKeepsTheChain(t *testing.T) {
 		{"metadata over its bound", func(content string) string {
 			return "---\ndescription: " + strings.Repeat("x", agentmemory.MaxMetaBytes) + "\n---\n" + content
 		}},
+		// Storable content the journal still cannot take, because of the
+		// metadata beside it: a write anchored in the file's hash must not
+		// name a hash no record holds either.
+		{"new content and metadata over its bound", func(content string) string {
+			return "---\ndescription: " + strings.Repeat("x", agentmemory.MaxMetaBytes) + "\n---\n" + content + " edited"
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
