@@ -4,7 +4,7 @@ Instructions the agent writes. Skills and AGENTS.md are instructions
 people author and the agent reads; memory is what the agent keeps
 between sessions about the user, the project and its own past work.
 It needs a store with a write path, history and scoping, which no
-read-only source has, and both dex (project memory beside the
+read-only source has, and both dax (project memory beside the
 checkout) and dexclaw (per-user memory shared across channels) want it,
 so it is its own module rather than a corner of `agentskill`.
 
@@ -353,7 +353,7 @@ that imports the loop as a test dependency only.
 3. The three tools and `Tools`.
 4. `Render` and `Manifest` with golden fixtures.
 5. `sqlite` with full-text `Search`, passing `storetest`.
-6. dexclaw uses user scope across two channels; dex uses project
+6. dexclaw uses user scope across two channels; dax uses project
    scope beside the checkout.
 
 ## Open questions
