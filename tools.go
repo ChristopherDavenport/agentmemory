@@ -557,7 +557,7 @@ func (t *toolset) saveDescription() string {
 }
 
 func (t *toolset) patchDescription() string {
-	return "Edit a memory entry by replacing old_text with new_text. old_text must appear exactly once in the entry, copied exactly; the call fails and says so when it is absent or repeated. Prefer this to memory_save for an edit: the call is the size of the change, and the edit is anchored in the stored text, so a change another session made in the meantime is kept. " + t.writerScopes()
+	return "Edit a memory entry by replacing old_text with new_text. old_text must appear exactly once in the entry, copied exactly; the call fails and says so when it is absent or repeated. The memory block shows headings of levels one to three at level four, so copy text with a heading in it from memory_search, which shows the entry as stored. Prefer this to memory_save for an edit: the call is the size of the change, and the edit is anchored in the stored text, so a change another session made in the meantime is kept. " + t.writerScopes()
 }
 
 func (t *toolset) forgetDescription() string {

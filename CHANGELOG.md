@@ -112,10 +112,15 @@ versions may break the API.
   question 1).
 - **Breaking (block bytes):** a heading of level one to three inside an
   entry's content is written at level four, and a setext underline is
-  escaped, outside code fences, so an entry cannot open a scope, an
-  entry part or a summary of its own in the block. A block whose
-  entries held such headings renders differently; the `headings`
-  fixture pins the rule.
+  escaped, inside code fences too, with a lone `\r` ending a line as
+  CommonMark ends one; a description's line ends are spaces; and a code
+  fence or HTML comment an entry leaves open has its opener escaped, so
+  it cannot turn the parts after it into code. An entry cannot open a
+  scope, an entry part or a summary of its own in the block. A block
+  whose entries held such text renders differently; the `headings` and
+  `forged` render fixtures and `testdata/neutralise.json` pin the rule.
+  The model reads the neutralised text, so `memory_patch`'s description
+  says to copy `old_text` holding a heading from `memory_search`.
 
 ### Changed
 
