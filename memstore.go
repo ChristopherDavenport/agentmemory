@@ -154,27 +154,31 @@ func (m *MemStore) appendLocked(ctx context.Context, e Entry, prev, replaced str
 
 // Search implements Store with [Match], listing by scope order then
 // name.
-func (m *MemStore) Search(_ context.Context, scopes []Scope, query string, limit int) ([]Entry, error) {
+func (m *MemStore) Search(ctx context.Context, scopes []Scope, query string, limit int) ([]Entry, error) {
+	return m.SearchWith(ctx, scopes, query, limit, SearchOptions{})
+}
+
+// SearchOptions implements [Searcher]: every option.
+func (m *MemStore) SearchOptions() []string { return AllSearchOptions() }
+
+// SearchWith implements [Searcher] with [SearchOptions.Filter] over the
+// scopes in order.
+func (m *MemStore) SearchWith(_ context.Context, scopes []Scope, query string, limit int, opts SearchOptions) ([]Entry, error) {
 	for _, scope := range scopes {
 		if err := CheckScope(scope); err != nil {
 			return nil, err
 		}
 	}
+	if err := opts.Check(m.SearchOptions()); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []Entry
+	var all []Entry
 	for _, scope := range scopes {
-		for _, e := range m.listLocked(scope) {
-			if !Match(e, query) {
-				continue
-			}
-			out = append(out, e)
-			if limit > 0 && len(out) == limit {
-				return out, nil
-			}
-		}
+		all = append(all, m.listLocked(scope)...)
 	}
-	return out, nil
+	return opts.Filter(all, query, limit), nil
 }
 
 // Journal implements Store.
@@ -218,4 +222,5 @@ func cloneEntry(e Entry) Entry {
 var (
 	_ Store     = (*MemStore)(nil)
 	_ LastSeqer = (*MemStore)(nil)
+	_ Searcher  = (*MemStore)(nil)
 )

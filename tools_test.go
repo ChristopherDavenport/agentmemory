@@ -934,3 +934,62 @@ func TestFixedNamesAndInsertPanic(t *testing.T) {
 		})
 	}
 }
+
+// TestSearchToolOptions is #47 in the tool: memory_search offers an
+// argument for each option its store supports and none for a store that
+// supports none, and passes them to the store.
+func TestSearchToolOptions(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	for _, e := range []Entry{
+		{Scope: "user", Name: "editor", Content: "Uses Neovim.", Meta: map[string]string{"type": "tool"}},
+		{Scope: "user", Name: "language", Content: "Prefers Go.", Meta: map[string]string{"type": "taste"}},
+	} {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	props := func(tools []agenttool.Tool) []string {
+		var schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(tools[3].Parameters(), &schema); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for k := range schema.Properties {
+			out = append(out, k)
+		}
+		slices.Sort(out)
+		return out
+	}
+	with := Tools(store, []Scope{"user"})
+	if got := props(with); fmt.Sprint(got) != "[any limit meta query scopes updated_after updated_before]" {
+		t.Errorf("memory_search properties over a store with every option = %v", got)
+	}
+	without := Tools(hidden{store}, []Scope{"user"})
+	if got := props(without); fmt.Sprint(got) != "[limit query scopes]" {
+		t.Errorf("memory_search properties over a store with none = %v", got)
+	}
+	if strings.Contains(without[3].Description(), "updated_after") || !strings.Contains(with[3].Description(), "updated_after") {
+		t.Errorf("memory_search over a store with no options describes them: %s", without[3].Description())
+	}
+	out, err := call(t, with, SearchTool, `{"query":"neovim rust","any":true}`)
+	if err != nil || !strings.Contains(out, "user/editor") {
+		t.Errorf("search any = %q, %v", out, err)
+	}
+	out, err = call(t, with, SearchTool, `{"query":"prefers uses","any":true,"meta":{"type":"taste"}}`)
+	if err != nil || !strings.Contains(out, "user/language") || strings.Contains(out, "user/editor") {
+		t.Errorf("search any with meta = %q, %v", out, err)
+	}
+	if _, err := call(t, with, SearchTool, `{"query":"go","updated_after":"yesterday"}`); err == nil || !strings.Contains(err.Error(), "updated_after") {
+		t.Errorf("search with a bad time = %v", err)
+	}
+	if out, err := call(t, with, SearchTool, `{"query":"go","updated_before":"2000-01-01T00:00:00Z"}`); err != nil || !strings.Contains(out, "No entries") {
+		t.Errorf("search before 2000 = %q, %v", out, err)
+	}
+	// An option given to a store without it is an error, not ignored.
+	if _, err := call(t, without, SearchTool, `{"query":"go","any":true}`); err == nil {
+		t.Error("an option the store lacks was taken")
+	}
+}

@@ -272,6 +272,17 @@ patches and puts with `IfHash`, retrying on a conflict. `memory_search`
 returns five entries and 16 KiB by default, because a tool result
 stays in the transcript where the block is replaced each turn.
 
+A store may support search options beside the query (`Searcher`):
+`any`, an entry holding any word rather than every word, ranked by the
+store; `meta`, entries whose metadata holds given values; and
+`updated_after` and `updated_before`, exclusive bounds on when an entry
+was last written. `SearchWith(ctx, store, scopes, query, limit, opts)`
+refuses an option the store does not support with `ErrUnsupported`
+rather than ignore it, and `memory_search` offers an argument for each
+option its store supports and none for the others. Every store here
+supports all four; the in-memory store and filestore rank `any` by how
+many of the words an entry holds, sqlite by bm25.
+
 ## Stores
 
 `filestore.Open(dir)` keeps one directory per scope, one `<name>.md`

@@ -38,6 +38,18 @@ versions may break the API.
   the name is taken, each attempt a put with `IfHash("")`, so an insert
   never overwrites. The result and its `WriteRecord` name the entry
   (#48).
+- Search options (#47): `SearchOptions{Any, Meta, UpdatedAfter,
+  UpdatedBefore}`, the optional `Searcher` interface that names the
+  options a store supports and searches with them, `SearchSupport`,
+  and `SearchWith(ctx, s, …)`, which refuses an option the store does
+  not support with `ErrUnsupported` rather than ignore it. The
+  in-memory store, filestore and sqlite support all four; the first
+  two through `SearchOptions.Filter`, ranking `any` by how many of the
+  words an entry holds, sqlite with OR in FTS5 ranked by bm25.
+  `memory_search` gains `any`, `meta`, `updated_after` and
+  `updated_before` arguments for the options its store supports, and
+  none for the others. `storetest` checks each option a store supports
+  and that it refuses the others.
 - `LastSeqer`, an optional store interface answering the journal's
   last sequence number without reading it, and `LastSeq(ctx, s)`,
   which falls back to reading the journal. The in-memory store,
@@ -65,6 +77,7 @@ versions may break the API.
   `Manifest.Record` and `RecordSince` write `"entries":[]` for a
   manifest a product built from a nil list, as the one of a block
   dropped whole is, rather than `null` (RFC 0001 open question 6).
+- `Match` counts a word the query gives twice once.
 - memory_search's description and its `query` argument say a word must
   appear in an entry's name, metadata or content: every metadata value
   is searched, not only the description.

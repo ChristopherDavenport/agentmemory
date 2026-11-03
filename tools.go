@@ -215,10 +215,19 @@ type forgetArgs struct {
 }
 
 type searchArgs struct {
-	Query  string   `json:"query" desc:"Words that must all appear in an entry's name, metadata or content, in any case"`
-	Scopes []string `json:"scopes,omitempty" desc:"Which memories to search; all of them when omitted"`
-	Limit  int      `json:"limit,omitempty" desc:"At most this many entries; keep it low, results stay in the conversation"`
+	Query         string            `json:"query" desc:"Words that must all appear in an entry's name, metadata or content, in any case"`
+	Scopes        []string          `json:"scopes,omitempty" desc:"Which memories to search; all of them when omitted"`
+	Limit         int               `json:"limit,omitempty" desc:"At most this many entries; keep it low, results stay in the conversation"`
+	Any           bool              `json:"any,omitempty" desc:"Match entries holding any of the words rather than all of them, best matches first"`
+	Meta          map[string]string `json:"meta,omitempty" desc:"Only entries whose metadata has each of these keys with exactly this value"`
+	UpdatedAfter  string            `json:"updated_after,omitempty" desc:"Only entries last written after this time, RFC 3339"`
+	UpdatedBefore string            `json:"updated_before,omitempty" desc:"Only entries last written before this time, RFC 3339"`
 }
+
+// searchOptionArgs are memory_search's arguments that are search
+// options, by option name: each is in the schema only when the store
+// supports it.
+var searchOptionArgs = []string{SearchAny, SearchMeta, SearchUpdatedAfter, SearchUpdatedBefore}
 
 // Tools returns the tools through which the model reaches store,
 // restricted to the scopes the product allows: memory_save,
@@ -328,7 +337,7 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 		tool(SaveTool, t.saveDescription(), t.save, scopes, o.readScopes, agenttool.Annotations{Title: "Save memory entry", Destructive: true}, agenttool.ReplayUnknown),
 		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, agenttool.Annotations{Title: "Edit memory entry"}, agenttool.ReplayUnknown),
 		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}, agenttool.ReplayUnknown),
-		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}, agenttool.ReplaySafe),
+		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}, agenttool.ReplaySafe, t.unsupported()...),
 	}
 	if len(o.insert) > 0 {
 		// An insert never overwrites, so it is not destructive; run
@@ -359,8 +368,8 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 //
 // replay is the tool's claim for every call, forwarded through the
 // wrapper as its annotations are.
-func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes, readOnly []Scope, a agenttool.Annotations, replay agenttool.Replay) agenttool.Tool {
-	tree, schema := scopeSchema[Args](scopes)
+func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes, readOnly []Scope, a agenttool.Annotations, replay agenttool.Replay, drop ...string) agenttool.Tool {
+	tree, schema := scopeSchema[Args](scopes, drop...)
 	opts := []agenttool.Option{agenttool.WithParameters(schema), agenttool.WithAnnotations(a)}
 	if replay != agenttool.ReplayUnknown {
 		opts = append(opts, agenttool.WithReplay(func(context.Context, json.RawMessage) agenttool.Replay { return replay }))
@@ -412,12 +421,14 @@ func readOnlyError(s Scope) error { return fmt.Errorf("scope %s is read-only", s
 // tools check it themselves, see [checked]. The call-time check in
 // scope stays too, for a caller that reaches a tool function another
 // way.
-func scopeSchema[Args any](scopes []Scope) (*agenttool.Schema, json.RawMessage) {
+func scopeSchema[Args any](scopes []Scope, drop ...string) (*agenttool.Schema, json.RawMessage) {
 	var zero Args
 	tree, err := agenttool.Reflect(reflect.TypeOf(&zero).Elem())
 	if err != nil {
 		panic(fmt.Sprintf("agentmemory.Tools: %v", err))
 	}
+	tree.Properties = slices.DeleteFunc(tree.Properties, func(p agenttool.Property) bool { return slices.Contains(drop, p.Name) })
+	tree.Required = slices.DeleteFunc(tree.Required, func(n string) bool { return slices.Contains(drop, n) })
 	values := make([]any, 0, len(scopes))
 	for _, s := range scopes {
 		values = append(values, string(s))
@@ -542,8 +553,40 @@ func (t *toolset) insertDescription() string {
 }
 
 func (t *toolset) searchDescription() string {
-	return fmt.Sprintf("Find memory entries: the ones the memory block omits, or one to read whole before editing it. Every word of the query must appear in an entry's name, one of its metadata values, such as its description, or its content, in any case. Returns up to %d entries unless limit says otherwise, and at most %d bytes of content; the rest are listed by name. Results stay in the conversation, so search for what you need and no more. %s",
-		t.opts.searchLimit, t.opts.searchBytes, t.searchScopes())
+	return fmt.Sprintf("Find memory entries: the ones the memory block omits, or one to read whole before editing it. Every word of the query must appear in an entry's name, one of its metadata values, such as its description, or its content, in any case.%s Returns up to %d entries unless limit says otherwise, and at most %d bytes of content; the rest are listed by name. Results stay in the conversation, so search for what you need and no more. %s",
+		t.optionsSentence(), t.opts.searchLimit, t.opts.searchBytes, t.searchScopes())
+}
+
+// unsupported returns the search options the store does not support,
+// which memory_search leaves out of its schema.
+func (t *toolset) unsupported() []string {
+	have := SearchSupport(t.store)
+	return slices.DeleteFunc(slices.Clone(searchOptionArgs), func(n string) bool { return slices.Contains(have, n) })
+}
+
+// optionsSentence says which options memory_search offers.
+func (t *toolset) optionsSentence() string {
+	have := SearchSupport(t.store)
+	var parts []string
+	if slices.Contains(have, SearchAny) {
+		parts = append(parts, "any matches an entry holding any of the words, best first")
+	}
+	if slices.Contains(have, SearchMeta) {
+		parts = append(parts, "meta keeps entries whose metadata has those values")
+	}
+	if slices.Contains(have, SearchUpdatedAfter) || slices.Contains(have, SearchUpdatedBefore) {
+		var b []string
+		for _, n := range []string{SearchUpdatedAfter, SearchUpdatedBefore} {
+			if slices.Contains(have, n) {
+				b = append(b, n)
+			}
+		}
+		parts = append(parts, strings.Join(b, " and ")+" bound when an entry was last written")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " Options: " + strings.Join(parts, "; ") + "."
 }
 
 // scope resolves a call's scope argument to an allowed scope. An
@@ -818,7 +861,21 @@ func (t *toolset) search(ctx context.Context, a searchArgs) (agenttool.Result, e
 	if limit <= 0 {
 		limit = t.opts.searchLimit
 	}
-	found, err := t.store.Search(ctx, scopes, a.Query, limit)
+	so := SearchOptions{Any: a.Any, Meta: a.Meta}
+	for _, b := range []struct {
+		name, value string
+		into        *time.Time
+	}{{SearchUpdatedAfter, a.UpdatedAfter, &so.UpdatedAfter}, {SearchUpdatedBefore, a.UpdatedBefore, &so.UpdatedBefore}} {
+		if b.value == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, b.value)
+		if err != nil {
+			return agenttool.Result{}, fmt.Errorf("%s %q is not an RFC 3339 time, such as 2026-11-02T19:44:00Z", b.name, b.value)
+		}
+		*b.into = at
+	}
+	found, err := SearchWith(ctx, t.store, scopes, a.Query, limit, so)
 	if err != nil {
 		return agenttool.Result{}, err
 	}

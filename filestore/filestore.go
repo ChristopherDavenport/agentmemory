@@ -372,23 +372,32 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 // Search implements agentmemory.Store with [agentmemory.Match],
 // listing by scope order then name.
 func (s *Store) Search(ctx context.Context, scopes []agentmemory.Scope, query string, limit int) ([]agentmemory.Entry, error) {
-	var out []agentmemory.Entry
+	return s.SearchWith(ctx, scopes, query, limit, agentmemory.SearchOptions{})
+}
+
+// SearchOptions implements [agentmemory.Searcher]: every option.
+func (s *Store) SearchOptions() []string { return agentmemory.AllSearchOptions() }
+
+// SearchWith implements [agentmemory.Searcher] with
+// [agentmemory.SearchOptions.Filter] over the scopes in order.
+func (s *Store) SearchWith(ctx context.Context, scopes []agentmemory.Scope, query string, limit int, opts agentmemory.SearchOptions) ([]agentmemory.Entry, error) {
+	for _, scope := range scopes {
+		if err := agentmemory.CheckScope(scope); err != nil {
+			return nil, err
+		}
+	}
+	if err := opts.Check(s.SearchOptions()); err != nil {
+		return nil, err
+	}
+	var all []agentmemory.Entry
 	for _, scope := range scopes {
 		es, err := s.List(ctx, scope)
 		if err != nil {
 			return nil, err
 		}
-		for _, e := range es {
-			if !agentmemory.Match(e, query) {
-				continue
-			}
-			out = append(out, e)
-			if limit > 0 && len(out) == limit {
-				return out, nil
-			}
-		}
+		all = append(all, es...)
 	}
-	return out, nil
+	return opts.Filter(all, query, limit), nil
 }
 
 // Journal implements agentmemory.Store. A line that is not a record
@@ -592,4 +601,5 @@ func writeAtomic(path string, data []byte) error {
 var (
 	_ agentmemory.Store     = (*Store)(nil)
 	_ agentmemory.LastSeqer = (*Store)(nil)
+	_ agentmemory.Searcher  = (*Store)(nil)
 )

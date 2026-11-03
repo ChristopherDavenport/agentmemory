@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ChristopherDavenport/agentmemory"
 )
@@ -41,6 +43,7 @@ func Run(t *testing.T, opts Options) {
 	t.Run("LostUpdates", func(t *testing.T) { testLostUpdates(t, opts) })
 	t.Run("LastSeq", func(t *testing.T) { testLastSeq(t, opts) })
 	t.Run("Search", func(t *testing.T) { testSearch(t, opts) })
+	t.Run("SearchOptions", func(t *testing.T) { testSearchOptions(t, opts) })
 	t.Run("Concurrent", func(t *testing.T) { testConcurrent(t, opts) })
 	if opts.Reopen != nil {
 		t.Run("Persistence", func(t *testing.T) { testPersistence(t, opts) })
@@ -541,6 +544,92 @@ func testSearch(t *testing.T, opts Options) {
 				}
 			}
 		})
+	}
+}
+
+// testSearchOptions checks each option a store says it supports, and
+// that it refuses the ones it does not, as [agentmemory.SearchWith]
+// does for a store that supports none.
+func testSearchOptions(t *testing.T, opts Options) {
+	ctx := context.Background()
+	st := opts.New(t)
+	puts := []agentmemory.Entry{
+		{Scope: "user", Name: "editor", Content: "Uses Neovim with a dark theme.", Meta: map[string]string{"description": "Editor preference", "type": "tool"}},
+		{Scope: "user", Name: "language", Content: "Prefers Go over Python for tools.", Meta: map[string]string{"description": "Language preference", "type": "taste"}},
+		{Scope: "user", Name: "timezone", Content: "Europe/London"},
+		{Scope: "project", Name: "build", Content: "Run make check before a commit; the Go toolchain is 1.25.", Meta: map[string]string{"type": "tool"}},
+	}
+	for _, e := range puts {
+		if _, err := st.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	both := []agentmemory.Scope{"user", "project"}
+	supported := agentmemory.SearchSupport(st)
+	all := []string{agentmemory.SearchAny, agentmemory.SearchMeta, agentmemory.SearchUpdatedAfter, agentmemory.SearchUpdatedBefore}
+	for _, n := range supported {
+		if !slices.Contains(all, n) {
+			t.Errorf("SearchOptions names %q, which is not an option", n)
+		}
+	}
+	editor, err := st.Get(ctx, "user", "editor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := editor.Updated
+	tests := []struct {
+		name   string
+		option string
+		query  string
+		opts   agentmemory.SearchOptions
+		want   []string // in order when ordered
+		order  bool
+	}{
+		{"any word", agentmemory.SearchAny, "neovim rust", agentmemory.SearchOptions{Any: true}, []string{"user/editor"}, false},
+		{"any ranks the entry holding more words first", agentmemory.SearchAny, "python go", agentmemory.SearchOptions{Any: true}, []string{"user/language", "project/build"}, true},
+		{"any with no word held", agentmemory.SearchAny, "rust", agentmemory.SearchOptions{Any: true}, nil, false},
+		{"meta", agentmemory.SearchMeta, "", agentmemory.SearchOptions{Meta: map[string]string{"type": "tool"}}, []string{"user/editor", "project/build"}, false},
+		{"meta and query", agentmemory.SearchMeta, "go", agentmemory.SearchOptions{Meta: map[string]string{"type": "tool"}}, []string{"project/build"}, false},
+		{"meta every key", agentmemory.SearchMeta, "", agentmemory.SearchOptions{Meta: map[string]string{"type": "tool", "description": "Editor preference"}}, []string{"user/editor"}, false},
+		{"meta exact value", agentmemory.SearchMeta, "", agentmemory.SearchOptions{Meta: map[string]string{"type": "too"}}, nil, false},
+		{"updated after is exclusive", agentmemory.SearchUpdatedAfter, "neovim", agentmemory.SearchOptions{UpdatedAfter: t0}, nil, false},
+		{"updated after", agentmemory.SearchUpdatedAfter, "neovim", agentmemory.SearchOptions{UpdatedAfter: t0.Add(-time.Nanosecond)}, []string{"user/editor"}, false},
+		{"updated before is exclusive", agentmemory.SearchUpdatedBefore, "neovim", agentmemory.SearchOptions{UpdatedBefore: t0}, nil, false},
+		{"updated before", agentmemory.SearchUpdatedBefore, "neovim", agentmemory.SearchOptions{UpdatedBefore: t0.Add(time.Nanosecond)}, []string{"user/editor"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := agentmemory.SearchWith(ctx, st, both, tt.query, 0, tt.opts)
+			if !slices.Contains(supported, tt.option) {
+				if !errors.Is(err, agentmemory.ErrUnsupported) {
+					t.Errorf("SearchWith(%s) on a store without it = %v, want ErrUnsupported", tt.option, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SearchWith: %v", err)
+			}
+			if tt.order && !slices.Equal(keys(got), tt.want) {
+				t.Errorf("SearchWith = %v, want %v in order", keys(got), tt.want)
+			}
+			if !sameSet(keys(got), tt.want) {
+				t.Errorf("SearchWith = %v, want %v", keys(got), tt.want)
+			}
+		})
+	}
+	// A meta key that is not a name is invalid, and no options is a
+	// plain search.
+	if slices.Contains(supported, agentmemory.SearchMeta) {
+		if _, err := agentmemory.SearchWith(ctx, st, both, "", 0, agentmemory.SearchOptions{Meta: map[string]string{"Type": "tool"}}); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("SearchWith(meta key Type) = %v, want ErrInvalid", err)
+		}
+	}
+	plain, err := agentmemory.SearchWith(ctx, st, both, "go", 0, agentmemory.SearchOptions{})
+	if err != nil || !sameSet(keys(plain), []string{"user/language", "project/build"}) {
+		t.Errorf("SearchWith(no options) = %v, %v", keys(plain), err)
+	}
+	if got, err := agentmemory.SearchWith(ctx, st, both, "go", 1, agentmemory.SearchOptions{Any: slices.Contains(supported, agentmemory.SearchAny)}); err != nil || len(got) != 1 {
+		t.Errorf("SearchWith with limit 1 = %v, %v", keys(got), err)
 	}
 }
 

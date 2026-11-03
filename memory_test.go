@@ -106,6 +106,7 @@ func TestMatch(t *testing.T) {
 		"neovim light":    false,
 		"emacs":           false,
 		"  neovim  theme": true,
+		"neovim neovim":   true, // a word given twice is one word
 	}
 	for q, want := range tests {
 		if got := Match(e, q); got != want {

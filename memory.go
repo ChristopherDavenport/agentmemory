@@ -450,25 +450,8 @@ func CheckEntry(e Entry, limit int, stored *Entry) error {
 // case, in the entry's name, one of its meta values or its content.
 // An empty query matches every entry.
 func Match(e Entry, query string) bool {
-	words := strings.Fields(strings.ToLower(query))
-	if len(words) == 0 {
-		return true
-	}
-	var b strings.Builder
-	b.WriteString(e.Name)
-	for _, v := range e.Meta {
-		b.WriteByte('\n')
-		b.WriteString(v)
-	}
-	b.WriteByte('\n')
-	b.WriteString(e.Content)
-	text := strings.ToLower(b.String())
-	for _, w := range words {
-		if !strings.Contains(text, w) {
-			return false
-		}
-	}
-	return true
+	words := queryWords(query)
+	return matchCount(e, words) == len(words)
 }
 
 type sessionKey struct{}
