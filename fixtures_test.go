@@ -640,3 +640,70 @@ func TestHashFixture(t *testing.T) {
 		}
 	}
 }
+
+// droppedFixture is testdata/dropped.json: a store, a tool set over it,
+// and for each case the manifest of the block the model is reading, a
+// call, and the refusal it gets, none when error is absent. It is
+// written by hand, not with -update: it states RFC 0001's rule (6.8)
+// rather than recording what the reference does.
+type droppedFixture struct {
+	Scopes     []Scope          `json:"scopes"`
+	ReadScopes []Scope          `json:"read_scopes"`
+	Insert     []Scope          `json:"insert"`
+	Entries    []renderInputRow `json:"entries"`
+	Cases      []struct {
+		Name     string          `json:"name"`
+		Manifest Manifest        `json:"manifest"`
+		Tool     string          `json:"tool"`
+		Args     json.RawMessage `json:"args"`
+		Error    string          `json:"error"`
+	} `json:"cases"`
+}
+
+// TestDroppedFixture checks that a write in a turn whose block was left
+// out is refused where the call is decided, by CheckWrite, and again
+// when it runs, before anything else is checked and with nothing
+// written; and that every other call goes through.
+func TestDroppedFixture(t *testing.T) {
+	var fx droppedFixture
+	dec := json.NewDecoder(bytes.NewReader(readFixture(t, filepath.Join("testdata", "dropped.json"))))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&fx); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range fx.Cases {
+		t.Run(c.Name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewMemStore()
+			for _, e := range fx.Entries {
+				if _, err := store.Put(ctx, Entry{Scope: e.Scope, Name: e.Name, Content: e.Content, Meta: e.Meta}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got := ""
+			if err := CheckWrite(c.Manifest, c.Tool); err != nil {
+				got = err.Error()
+			}
+			if got != c.Error {
+				t.Errorf("CheckWrite = %q, want %q", got, c.Error)
+			}
+			man := c.Manifest
+			tools := Tools(store, fx.Scopes, WithReadScopes(fx.ReadScopes...), WithInsert(fx.Insert...), WithRendered(func() Manifest { return man }))
+			if !slices.ContainsFunc(tools, func(tool agenttool.Tool) bool { return tool.Name() == c.Tool }) {
+				return
+			}
+			before := journalLen(store)
+			_, err := call(t, tools, c.Tool, string(c.Args))
+			got = ""
+			if err != nil {
+				got = err.Error()
+			}
+			if got != c.Error {
+				t.Errorf("%s ran with error %q, want %q", c.Tool, got, c.Error)
+			}
+			if c.Error != "" && journalLen(store) != before {
+				t.Errorf("%s wrote %d records though refused", c.Tool, journalLen(store)-before)
+			}
+		})
+	}
+}

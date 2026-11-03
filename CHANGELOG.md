@@ -5,6 +5,37 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Added
+
+- A write in a turn whose block was left out is refused before anyone
+  is asked (agentkit#95). `Manifest.Dropped` reports a manifest that
+  records a block left out whole (no entries, every omitted entry with
+  `OmitBlock`); `WriteTools()` names the writers, `memory_save`,
+  `memory_patch`, `memory_forget` and `memory_insert`; and
+  `CheckWrite(manifest, tool)` returns `ErrBlockDropped` for a writer's
+  call under such a manifest, for a product's decision hook to refuse
+  the call before its policy asks a person or a reviewer. The message
+  the model reads is `the memory block is not shown this turn, so
+  memory cannot be changed: a write could replace an entry you have
+  not seen; memory_search still reads it`.
+- RFC 0001 is draft 0.3: §6.8 gains the rule (a product SHOULD NOT
+  offer the writers in a request it left the block out of, MUST refuse
+  a writing call made anyway where it is decided, and the tools refuse
+  it again when they run), the bindings and conformance name it, and a
+  new section 15, "Changes since 0.2", lists it; the sections after it
+  are renumbered (Changes from draft 0.1 is 16, Decisions 17).
+  `testdata/dropped.json` is its fixture.
+
+### Changed
+
+- Under `WithRendered`, every writer refuses a call with
+  `ErrBlockDropped`, before the read-only scope check and the schema
+  check and without writing, when the manifest the product returns
+  records a block left out whole. Before, a save under such a manifest
+  was based on its own read and went through.
+
 ## v0.0.11 - 2026-11-03
 
 ### Added

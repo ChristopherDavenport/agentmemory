@@ -1,6 +1,6 @@
 # RFC 0001: Agent Memory
 
-Status: draft 0.2
+Status: draft 0.3
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; `filestore` is the reference store,
@@ -38,9 +38,11 @@ The on-disk format of the reference store is Annex A, kept in
 Draft 0.2 states the contract as the code holds it after the fixes for
 #46, #47, #48 and #49, the security fixes of the same batch, and the
 answers to draft 0.1's open questions. [Changes from draft
-0.1](#15-changes-from-draft-01) lists what moved;
+0.1](#16-changes-from-draft-01) lists what moved;
 [Appendix B](#appendix-b-inconsistencies-draft-01-found) says how each
-inconsistency draft 0.1 found was resolved.
+inconsistency draft 0.1 found was resolved. Draft 0.3 adds the refusal
+of a write in a turn whose block was left out; [Changes since
+0.2](#15-changes-since-02) lists it.
 
 ## Motivation
 
@@ -58,7 +60,7 @@ call with a record beside it. What it lacked was a document saying
 what those records hold and how a reader folds them. agentsession's
 RFC names `agentmemory` as an instruction part's source; this document
 is what that name points at, and stays in this repository
-([section 16](#16-decisions)).
+([section 17](#17-decisions)).
 
 ## Goals
 
@@ -787,6 +789,32 @@ reading; one from earlier in the turn makes a second save of an entry
 read as built on the block rather than on the model's own first save,
 and reported as lost.
 
+**A block left out.** A manifest records a block **left out whole**
+when it lists no element under `entries` and at least one under
+`omitted`, each with the reason `block` (7.6). A product that leaves
+the block out of a request SHOULD NOT offer the writing tools,
+`memory_save`, `memory_patch`, `memory_forget` and `memory_insert`, in
+that request; `memory_search` reads and stays. A writing call made
+anyway, composed from a block the model was not shown, MUST be refused
+when the call is decided, before any person or reviewer is asked about
+it, since no answer could let it through. The refusal reaches the
+model as a failure (6.1), with the message
+
+```
+the memory block is not shown this turn, so memory cannot be changed: a write could replace an entry you have not seen; memory_search still reads it
+```
+
+A refusal at execution remains, for a call decided before the block
+was left out: a writing tool told the manifest of a block left out
+whole refuses every call with the same message, before anything else
+is checked, its scope and its schema included, and writes nothing. A
+block left out over a store that held nothing has the empty manifest,
+which does not say it was left out; the product knows it left the
+block out, and refuses a write as above whatever the manifest says.
+`testdata/dropped.json` gives cases of both refusals: a store, a tool
+set over it, and per case the manifest the model is reading, a call,
+and the message it is refused with, none when it goes through.
+
 ### 6.9 Usage paragraph
 
 The reference binding offers one paragraph telling the model what the
@@ -1092,7 +1120,7 @@ with `<bytes>` in decimal. The empty manifest's hash is the hash of the
 empty string. Two renders that showed the model the same memories hash
 the same, so a product records the manifest only when its hash moves.
 The manifest names content, not metadata: a change to an entry's
-description changes its part and not the manifest (section 16).
+description changes its part and not the manifest (section 17).
 
 ## 8. Session records
 
@@ -1383,7 +1411,8 @@ The root module is the reference binding.
 | record | `Change{Seq, Entry, Prev, Replaced, Session, Source, At}`, `SourceReconciled` |
 | lost updates | `LostUpdates(ctx, store, after)`, `LostUpdate{Change, Over, Break, AfterDamage}` |
 | last sequence number | `LastSeqer`, `LastSeq(ctx, s)` |
-| tools | `Tools(store, scopes, opts...)`; `SaveTool`, `PatchTool`, `ForgetTool`, `SearchTool`, `InsertTool`, `InsertName` |
+| tools | `Tools(store, scopes, opts...)`; `SaveTool`, `PatchTool`, `ForgetTool`, `SearchTool`, `InsertTool`, `InsertName`; the writers `WriteTools()` |
+| a block left out (6.8) | `Manifest.Dropped`; `CheckWrite(manifest, tool)` where a call is decided; `ErrBlockDropped`, the message; the writers refuse at execution under `WithRendered` |
 | tool options | `WithReadScopes`, `WithRendered` (6.8), `WithFixedNames`, `WithInsert`, `WithSearchLimit`, `WithSearchBytes`, `WithSearchReads`, `DefaultSearchLimit`, `DefaultSearchBytes` |
 | write record | `WriteRecord{Tool, Change}`, `WriteNS`, as an `agenttool.Recordable` |
 | usage paragraph | `Usage()` |
@@ -1417,8 +1446,11 @@ it, and a store elsewhere can run it.
 says, enforces its own schema, refuses read scopes and unlisted scopes,
 anchors every save and patch as sections 6.2 and 6.3 say, keeps fixed
 names and names inserts as 6.5 says, offers only the search options its
-store supports, declares `memory_search`'s flow, and carries the write
-record of every write it makes.
+store supports, declares `memory_search`'s flow, refuses every write in
+a turn whose block was left out as 6.8 says, reproducing
+`testdata/dropped.json`, and carries the write record of every write
+it makes. **A conforming product** that leaves the block out refuses a
+write where the call is decided, before anyone is asked (6.8).
 
 **A conforming renderer** meets sections 7.1 to 7.4, neutralises
 content and labels every part as 7.2 says, reproducing
@@ -1488,7 +1520,13 @@ not a new meaning under the old one.
   journal is that per entry, with the base recorded so the loss is
   visible without a three-way diff.
 
-## 15. Changes from draft 0.1
+## 15. Changes since 0.2
+
+| what | sections | the change |
+|---|---|---|
+| agentkit#95 | 6.8, 11, 12 | A write in a turn whose block was left out is refused where the call is decided, before any person or reviewer is asked, and again by the writing tool when it runs, with one message; `memory_insert` is a writer as `memory_save`, `memory_patch` and `memory_forget` are. Draft 0.2 said nothing of a dropped block's writes, so a product refused them only when they ran, after asking a person about a call no answer could let through. The fixture `testdata/dropped.json` gives the cases. |
+
+## 16. Changes from draft 0.1
 
 | what | sections | the change |
 |---|---|---|
@@ -1503,11 +1541,11 @@ not a new meaning under the old one.
 | question 5 | 8.1 | An omitted memory part's `size` is agentsession's: the part's bytes and separator. |
 | question 6 | 8.4 | Writers MUST write `"entries":[]`; readers accept `null`. |
 | question 7 | 4.9 | Compaction deferred; a journal without its start, and a write record before it. |
-| question 8 | Motivation, 16 | This document stays here. |
+| question 8 | Motivation, 17 | This document stays here. |
 | security | 3.1, 7.2, 8.1, 10, Annex A | Stores follow no link; parts carry trust labels and content headings are neutralised; `memory_search` reads untrusted. |
 | review | 1, 3.1, 3.2, 3.5, 4.3, 6.1, 6.10, 7.6, 8.4, 8.6 | White space and lowercase defined; reads do not validate; the unjournalable file deferred to Annex A; one sequence rule; full schemas, `meta: null`, idempotence; element presence; `base: null`; redaction; fixtures. |
 
-## 16. Decisions
+## 17. Decisions
 
 Draft 0.1's open questions, as answered for draft 0.2:
 

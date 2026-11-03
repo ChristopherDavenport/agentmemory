@@ -1,0 +1,290 @@
+{
+  "scopes": [
+    "user"
+  ],
+  "read_scopes": [
+    "rules"
+  ],
+  "insert": [
+    "user"
+  ],
+  "entries": [
+    {
+      "scope": "user",
+      "name": "prefs",
+      "content": "hello world"
+    }
+  ],
+  "cases": [
+    {
+      "name": "memory_save in a turn whose block was left out",
+      "manifest": {
+        "entries": [],
+        "omitted": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11,
+            "reason": "block"
+          }
+        ]
+      },
+      "tool": "memory_save",
+      "args": {
+        "name": "prefs",
+        "content": "hello there"
+      },
+      "error": "the memory block is not shown this turn, so memory cannot be changed: a write could replace an entry you have not seen; memory_search still reads it"
+    },
+    {
+      "name": "memory_patch in a turn whose block was left out",
+      "manifest": {
+        "entries": [],
+        "omitted": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11,
+            "reason": "block"
+          }
+        ]
+      },
+      "tool": "memory_patch",
+      "args": {
+        "name": "prefs",
+        "old_text": "world",
+        "new_text": "there"
+      },
+      "error": "the memory block is not shown this turn, so memory cannot be changed: a write could replace an entry you have not seen; memory_search still reads it"
+    },
+    {
+      "name": "memory_forget in a turn whose block was left out",
+      "manifest": {
+        "entries": [],
+        "omitted": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11,
+            "reason": "block"
+          }
+        ]
+      },
+      "tool": "memory_forget",
+      "args": {
+        "name": "prefs"
+      },
+      "error": "the memory block is not shown this turn, so memory cannot be changed: a write could replace an entry you have not seen; memory_search still reads it"
+    },
+    {
+      "name": "memory_insert in a turn whose block was left out",
+      "manifest": {
+        "entries": [],
+        "omitted": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11,
+            "reason": "block"
+          }
+        ]
+      },
+      "tool": "memory_insert",
+      "args": {
+        "content": "a new note"
+      },
+      "error": "the memory block is not shown this turn, so memory cannot be changed: a write could replace an entry you have not seen; memory_search still reads it"
+    },
+    {
+      "name": "memory_save naming a read-only scope in a turn whose block was left out",
+      "manifest": {
+        "entries": [],
+        "omitted": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11,
+            "reason": "block"
+          }
+        ]
+      },
+      "tool": "memory_save",
+      "args": {
+        "scope": "rules",
+        "name": "prefs",
+        "content": "x"
+      },
+      "error": "the memory block is not shown this turn, so memory cannot be changed: a write could replace an entry you have not seen; memory_search still reads it"
+    },
+    {
+      "name": "memory_save with arguments its schema refuses in a turn whose block was left out",
+      "manifest": {
+        "entries": [],
+        "omitted": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11,
+            "reason": "block"
+          }
+        ]
+      },
+      "tool": "memory_save",
+      "args": {
+        "name": "prefs"
+      },
+      "error": "the memory block is not shown this turn, so memory cannot be changed: a write could replace an entry you have not seen; memory_search still reads it"
+    },
+    {
+      "name": "memory_search in a turn whose block was left out",
+      "manifest": {
+        "entries": [],
+        "omitted": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11,
+            "reason": "block"
+          }
+        ]
+      },
+      "tool": "memory_search",
+      "args": {
+        "query": "hello"
+      }
+    },
+    {
+      "name": "a tool that is not memory's",
+      "manifest": {
+        "entries": [],
+        "omitted": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11,
+            "reason": "block"
+          }
+        ]
+      },
+      "tool": "bash",
+      "args": {
+        "command": "ls"
+      }
+    },
+    {
+      "name": "memory_save in a turn whose block held the entry",
+      "manifest": {
+        "entries": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11
+          }
+        ],
+        "omitted": []
+      },
+      "tool": "memory_save",
+      "args": {
+        "name": "prefs",
+        "content": "hello there"
+      }
+    },
+    {
+      "name": "memory_patch in a turn whose block held the entry",
+      "manifest": {
+        "entries": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11
+          }
+        ],
+        "omitted": []
+      },
+      "tool": "memory_patch",
+      "args": {
+        "name": "prefs",
+        "old_text": "world",
+        "new_text": "there"
+      }
+    },
+    {
+      "name": "memory_forget in a turn whose block held the entry",
+      "manifest": {
+        "entries": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11
+          }
+        ],
+        "omitted": []
+      },
+      "tool": "memory_forget",
+      "args": {
+        "name": "prefs"
+      }
+    },
+    {
+      "name": "memory_insert in a turn whose block held the entry",
+      "manifest": {
+        "entries": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11
+          }
+        ],
+        "omitted": []
+      },
+      "tool": "memory_insert",
+      "args": {
+        "content": "a new note"
+      }
+    },
+    {
+      "name": "memory_save in a turn whose block left the entry out over its budget",
+      "manifest": {
+        "entries": [],
+        "omitted": [
+          {
+            "scope": "user",
+            "name": "prefs",
+            "hash": "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+            "bytes": 11,
+            "reason": "budget"
+          }
+        ]
+      },
+      "tool": "memory_save",
+      "args": {
+        "name": "prefs",
+        "content": "hello there"
+      }
+    },
+    {
+      "name": "memory_save in a turn whose block held nothing",
+      "manifest": {
+        "entries": [],
+        "omitted": []
+      },
+      "tool": "memory_save",
+      "args": {
+        "name": "prefs",
+        "content": "hello there"
+      }
+    }
+  ]
+}

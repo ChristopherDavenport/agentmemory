@@ -99,6 +99,22 @@ type Manifest struct {
 	Omitted []ManifestEntry `json:"omitted,omitempty"`
 }
 
+// Dropped reports whether m records a block the product left out
+// whole: it holds no entry, and lists at least one entry under Omitted,
+// every one with [OmitBlock]. A block left out over a store that held
+// nothing has the empty manifest, and Dropped is false for it.
+func (m Manifest) Dropped() bool {
+	if len(m.Entries) > 0 || len(m.Omitted) == 0 {
+		return false
+	}
+	for _, e := range m.Omitted {
+		if e.Reason != OmitBlock {
+			return false
+		}
+	}
+	return true
+}
+
 // MarshalJSON writes the manifest as a whole record: entries always as
 // an array, [] when there are none, which is what a reader in any
 // language expects, and omitted left out when empty.
