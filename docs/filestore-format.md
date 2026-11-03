@@ -4,8 +4,12 @@ Status: specified from the code at v0.0.9 and the fixes after it, and
 held to it by `filestore/format_test.go`, which reads the examples in
 this document and checks them against the package. A change to the
 format starts here, in the examples, and the test says what the code
-has to catch up on. Issue #12 asked for this document; it is not an
-RFC, and agentsession's `docs/rfcs/0001` is the shape if it becomes one.
+has to catch up on. Issue #12 asked for this document. It is Annex A of
+[RFC 0001: Agent Memory](rfcs/0001-agent-memory.md), and normative for
+a program that reads or writes the directory; the RFC defines the
+entry, the record and the lost-update rules this document applies to
+files, and a change here is a change to the RFC. It stays at this path
+because the test reads it here.
 
 The key words MUST, MUST NOT, SHOULD and MAY are to be read as in
 RFC 2119. They bind a writer of the directory other than the reference
@@ -317,7 +321,9 @@ at record 2's hash, each wrote whole, record 3 landed first, and record
 4 has `prev` naming record 2 where its `replaced` names record 3.
 `LostUpdates` reads the journal through `Journal` and stops at the
 first damaged line it yields, so over a journal with damage it reports
-the forks before the damage.
+the forks before the damage. RFC 0001 section 4.7 states the rule #46
+and #49 replace this with: a fork is judged by its own `prev` and
+`replaced`, and a reader goes on past damage.
 
 ### Tombstones
 

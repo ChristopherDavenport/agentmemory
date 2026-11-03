@@ -5,6 +5,22 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Added
+
+- RFC 0001, agent memory
+  (`docs/rfcs/0001-agent-memory.md`), draft 0.1. It states the contract
+  as v0.0.10 holds it in language-neutral terms: entries, scopes and
+  names, the store and its conditional writes, the journal with its
+  sequence, chain, forks and damage, the tools, the rendered block with
+  its parts, budget and manifest, and the `agentmemory:render` and
+  `agentmemory:write` session records with the manifest delta and fold.
+  The rules #46, #47, #48 and #49 will add are marked "Changes" with
+  their issue, the Go binding is a table, and an appendix lists the
+  places the code and the documents disagree. `docs/filestore-format.md`
+  is its Annex A and stays at its path.
+
 ## v0.0.10 - 2026-10-02
 
 ### Added

@@ -19,6 +19,13 @@ the loop is never imported here.
   search.
 - `storetest` is the conformance suite every store passes.
 
+The contract, in terms a program in any language can implement, is
+[RFC 0001: Agent Memory](docs/rfcs/0001-agent-memory.md): entries and
+scopes, the store and its conditional writes, the journal and lost
+updates, the tools, the rendered block and its manifest, and the
+`agentmemory:render` and `agentmemory:write` session records. The
+filestore format, `docs/filestore-format.md`, is its Annex A.
+
 ## Install
 
 ```sh
