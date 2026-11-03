@@ -205,7 +205,8 @@ added: `len(EntryPart(e, bound).Text) + len(PartSeparator)`.
 
 ## The tools
 
-`Tools(store, scopes)` returns four tools restricted to the scopes the
+`Tools(store, scopes)` returns four tools, five with `WithInsert`,
+restricted to the scopes the
 product allows. The list is in each tool's schema as an enum on
 `scope`, not only in its description, and with more than one scope
 `scope` is required, so a call that omits it is an error the model can
@@ -220,6 +221,18 @@ a call names no scope, so what the block omitted from them is
 reachable, and the three writers refuse them with `scope <name> is
 read-only`, which their descriptions state.
 
+`WithFixedNames(scope, names...)` fixes a scope's entry names, as
+Letta's `persona` and `human` blocks are: `memory_save` refuses any
+other name there and `memory_forget` refuses those, each saying which
+entries are fixed. `WithInsert(scopes...)` adds `memory_insert`, which
+keeps a passage under a name the tool gives it, `InsertName`: the UTC
+time to the second and the first eight hex digits of the content's
+hash, `20261102-194400-1a2b3c4d`, with `-2`, `-3` and on when that name
+is taken. It creates with `IfHash("")`, so an insert never overwrites,
+and the result names the entry. Names sort by time, and the block
+renders in name order, so under the budget the newest inserts are the
+ones left out.
+
 The tools carry `agenttool.Annotations`, so a host can approve the
 search without asking: `memory_search` is read-only, `memory_save` and
 `memory_forget` destructive, `memory_patch` neither, and none is
@@ -231,6 +244,7 @@ open-world.
 | `memory_patch` | `scope`, `name`, `old_text`, `new_text` | replace one exact occurrence |
 | `memory_forget` | `scope`, `name` | write a tombstone |
 | `memory_search` | `query`, `scopes`, `limit` | find entries the block omits |
+| `memory_insert` | `scope`, `content`, `meta` | create under a name the tool gives |
 
 Each write's result carries the journal record it produced as
 `WriteRecord` in `agenttool.Result.Details`, which the model never

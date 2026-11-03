@@ -28,6 +28,16 @@ versions may break the API.
   agentsession means it, the bytes the part would have added, rather
   than the content's size.
 
+- `WithFixedNames(scope, names...)`: a scope whose entry names the
+  product fixed, where `memory_save` refuses any other name and
+  `memory_forget` refuses those, each error naming the fixed entries,
+  and the writers' descriptions say so (#48).
+- `WithInsert(scopes...)` adds `memory_insert` (`InsertTool`), which
+  creates an entry under a name it gives, `InsertName(at, content, n)`:
+  `YYYYMMDD-HHMMSS-<8 hex of the content hash>`, then `-2`, `-3` while
+  the name is taken, each attempt a put with `IfHash("")`, so an insert
+  never overwrites. The result and its `WriteRecord` name the entry
+  (#48).
 - `LastSeqer`, an optional store interface answering the journal's
   last sequence number without reading it, and `LastSeq(ctx, s)`,
   which falls back to reading the journal. The in-memory store,
