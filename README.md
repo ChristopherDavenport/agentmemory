@@ -150,7 +150,14 @@ whole record and the delta on each manifest the fold holds.
 
 `Render` produces the block: a title, one section per scope, one
 heading per entry with its size and the limit and its description, then
-the content verbatim, and last a line with the counts and the budget.
+the content, and last a line with the counts and the budget. The
+content is verbatim but for its headings: memory is text a model wrote,
+possibly from text an attacker wrote, so a heading of level one to three
+inside it is written at level four and a setext underline is escaped,
+outside code fences, and an entry cannot open a scope or an entry of
+its own. Each part carries `Trust`, agentsession's labels: an entry is
+`untrusted` unless `WithScopeTrust` says a scope is people's alone, and
+`memory_search` declares the same of its output (`WithSearchReads`).
 `MaxTotalBytes` (32 KiB by default) bounds the block itself, headings,
 descriptions and that last line included, and the line reports the
 block's own size. The block never comes out over it: a bound under one
