@@ -201,3 +201,29 @@ func TestLostUpdatesWithoutTheStart(t *testing.T) {
 		t.Errorf("LostUpdates = %v, want [7:fork]", got)
 	}
 }
+
+// TestLostUpdatesWithoutTheStartAfterDamage pins that a damaged first
+// line does not hide a removed start: the first record read is the
+// journal's first only when its seq follows the damaged lines before it.
+func TestLostUpdatesWithoutTheStartAfterDamage(t *testing.T) {
+	h := Hash
+	tests := []struct {
+		name  string
+		steps []journalStep
+		want  string
+	}{
+		{"start removed", []journalStep{damage(1), rec(5, "a", "five", h("four"), h("four")), rec(6, "b", "bee", h("x"), h("x"))}, "[]"},
+		{"start kept", []journalStep{damage(1), rec(2, "a", "two", h("one"), h("one"))}, "[2:break,damage]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lost, err := LostUpdates(context.Background(), journalStore{MemStore: NewMemStore(), steps: tt.steps}, 0)
+			if err == nil {
+				t.Error("the damage was not returned")
+			}
+			if got := fmt.Sprint(describeLost(lost)); got != tt.want {
+				t.Errorf("LostUpdates = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}

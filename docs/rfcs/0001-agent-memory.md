@@ -518,11 +518,14 @@ tombstone.
 > reports a break in the chain only for an entry whose earlier record
 > the window holds.
 
-A window read from 0 over a journal whose first record is 1 holds every
-entry's start, which is no live entry, so an entry's first record there
-whose `replaced` is not empty is a break. A window from a later cursor,
-or over a journal whose start is gone (4.9), holds no start, and judges
-an entry's first record in it as a fork alone.
+A window read from 0 over a journal that keeps its start holds every
+entry's start, which is no live entry. A journal keeps its start when
+the `seq` of the first record a reader can read is at most one more
+than the number of records before it the reader could not read: 1 for
+a whole journal, 2 after one damaged line. In such a window an entry's
+first record whose `replaced` is not empty is a break. A window from a
+later cursor, or over a journal whose start is gone (4.9), holds no
+start, and judges an entry's first record in it as a fork alone.
 
 For each record reported, a reader gives:
 

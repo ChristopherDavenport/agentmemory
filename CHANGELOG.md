@@ -146,7 +146,8 @@ versions may break the API.
   the window holds the entry's earlier record; `Over` is that record's
   state, or `Replaced` when the window holds none. Read from 0, the
   window holds every entry's start only when the journal's first record
-  is 1; a journal whose start was removed is read as from a cursor.
+  it can read is 1, or follows the damaged lines before it; a journal
+  whose start was removed is read as from a cursor.
 - **Breaking:** a read of a scope or a name that is not a name is
   refused with `ErrInvalid` by every store. `NewMemStore` listed
   nothing for one and answered `ErrNotFound`; filestore and sqlite

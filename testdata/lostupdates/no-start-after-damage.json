@@ -1,0 +1,20 @@
+{
+  "journal": [
+    "{\"seq\":",
+    "{\"seq\":5,\"entry\":{\"scope\":\"user\",\"name\":\"a\",\"content\":\"five\",\"hash\":\"sha256:222b0bd51fcef7e65c2e62db2ed65457013bab56be6fafeb19ee11d453153c80\",\"updated\":\"0001-01-01T00:00:00Z\"},\"prev\":\"sha256:04efaf080f5a3e74e1c29d1ca6a48569382cbbcd324e8d59d2b83ef21c039f00\",\"replaced\":\"sha256:04efaf080f5a3e74e1c29d1ca6a48569382cbbcd324e8d59d2b83ef21c039f00\",\"at\":\"0001-01-01T00:00:00Z\"}",
+    "{\"seq\":6,\"entry\":{\"scope\":\"user\",\"name\":\"a\",\"content\":\"six\",\"hash\":\"sha256:44778d82365e4af681c40d5f0eef5cf6f5899d3f0ac335050a7ed6779cf3f674\",\"updated\":\"0001-01-01T00:00:00Z\"},\"prev\":\"sha256:7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed\",\"replaced\":\"sha256:222b0bd51fcef7e65c2e62db2ed65457013bab56be6fafeb19ee11d453153c80\",\"at\":\"0001-01-01T00:00:00Z\"}"
+  ],
+  "reads": [
+    {
+      "after": 0,
+      "lost": [
+        {
+          "seq": 6,
+          "over": "sha256:222b0bd51fcef7e65c2e62db2ed65457013bab56be6fafeb19ee11d453153c80",
+          "fork": true
+        }
+      ],
+      "damaged": 1
+    }
+  ]
+}

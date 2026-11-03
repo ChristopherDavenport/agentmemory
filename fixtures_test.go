@@ -177,6 +177,11 @@ func lostCases() map[string]struct {
 			rec(6, "a", "six", h("five"), h("five")),
 			rec(7, "a", "seven", h("five"), h("six")),
 		}, []uint64{0, 5}},
+		"no-start-after-damage": {[]journalStep{
+			damage(1),
+			rec(5, "a", "five", h("four"), h("four")),
+			rec(6, "a", "six", h("one"), h("five")),
+		}, []uint64{0}},
 		"tombstone-and-recreate": {[]journalStep{
 			rec(1, "a", "one", "", ""),
 			{c: Change{Seq: 2, Entry: Entry{Scope: "user", Name: "a", Content: "one", Hash: h("one"), Deleted: true}, Prev: h("one"), Replaced: h("one")}},

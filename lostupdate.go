@@ -49,8 +49,9 @@ type LostUpdate struct {
 //
 // The cursor is [Store.Journal]'s: 0 reads the whole journal, and holds
 // the start of every entry, which is no live entry, when the journal's
-// first record is 1; a later number, or a journal whose start was
-// removed, reads from there, and an entry's first record in that window
+// first record it can read is 1, or follows the damaged lines before
+// it; a later number, or a journal whose start was removed, reads from
+// there, and an entry's first record in that window
 // has nothing to be a break against, so it is judged as a fork alone.
 //
 // A record the journal cannot read does not stop the read: LostUpdates
@@ -77,7 +78,9 @@ func LostUpdates(ctx context.Context, s Store, after uint64) ([]LostUpdate, erro
 			damage++
 			continue
 		}
-		if first && c.Seq > 1 && damage == 0 {
+		// The journal's first record is 1, or follows the damaged lines
+		// before it; a later one means the start was removed.
+		if first && c.Seq > uint64(damage)+1 {
 			start = false
 		}
 		first = false
