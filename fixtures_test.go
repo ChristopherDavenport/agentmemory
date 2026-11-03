@@ -323,6 +323,13 @@ func foldCases() map[string][]foldStep {
 			{Note: "a drops the block whole", Record: rec(dropped.RecordSince(a3))},
 			{Note: "back to a3 on the dropped manifest", Record: rec(a3.RecordSince(dropped))},
 		},
+		"left-out": {
+			{Note: "a block left out before the flag: every entry omitted for the block", Record: rec(dropped.Record())},
+			{Note: "the same block with the flag: a delta that keeps every element and sets it", Record: rec(dropped.LeaveOut().RecordSince(dropped))},
+			{Note: "back without the flag: a delta that keeps every element and does not set it", Record: rec(dropped.RecordSince(dropped.LeaveOut()))},
+			{Note: "a block left out over an empty store: the flag tells it from a block shown empty", Record: rec(Manifest{}.LeaveOut().Record())},
+			{Note: "the block shown empty, whole", Record: rec(Manifest{}.RecordSince(Manifest{}.LeaveOut()))},
+		},
 		"refusals": {
 			{Note: "a delta on the empty manifest before anything is folded", Record: raw(`{"base":"` + empty + `","hash":"` + b.Hash() + `","entries":[` + jsonOf(b.Entries[0]) + `]}`)},
 			{Note: "a delta on a base no reader holds", Record: raw(`{"base":"sha256:0000000000000000000000000000000000000000000000000000000000000000","hash":"` + empty + `"}`)},
@@ -652,11 +659,14 @@ type droppedFixture struct {
 	Insert     []Scope          `json:"insert"`
 	Entries    []renderInputRow `json:"entries"`
 	Cases      []struct {
-		Name     string          `json:"name"`
-		Manifest Manifest        `json:"manifest"`
-		Tool     string          `json:"tool"`
-		Args     json.RawMessage `json:"args"`
-		Error    string          `json:"error"`
+		Name string `json:"name"`
+		// Entries, when present, is the store this case starts from in
+		// place of the fixture's.
+		Entries  *[]renderInputRow `json:"entries"`
+		Manifest Manifest          `json:"manifest"`
+		Tool     string            `json:"tool"`
+		Args     json.RawMessage   `json:"args"`
+		Error    string            `json:"error"`
 	} `json:"cases"`
 }
 
@@ -675,7 +685,11 @@ func TestDroppedFixture(t *testing.T) {
 		t.Run(c.Name, func(t *testing.T) {
 			ctx := context.Background()
 			store := NewMemStore()
-			for _, e := range fx.Entries {
+			entries := fx.Entries
+			if c.Entries != nil {
+				entries = *c.Entries
+			}
+			for _, e := range entries {
 				if _, err := store.Put(ctx, Entry{Scope: e.Scope, Name: e.Name, Content: e.Content, Meta: e.Meta}); err != nil {
 					t.Fatal(err)
 				}

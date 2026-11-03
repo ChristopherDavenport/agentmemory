@@ -276,7 +276,10 @@ instruction budget runs out, withholds the writers (`WriteTools()`)
 from that request and refuses a call of one where it decides the call,
 before its policy asks anyone: `CheckWrite(manifest, tool)` returns
 `ErrBlockDropped` when the manifest says the block was left out whole
-(`Manifest.Dropped`). Under `WithRendered` the writers refuse such a
+(`Manifest.Dropped`). The product records `Manifest.LeaveOut()` of the
+manifest it would have shown, which sets `LeftOut`, the record's
+`dropped`, so a block left out over an empty store is told from one
+shown empty. Under `WithRendered` the writers refuse such a
 call again when it runs, before anything else is checked, for a call
 decided before the block was left out.
 

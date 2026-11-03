@@ -11,8 +11,8 @@ versions may break the API.
 
 - A write in a turn whose block was left out is refused before anyone
   is asked (agentkit#95). `Manifest.Dropped` reports a manifest that
-  records a block left out whole (no entries, every omitted entry with
-  `OmitBlock`); `WriteTools()` names the writers, `memory_save`,
+  records a block left out whole (`LeftOut`, or, for a record written
+  before it, no entries and every omitted entry with `OmitBlock`); `WriteTools()` names the writers, `memory_save`,
   `memory_patch`, `memory_forget` and `memory_insert`; and
   `CheckWrite(manifest, tool)` returns `ErrBlockDropped` for a writer's
   call under such a manifest, for a product's decision hook to refuse
@@ -28,8 +28,21 @@ versions may break the API.
   are renumbered (Changes from draft 0.1 is 16, Decisions 17).
   `testdata/dropped.json` is its fixture.
 
+- `Manifest.LeftOut`, the record's `dropped`, says the product left
+  the whole block out, and `Manifest.LeaveOut()` builds that manifest
+  from the one the block would have shown: every entry and omission
+  under `Omitted` with `OmitBlock`, and the flag set. The whole record
+  and a delta carry `dropped` when it is set, a delta its own and never
+  its base's, and `Manifest.Hash` ends with `x block\n` then, so a
+  block left out over an empty store hashes apart from one shown empty
+  and is recorded. A manifest without the flag records and hashes as
+  before. `testdata/manifest/left-out.json` folds it.
+
 ### Changed
 
+- A writer reads `WithRendered`'s manifest once per call: the refusal
+  of a write in a turn whose block was left out and the base
+  `memory_save` takes come from that one read.
 - Under `WithRendered`, every writer refuses a call with
   `ErrBlockDropped`, before the read-only scope check and the schema
   check and without writing, when the manifest the product returns

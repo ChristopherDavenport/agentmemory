@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1377,4 +1378,82 @@ func TestManifestFold(t *testing.T) {
 	if g.Manifest().Entries[0].Name == "changed" {
 		t.Error("Manifest returned the fold's own slice")
 	}
+}
+
+// A manifest records a block left out whole with a flag of its own, so
+// a block left out over a store that held nothing is told from one
+// shown with nothing in it: the two hash apart, so a product records
+// the drop, and a reader reads the flag from the whole record and from
+// a delta, which carries its own and never its base's.
+func TestManifestLeftOut(t *testing.T) {
+	empty := Manifest{}
+	gone := empty.LeaveOut()
+	if !gone.LeftOut || !gone.Dropped() {
+		t.Errorf("LeaveOut of the empty manifest = %+v, Dropped %v", gone, gone.Dropped())
+	}
+	if gone.Hash() == empty.Hash() || gone.Hash() != Hash("x block\n") {
+		t.Errorf("hash of the empty block left out = %s, want %s", gone.Hash(), Hash("x block\n"))
+	}
+	if _, data := gone.Record(); string(data) != `{"entries":[],"dropped":true}` {
+		t.Errorf("record = %s", data)
+	}
+
+	held := Manifest{
+		Entries: []ManifestEntry{{Scope: "user", Name: "a", Hash: Hash("a"), Bytes: 1}},
+		Omitted: []ManifestEntry{{Scope: "user", Name: "b", Hash: Hash("b"), Bytes: 1, Reason: OmitBudget}},
+	}
+	before := held.Hash()
+	out := held.LeaveOut()
+	want := Manifest{
+		Omitted: []ManifestEntry{
+			{Scope: "user", Name: "a", Hash: Hash("a"), Bytes: 1, Reason: OmitBlock},
+			{Scope: "user", Name: "b", Hash: Hash("b"), Bytes: 1, Reason: OmitBlock},
+		},
+		LeftOut: true,
+	}
+	if !reflect.DeepEqual(out, want) {
+		t.Errorf("LeaveOut = %+v\nwant %+v", out, want)
+	}
+	if held.Hash() != before || held.Entries[0].Reason != "" {
+		t.Errorf("LeaveOut changed the manifest it was given: %+v", held)
+	}
+	// The hash of a manifest without the flag is what it was.
+	if got, want := held.Hash(), Hash("+ user/a "+Hash("a")+" 1\n- user/b "+Hash("b")+" 1 budget\n"); got != want {
+		t.Errorf("hash = %s, want %s", got, want)
+	}
+
+	// A whole record reads the flag back.
+	_, data := out.Record()
+	back, err := ApplyManifestRecord(Manifest{}, data)
+	if err != nil || !back.LeftOut || back.Hash() != out.Hash() {
+		t.Errorf("ApplyManifestRecord(%s) = %+v, %v", data, back, err)
+	}
+	// A delta carries its own flag: set onto a manifest without it...
+	_, delta := gone.RecordSince(empty)
+	if !bytes.Contains(delta, []byte(`"dropped":true`)) {
+		t.Errorf("delta onto the empty block left out = %s", delta)
+	}
+	if got, err := ApplyManifestRecord(empty, delta); err != nil || !got.LeftOut {
+		t.Errorf("delta onto the empty block left out folds to %+v, %v", got, err)
+	}
+	// ...and unset from one with it.
+	_, delta = empty.RecordSince(gone)
+	if got, err := ApplyManifestRecord(gone, delta); err != nil || got.LeftOut || got.Hash() != empty.Hash() {
+		t.Errorf("delta from the block left out back to the empty one (%s) folds to %+v, %v", delta, got, err)
+	}
+	var f ManifestFold
+	for _, rec := range [][]byte{data, mustDelta(gone, out), mustDelta(empty, gone)} {
+		if err := f.Apply(rec); err != nil {
+			t.Fatalf("fold %s: %v", rec, err)
+		}
+	}
+	if got := f.Manifest(); got.LeftOut || got.Hash() != empty.Hash() {
+		t.Errorf("fold ends with %+v", got)
+	}
+}
+
+// mustDelta is next's record on prev, a delta or whole.
+func mustDelta(next, prev Manifest) []byte {
+	_, data := next.RecordSince(prev)
+	return data
 }

@@ -275,10 +275,49 @@
       }
     },
     {
-      "name": "memory_save in a turn whose block held nothing",
+      "name": "memory_save in a turn whose block was shown holding nothing",
       "manifest": {
         "entries": [],
         "omitted": []
+      },
+      "tool": "memory_save",
+      "args": {
+        "name": "prefs",
+        "content": "hello there"
+      }
+    },
+    {
+      "name": "memory_save over an empty store in a turn whose block was left out",
+      "entries": [],
+      "manifest": {
+        "entries": [],
+        "dropped": true
+      },
+      "tool": "memory_save",
+      "args": {
+        "name": "prefs",
+        "content": "hello there"
+      },
+      "error": "the memory block is not shown this turn, so memory cannot be changed: a write could replace an entry you have not seen; memory_search still reads it"
+    },
+    {
+      "name": "memory_insert over an empty store in a turn whose block was left out",
+      "entries": [],
+      "manifest": {
+        "entries": [],
+        "dropped": true
+      },
+      "tool": "memory_insert",
+      "args": {
+        "content": "a new note"
+      },
+      "error": "the memory block is not shown this turn, so memory cannot be changed: a write could replace an entry you have not seen; memory_search still reads it"
+    },
+    {
+      "name": "memory_save over an empty store in a turn whose block was shown",
+      "entries": [],
+      "manifest": {
+        "entries": []
       },
       "tool": "memory_save",
       "args": {

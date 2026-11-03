@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1107,5 +1108,41 @@ func TestSaveCreateRace(t *testing.T) {
 	lost, err := LostUpdates(ctx, bare, 0)
 	if err != nil || len(lost) != 1 || lost[0].Change.Prev != "" || lost[0].Change.Replaced != Hash("Theirs.") {
 		t.Errorf("LostUpdates after a save over a concurrent create = %+v, %v; want the fork", lost, err)
+	}
+}
+
+// A writer reads what the block showed once per call, and the refusal
+// of a write in a turn whose block was left out and the base a save
+// takes are that one read: a product's manifest that moves between two
+// reads in one call cannot let a save past the refusal and then base it
+// on a block the model was not shown, nor the reverse.
+func TestWritersReadTheManifestOnce(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "prefs", Content: "hello world"}); err != nil {
+		t.Fatal(err)
+	}
+	_, man, err := Render(ctx, store, []Scope{"user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reads atomic.Int32
+	tools := Tools(store, []Scope{"user"}, WithInsert("user"), WithRendered(func() Manifest {
+		reads.Add(1)
+		return man
+	}))
+	for _, c := range []struct{ tool, args string }{
+		{SaveTool, `{"name":"prefs","content":"hello there"}`},
+		{PatchTool, `{"name":"prefs","old_text":"there","new_text":"you"}`},
+		{InsertTool, `{"content":"a note"}`},
+		{ForgetTool, `{"name":"prefs"}`},
+	} {
+		reads.Store(0)
+		if _, err := call(t, tools, c.tool, c.args); err != nil {
+			t.Fatalf("%s: %v", c.tool, err)
+		}
+		if n := reads.Load(); n != 1 {
+			t.Errorf("%s read the manifest %d times, want 1", c.tool, n)
+		}
 	}
 }
