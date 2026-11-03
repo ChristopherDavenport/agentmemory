@@ -121,12 +121,39 @@ nothing outside the directory through any path it opens:
   derived state and is rebuilt; an `INDEX.md` that is a link is
   replaced on the next write.
 
+- A file with more than one hard link, where the platform reports a
+  link count, is treated as a link: an entry file is not an entry, and a
+  journal is refused. A second name for a file outside the directory
+  shares that file's identity, so no comparison of the two can tell it
+  from the store's own. The lock is the exception: a takeover links it
+  to its claim (*The lock*).
+- A FIFO, a socket or a device where a file is expected is refused, and
+  the reference opens files without blocking, so one swapped in after
+  the check cannot hang a writer that holds the lock.
+
 The reference opens every path through an `os.Root` on the directory,
 so nothing resolves outside it, and checks each file and scope
 directory with `Lstat`, comparing the file it opened with the name's
-own `Lstat`, so a link inside it is not followed either. A committed
-`project/x.md` that points at `~/.ssh/id_ed25519` is therefore never
-read, shown to a model or copied into the journal.
+own `Lstat` and checking the opened file is regular, so a link inside
+it is not followed either. A committed `project/x.md` that points at
+`~/.ssh/id_ed25519` is therefore never read, shown to a model or copied
+into the journal.
+
+What the rule does not cover:
+
+- The directory itself is the operator's choice, named when the store
+  is opened, and is followed: a store opened at a link to a directory
+  is the directory the link names. Only what is inside it is held to
+  this section.
+- A scope directory swapped for a link between the check and the open
+  is followed within the directory, never outside it, since the root
+  confines every open: the worst it does is read another scope's file.
+  Closing the race needs an open that refuses a link in any component,
+  which the standard library offers on no platform the reference
+  supports alike.
+- On Windows a junction reads as an irregular file, and is refused as a
+  link is; Windows reports no link count through the standard library,
+  so hard links are not refused there.
 
 ## Entry files
 

@@ -72,24 +72,38 @@ func isDir(r *os.Root, name string) (bool, error) {
 }
 
 // openRegular opens name in r with flag, and refuses it, with
-// [errNotRegular], unless name is a regular file and not a link: the
-// name's own Lstat must be the file opened, so a link swapped in between
-// the check and the open is caught too.
+// [errNotRegular], unless name is a regular file, not a link and, where
+// the platform reports it, not a hard link: the file opened must be
+// regular, the name's own Lstat must be that file, so a link swapped in
+// between the check and the open is caught too, and its link count must
+// be one, so a second name for a file outside the store, which shares
+// its identity, is not read or appended to. The open does not block, so
+// a FIFO swapped in cannot hang a writer holding the lock.
 func openRegular(r *os.Root, name string, flag int, perm fs.FileMode) (*os.File, error) {
-	if info, err := r.Lstat(name); err == nil && !info.Mode().IsRegular() {
+	if info, err := r.Lstat(name); err == nil && !regularAlone(info) {
 		return nil, fmt.Errorf("filestore: %s: %w", name, errNotRegular)
 	}
-	f, err := r.OpenFile(name, flag, perm)
+	f, err := r.OpenFile(name, flag|openNonblock, perm)
 	if err != nil {
 		return nil, err
 	}
 	opened, ferr := f.Stat()
 	named, lerr := r.Lstat(name)
-	if ferr != nil || lerr != nil || !named.Mode().IsRegular() || !os.SameFile(opened, named) {
+	if ferr != nil || lerr != nil || !regularAlone(opened) || !named.Mode().IsRegular() || !os.SameFile(opened, named) {
 		f.Close()
 		return nil, fmt.Errorf("filestore: %s: %w", name, errNotRegular)
 	}
 	return f, nil
+}
+
+// regularAlone reports whether info is a regular file with no other
+// name, as far as the platform says.
+func regularAlone(info fs.FileInfo) bool {
+	if !info.Mode().IsRegular() {
+		return false
+	}
+	n, ok := linkCount(info)
+	return !ok || n <= 1
 }
 
 // readRegular reads name in r whole, with the file's information, as
@@ -189,21 +203,23 @@ func (s *Store) openFile(name string, flag int, perm fs.FileMode) (*os.File, err
 
 // readNoFollow reads the file at path whole, and refuses it, with
 // [errNotRegular], unless path is a regular file and not a link. It is
-// for the lock and its takeover claims, which are named by path.
+// for the lock and its takeover claims, which are named by path; a
+// takeover links the lock to its claim, so a second name is the lock's
+// own and is not refused here.
 func readNoFollow(path string) ([]byte, error) {
 	if info, err := os.Lstat(path); err != nil {
 		return nil, err
 	} else if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("filestore: %s: %w", path, errNotRegular)
 	}
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	opened, ferr := f.Stat()
 	named, lerr := os.Lstat(path)
-	if ferr != nil || lerr != nil || !named.Mode().IsRegular() || !os.SameFile(opened, named) {
+	if ferr != nil || lerr != nil || !opened.Mode().IsRegular() || !named.Mode().IsRegular() || !os.SameFile(opened, named) {
 		return nil, fmt.Errorf("filestore: %s: %w", path, errNotRegular)
 	}
 	return io.ReadAll(f)

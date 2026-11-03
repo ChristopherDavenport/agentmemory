@@ -788,6 +788,44 @@ func TestNoLinks(t *testing.T) {
 		}
 		unchanged(t)
 	})
+	t.Run("hard links", func(t *testing.T) {
+		_, secret, unchanged := outsideDir(t)
+		s := open(t)
+		hardlink := func(t *testing.T, target, link string) {
+			t.Helper()
+			if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(target, link); err != nil {
+				t.Skipf("no hard links here: %v", err)
+			}
+		}
+		hardlink(t, secret, filepath.Join(s.Dir(), "project", "x.md"))
+		if info, _ := os.Stat(secret); info != nil {
+			if n, ok := linkCount(info); !ok || n < 2 {
+				t.Skip("the platform does not report link counts")
+			}
+		}
+		if _, err := s.Get(ctx, "project", "x"); !errors.Is(err, agentmemory.ErrNotFound) {
+			t.Errorf("Get(project/x) through a hard link = %v, want ErrNotFound", err)
+		}
+		if es, _ := s.List(ctx, "project"); len(es) != 0 {
+			t.Errorf("List(project) reads a hard link: %+v", es)
+		}
+		if changes, err := s.Reconcile(ctx); err != nil || len(changes) != 0 {
+			t.Errorf("Reconcile = %+v, %v; want nothing", changes, err)
+		}
+		if err := os.Remove(filepath.Join(s.Dir(), "project", "x.md")); err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(s.journalPath())
+		os.Remove(filepath.Join(s.Dir(), stateName))
+		hardlink(t, secret, s.journalPath())
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "a", Content: "x"}); err == nil {
+			t.Error("a write appended to a hard-linked journal")
+		}
+		unchanged(t)
+	})
 	t.Run("journal", func(t *testing.T) {
 		_, secret, unchanged := outsideDir(t)
 		s := open(t)

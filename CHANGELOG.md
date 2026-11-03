@@ -95,7 +95,13 @@ versions may break the API.
   with an error by every read, write, render and `Reconcile`, rather
   than read as empty, which would have tombstoned its entries; a
   journal or lock that is a link is refused; a cursor that is a link is
-  rebuilt. Annex A states it under
+  rebuilt. A file with more than one hard link is treated as a link
+  where the platform reports link counts, a non-regular file is refused
+  after the open as well as before it, and files are opened without
+  blocking, so a FIFO swapped in cannot hang a writer under the lock.
+  Annex A names what the rule does not cover: the store's own
+  directory, which is followed; a scope swapped for a link inside the
+  root mid-read; Windows hard links. Annex A states it under
   *Links*.
 - Memory content is untrusted input to the model, and the block says
   so. Every `Part` carries `Trust`, agentsession's trust form: the
