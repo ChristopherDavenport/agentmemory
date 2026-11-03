@@ -24,6 +24,39 @@ const (
 	InsertTool = "memory_insert"
 )
 
+// WriteTools returns the names of the tools that write memory:
+// memory_save, memory_patch, memory_forget and memory_insert. Every
+// tool of [Tools] but memory_search is one. A product that leaves the
+// block out of a request withholds these from it and refuses a call
+// of one, see [CheckWrite].
+func WriteTools() []string {
+	return []string{SaveTool, PatchTool, ForgetTool, InsertTool}
+}
+
+// ErrBlockDropped is the refusal of a write in a request the product
+// left the block out of: the model was shown no memory, so a write it
+// composed could replace an entry it never saw. The text is what the
+// model reads, so it names memory_search, which still reads memory.
+var ErrBlockDropped = errors.New("the memory block is not shown this turn, so memory cannot be changed: a write could replace an entry you have not seen; " + SearchTool + " still reads it")
+
+// CheckWrite returns [ErrBlockDropped] for a call of one of the
+// [WriteTools] when m records a block left out whole, [Manifest.Dropped],
+// and nil for any other call. A product calls it where it decides a
+// call, before its policy asks anyone, so a person or a reviewer is
+// never asked about a write that will be refused whatever they answer;
+// the tools refuse the same call again when it runs, for a call decided
+// before the block was left out (see [WithRendered]).
+//
+// A product that leaves the block out records [Manifest.LeaveOut] of
+// the manifest it would have shown, which says so even when the store
+// held nothing.
+func CheckWrite(m Manifest, tool string) error {
+	if m.Dropped() && slices.Contains(WriteTools(), tool) {
+		return ErrBlockDropped
+	}
+	return nil
+}
+
 // Defaults for memory_search. A search result is appended to the
 // transcript once and stays for the rest of the session, unlike the
 // rendered block, so both are low against the render budget.
@@ -117,6 +150,14 @@ func WithSearchBytes(n int) ToolOption {
 // than on the model's own first save, and reported as a lost update.
 // memory_patch is unchanged: its edit is anchored in the stored text,
 // so it merges with a concurrent write or fails when the anchor is gone.
+//
+// When the manifest records a block left out whole, [Manifest.Dropped],
+// the model was shown no memory, and every writer, memory_save,
+// memory_patch, memory_forget and memory_insert, refuses the call with
+// [ErrBlockDropped] before anything else is checked. That is the
+// refusal at execution, for a call decided before the block was left
+// out; a product refuses the call where it decides it, with
+// [CheckWrite], so nobody is asked about it first.
 func WithRendered(fn func() Manifest) ToolOption {
 	return func(o *toolOptions) { o.rendered = fn }
 }
@@ -352,16 +393,16 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	// annotations, which a host such as mcpserver reads as none at all
 	// and MCP then defaults to destructive and open-world.
 	out := []agenttool.Tool{
-		tool(SaveTool, t.saveDescription(), t.save, scopes, o.readScopes, agenttool.Annotations{Title: "Save memory entry", Destructive: true}, agenttool.ReplayUnknown, nil),
-		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, agenttool.Annotations{Title: "Edit memory entry"}, agenttool.ReplayUnknown, nil),
-		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}, agenttool.ReplayUnknown, nil),
-		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}, agenttool.ReplaySafe, &agenttool.Flow{Reads: t.searchReads()}, t.unsupported()...),
+		tool(SaveTool, t.saveDescription(), t.save, scopes, o.readScopes, t.read, agenttool.Annotations{Title: "Save memory entry", Destructive: true}, agenttool.ReplayUnknown, nil),
+		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, t.read, agenttool.Annotations{Title: "Edit memory entry"}, agenttool.ReplayUnknown, nil),
+		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, t.read, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}, agenttool.ReplayUnknown, nil),
+		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}, agenttool.ReplaySafe, &agenttool.Flow{Reads: t.searchReads()}, t.unsupported()...),
 	}
 	if len(o.insert) > 0 {
 		// An insert never overwrites, so it is not destructive; run
 		// again it inserts again, so it is neither idempotent nor safe
 		// to replay.
-		out = append(out, tool(InsertTool, t.insertDescription(), t.insertEntry, o.insert, o.readScopes, agenttool.Annotations{Title: "Insert memory entry"}, agenttool.ReplayUnknown, nil))
+		out = append(out, tool(InsertTool, t.insertDescription(), t.insertEntry, o.insert, o.readScopes, t.read, agenttool.Annotations{Title: "Insert memory entry"}, agenttool.ReplayUnknown, nil))
 	}
 	return out
 }
@@ -384,9 +425,14 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 // readOnly is checked first, so the model is told the scope is
 // read-only, as the description says.
 //
+// refuse, a writer's, is checked before both: a write in a turn whose
+// block was left out is refused whatever its arguments, since the
+// model composed it from nothing it was shown. It returns the context
+// the call runs under, which carries what it read.
+//
 // replay is the tool's claim for every call, forwarded through the
 // wrapper as its annotations are.
-func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes, readOnly []Scope, a agenttool.Annotations, replay agenttool.Replay, flow *agenttool.Flow, drop ...string) agenttool.Tool {
+func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes, readOnly []Scope, refuse func(context.Context) (context.Context, error), a agenttool.Annotations, replay agenttool.Replay, flow *agenttool.Flow, drop ...string) agenttool.Tool {
 	tree, schema := scopeSchema[Args](scopes, drop...)
 	opts := []agenttool.Option{agenttool.WithParameters(schema), agenttool.WithAnnotations(a)}
 	if flow != nil {
@@ -397,6 +443,12 @@ func tool[Args, Out any](name, description string, fn func(context.Context, Args
 	}
 	inner := agenttool.New(name, description, fn, opts...)
 	return agenttool.Wrap(inner, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+		if refuse != nil {
+			var err error
+			if ctx, err = refuse(ctx); err != nil {
+				return agenttool.Result{}, err
+			}
+		}
 		if err := refuseReadOnly(call.Args, readOnly); err != nil {
 			return agenttool.Result{}, err
 		}
@@ -687,7 +739,7 @@ func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error
 	if errors.Is(err, ErrNotFound) {
 		stored = nil
 	}
-	shown, fromBlock := t.shown(scope, a.Name)
+	shown, fromBlock := t.shown(ctx, scope, a.Name)
 	var base []PutOption
 	switch {
 	case fromBlock:
@@ -737,13 +789,47 @@ func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error
 		scope, a.Name, len(a.Content), t.store.MaxEntryBytes(), Hash(a.Content), savedWhat(stored), metaWhat(stored, a.Meta, e.Meta), t.basedWhat(stored, shown, fromBlock))
 }
 
+// renderedKey is the context key of the manifest a writer's call read,
+// once, from [WithRendered].
+type renderedKey struct{}
+
+// read returns ctx carrying the manifest of the block the model is
+// reading, read once for the call from [WithRendered], and refuses the
+// write with [ErrBlockDropped] when that manifest records a block left
+// out whole. The save that runs under ctx takes its base from the same
+// read, so a manifest that moves during the call cannot pass the
+// refusal and then base the save on a block the model was not shown.
+func (t *toolset) read(ctx context.Context) (context.Context, error) {
+	if t.opts.rendered == nil {
+		return ctx, nil
+	}
+	m := t.opts.rendered()
+	if m.Dropped() {
+		return ctx, ErrBlockDropped
+	}
+	return context.WithValue(ctx, renderedKey{}, m), nil
+}
+
+// rendered returns the manifest the call read in [toolset.read], or
+// reads it now for a call that reached the tool function another way.
+func (t *toolset) rendered(ctx context.Context) (Manifest, bool) {
+	if m, ok := ctx.Value(renderedKey{}).(Manifest); ok {
+		return m, true
+	}
+	if t.opts.rendered == nil {
+		return Manifest{}, false
+	}
+	return t.opts.rendered(), true
+}
+
 // shown returns the hash the rendered block showed for the entry, and
 // whether it showed the entry at all; see [WithRendered].
-func (t *toolset) shown(scope Scope, name string) (string, bool) {
-	if t.opts.rendered == nil {
+func (t *toolset) shown(ctx context.Context, scope Scope, name string) (string, bool) {
+	m, ok := t.rendered(ctx)
+	if !ok {
 		return "", false
 	}
-	for _, me := range t.opts.rendered().Entries {
+	for _, me := range m.Entries {
 		if me.Scope == scope && me.Name == name {
 			return me.Hash, true
 		}

@@ -5,6 +5,52 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Added
+
+- A write in a turn whose block was left out is refused before anyone
+  is asked (agentkit#95). `Manifest.Dropped` reports a manifest that
+  records a block left out whole (`LeftOut`, or, for a record written
+  before it, no entries and every omitted entry with `OmitBlock`); `WriteTools()` names the writers, `memory_save`,
+  `memory_patch`, `memory_forget` and `memory_insert`; and
+  `CheckWrite(manifest, tool)` returns `ErrBlockDropped` for a writer's
+  call under such a manifest, for a product's decision hook to refuse
+  the call before its policy asks a person or a reviewer. The message
+  the model reads is `the memory block is not shown this turn, so
+  memory cannot be changed: a write could replace an entry you have
+  not seen; memory_search still reads it`.
+- RFC 0001 is draft 0.3: §6.8 gains the rule (a product SHOULD NOT
+  offer the writers in a request it left the block out of, MUST refuse
+  a writing call made anyway where it is decided, and the tools refuse
+  it again when they run), the bindings and conformance name it, and a
+  new section 15, "Changes since 0.2", lists it; the sections after it
+  are renumbered (Changes from draft 0.1 is 16, Decisions 17).
+  `testdata/dropped.json` is its fixture.
+
+- `Manifest.LeftOut`, the record's `dropped`, says the product left
+  the whole block out, and `Manifest.LeaveOut()` builds that manifest
+  from the one the block would have shown: every entry and omission
+  under `Omitted` with `OmitBlock`, and the flag set. The whole record
+  and a delta carry `dropped` when it is set, a delta its own and never
+  its base's (`RecordSince` records whole when either manifest has the
+  flag, so a reader older than this release never meets it in a delta
+  or as a base hash), and `Manifest.Hash` ends with `x block\n` then, so a
+  block left out over an empty store hashes apart from one shown empty
+  and is recorded. A manifest without the flag records and hashes as
+  before. `testdata/manifest/left-out.json` folds it.
+
+### Changed
+
+- A writer reads `WithRendered`'s manifest once per call: the refusal
+  of a write in a turn whose block was left out and the base
+  `memory_save` takes come from that one read.
+- Under `WithRendered`, every writer refuses a call with
+  `ErrBlockDropped`, before the read-only scope check and the schema
+  check and without writing, when the manifest the product returns
+  records a block left out whole. Before, a save under such a manifest
+  was based on its own read and went through.
+
 ## v0.0.11 - 2026-11-03
 
 ### Added

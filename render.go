@@ -97,6 +97,43 @@ type Manifest struct {
 	// Omitted are the entries the block's bound left out, in the order
 	// they would have appeared, each with the reason.
 	Omitted []ManifestEntry `json:"omitted,omitempty"`
+	// LeftOut says the product left the whole block out of the request,
+	// so the model was shown no memory, whatever the store held: the
+	// record's dropped member. [Manifest.LeaveOut] sets it.
+	LeftOut bool `json:"dropped,omitempty"`
+}
+
+// LeaveOut returns the manifest of a request the product left the block
+// m describes out of: no entry under Entries, every entry m held and
+// every one it omitted, in that order, under Omitted with [OmitBlock],
+// and LeftOut set, so the record says the block was left out even when
+// the store held nothing.
+func (m Manifest) LeaveOut() Manifest {
+	out := Manifest{Omitted: make([]ManifestEntry, 0, len(m.Entries)+len(m.Omitted)), LeftOut: true}
+	for _, e := range slices.Concat(m.Entries, m.Omitted) {
+		e.Reason = OmitBlock
+		out.Omitted = append(out.Omitted, e)
+	}
+	return out
+}
+
+// Dropped reports whether m records a block the product left out
+// whole: LeftOut is set, or, for a record written before the flag, it
+// holds no entry and lists at least one entry under Omitted, every one
+// with [OmitBlock].
+func (m Manifest) Dropped() bool {
+	if m.LeftOut {
+		return true
+	}
+	if len(m.Entries) > 0 || len(m.Omitted) == 0 {
+		return false
+	}
+	for _, e := range m.Omitted {
+		if e.Reason != OmitBlock {
+			return false
+		}
+	}
+	return true
 }
 
 // MarshalJSON writes the manifest as a whole record: entries always as
@@ -145,7 +182,9 @@ const (
 
 // Hash is the manifest's identity: "sha256:" and the hex digest of the
 // entries it holds and the ones it left out, in order, each by scope,
-// name, content hash, size and, for an omission, reason. Two renders
+// name, content hash, size and, for an omission, reason, and then
+// whether the block was left out, so a block left out over an empty
+// store hashes apart from one shown empty. Two renders
 // that showed the model the same memories hash the same, so a product
 // records the manifest when the hash differs from the last one it
 // recorded and writes nothing when the render has not moved.
@@ -156,6 +195,9 @@ func (m Manifest) Hash() string {
 	}
 	for _, e := range m.Omitted {
 		fmt.Fprintf(&b, "- %s/%s %s %d %s\n", e.Scope, e.Name, e.Hash, e.Bytes, e.Reason)
+	}
+	if m.LeftOut {
+		b.WriteString("x block\n")
 	}
 	return Hash(b.String())
 }
@@ -188,7 +230,8 @@ func (m Manifest) Record() (ns string, data []byte) {
 // to say so.
 //
 // The delta is an object with base, prev's [Manifest.Hash]; hash, this
-// manifest's; and entries and omitted, each the list with every run of
+// manifest's; dropped, this manifest's LeftOut, never prev's; and
+// entries and omitted, each the list with every run of
 // prev's entries that stays in place and unchanged written as
 // {"keep":n}, and every other entry written whole. An entry prev holds
 // and this manifest does not is neither kept nor written. A reader
@@ -196,9 +239,11 @@ func (m Manifest) Record() (ns string, data []byte) {
 // member base is what tells it from a whole record.
 //
 // It returns the whole record, as [Manifest.Record] does, when that is
-// no larger than the delta, which it is for a first manifest, and when
+// no larger than the delta, which it is for a first manifest; when
 // either manifest names one entry twice in a list, since a keep could
-// not say which of the two it means.
+// not say which of the two it means; and when either is a block left
+// out, LeftOut, so a reader older than the flag never meets a delta
+// carrying it or based on a hash that counts it.
 //
 // The product keeps prev per session, and records a session's first
 // manifest whole. prev is the manifest in force on the session's path,
@@ -209,12 +254,17 @@ func (m Manifest) Record() (ns string, data []byte) {
 // [ManifestFold], and [ApplyManifestRecord] refuses it.
 func (m Manifest) RecordSince(prev Manifest) (ns string, data []byte) {
 	whole := marshalRecord(m)
+	if m.LeftOut || prev.LeftOut {
+		// A reader before the flag could neither read a delta's dropped
+		// nor compute a base hash that counts it.
+		return ManifestNS, whole
+	}
 	entries, ok1 := manifestDiff(prev.Entries, m.Entries)
 	omitted, ok2 := manifestDiff(prev.Omitted, m.Omitted)
 	if !ok1 || !ok2 {
 		return ManifestNS, whole
 	}
-	delta := marshalRecord(manifestDelta{Base: prev.Hash(), Hash: m.Hash(), Entries: entries, Omitted: omitted})
+	delta := marshalRecord(manifestDelta{Base: prev.Hash(), Hash: m.Hash(), Entries: entries, Omitted: omitted, Dropped: m.LeftOut})
 	if len(delta) >= len(whole) {
 		return ManifestNS, whole
 	}
@@ -319,7 +369,7 @@ func (f *ManifestFold) Manifest() Manifest {
 		return Manifest{}
 	}
 	m := f.recent[0]
-	return Manifest{Entries: slices.Clone(m.Entries), Omitted: slices.Clone(m.Omitted)}
+	return Manifest{Entries: slices.Clone(m.Entries), Omitted: slices.Clone(m.Omitted), LeftOut: m.LeftOut}
 }
 
 // Record returns the namespace and the JSON of m for a session whose
@@ -389,7 +439,9 @@ func parseManifestRecord(data []byte) (Manifest, *manifestDelta, error) {
 // applyManifestDelta folds d onto m, whose hash is d's base, and checks
 // the result against d's hash.
 func applyManifestDelta(m Manifest, d *manifestDelta) (Manifest, error) {
-	var out Manifest
+	// The flag is the delta's own: a delta that does not set it gives a
+	// block that was shown, whatever its base says.
+	out := Manifest{LeftOut: d.Dropped}
 	var err error
 	if out.Entries, err = manifestApply(m.Entries, d.Entries); err != nil {
 		return Manifest{}, fmt.Errorf("agentmemory: manifest delta entries: %w", err)
@@ -410,6 +462,8 @@ type manifestDelta struct {
 	Hash    string       `json:"hash"`
 	Entries []manifestOp `json:"entries,omitempty"`
 	Omitted []manifestOp `json:"omitted,omitempty"`
+	// Dropped is the manifest's LeftOut, never inherited from the base.
+	Dropped bool `json:"dropped,omitempty"`
 }
 
 // manifestOp is one element of a delta's list: a keep of the next Keep

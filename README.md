@@ -271,6 +271,18 @@ save is then based on the hash the block showed, a write another
 session made after the render is a lost update the journal reports,
 and the result tells the model the entry had changed.
 
+A product that leaves the block out of a request, when its share of an
+instruction budget runs out, withholds the writers (`WriteTools()`)
+from that request and refuses a call of one where it decides the call,
+before its policy asks anyone: `CheckWrite(manifest, tool)` returns
+`ErrBlockDropped` when the manifest says the block was left out whole
+(`Manifest.Dropped`). The product records `Manifest.LeaveOut()` of the
+manifest it would have shown, which sets `LeftOut`, the record's
+`dropped`, so a block left out over an empty store is told from one
+shown empty. Under `WithRendered` the writers refuse such a
+call again when it runs, before anything else is checked, for a call
+decided before the block was left out.
+
 `memory_patch` is the tool the model is told to prefer for an edit: the
 call is the size of the change, and the edit is anchored in the stored
 text, so an edit whose anchor another session removed fails out loud

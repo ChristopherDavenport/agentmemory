@@ -1,6 +1,6 @@
 # RFC 0001: Agent Memory
 
-Status: draft 0.2
+Status: draft 0.3
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; `filestore` is the reference store,
@@ -38,9 +38,11 @@ The on-disk format of the reference store is Annex A, kept in
 Draft 0.2 states the contract as the code holds it after the fixes for
 #46, #47, #48 and #49, the security fixes of the same batch, and the
 answers to draft 0.1's open questions. [Changes from draft
-0.1](#15-changes-from-draft-01) lists what moved;
+0.1](#16-changes-from-draft-01) lists what moved;
 [Appendix B](#appendix-b-inconsistencies-draft-01-found) says how each
-inconsistency draft 0.1 found was resolved.
+inconsistency draft 0.1 found was resolved. Draft 0.3 adds the refusal
+of a write in a turn whose block was left out; [Changes since
+0.2](#15-changes-since-02) lists it.
 
 ## Motivation
 
@@ -58,7 +60,7 @@ call with a record beside it. What it lacked was a document saying
 what those records hold and how a reader folds them. agentsession's
 RFC names `agentmemory` as an instruction part's source; this document
 is what that name points at, and stays in this repository
-([section 16](#16-decisions)).
+([section 17](#17-decisions)).
 
 ## Goals
 
@@ -787,6 +789,33 @@ reading; one from earlier in the turn makes a second save of an entry
 read as built on the block rather than on the model's own first save,
 and reported as lost.
 
+**A block left out.** A manifest records a block **left out whole**
+when its `dropped` is true (7.6), or, for a record written before
+draft 0.3, when it lists no element under `entries` and at least one
+under `omitted`, each with the reason `block`. A product that leaves
+the block out of a request SHOULD NOT offer the writing tools,
+`memory_save`, `memory_patch`, `memory_forget` and `memory_insert`, in
+that request; `memory_search` reads and stays. A writing call made
+anyway, composed from a block the model was not shown, MUST be refused
+when the call is decided, before any person or reviewer is asked about
+it, since no answer could let it through. The refusal reaches the
+model as a failure (6.1), with the message
+
+```
+the memory block is not shown this turn, so memory cannot be changed: a write could replace an entry you have not seen; memory_search still reads it
+```
+
+A refusal at execution remains, for a call decided before the block
+was left out: a writing tool told the manifest of a block left out
+whole refuses every call with the same message, before anything else
+is checked, its scope and its schema included, and writes nothing. A
+product that leaves the block out records the manifest 7.6 gives for
+it, `dropped` included, so a block left out over a store that held
+nothing is told from one shown empty, and its writes are refused.
+`testdata/dropped.json` gives cases of both refusals: a store, a tool
+set over it, and per case the manifest the model is reading, a call,
+and the message it is refused with, none when it goes through.
+
 ### 6.9 Usage paragraph
 
 The reference binding offers one paragraph telling the model what the
@@ -1074,11 +1103,21 @@ Reasons:
   or of its scope's cap. A renderer writes it.
 - `block`: the product left the whole block out, having no room for
   memory on this call. A renderer never writes it; a product records a
-  manifest with every entry under `omitted` with this reason and none
-  under `entries`, so a reader tells a block dropped whole from a
-  block that held nothing because the store held nothing.
+  manifest with every entry the block would have held and every one it
+  would have omitted, in that order, under `omitted` with this reason,
+  none under `entries`, and `dropped` true.
 
 A reader MUST accept other reason strings and keep them.
+
+Beside the two lists, a manifest has **dropped**, a boolean, true when
+the product left the whole block out of the request, so the model was
+shown no memory whatever the store held, and false otherwise. A
+renderer never sets it. It is what tells a block left out over a store
+that held nothing, whose lists are empty, from a block shown with
+nothing in it; a reader of a record written before draft 0.3, which
+has no `dropped`, reads a manifest with no element under `entries` and
+at least one under `omitted`, each with the reason `block`, as left
+out too.
 
 The **manifest hash** is the hash of the string made of one line per
 element, `entries` first and then `omitted`, each in order:
@@ -1086,13 +1125,17 @@ element, `entries` first and then `omitted`, each in order:
 ```
 + <scope>/<name> <hash> <bytes>\n            for an element of entries
 - <scope>/<name> <hash> <bytes> <reason>\n   for an element of omitted
+x block\n                                      last, when dropped is true
 ```
 
-with `<bytes>` in decimal. The empty manifest's hash is the hash of the
+with `<bytes>` in decimal. A manifest whose `dropped` is false hashes
+as it did before draft 0.3, and a block left out hashes apart from the
+same lists shown, so a product that records a manifest only when its
+hash moves records the drop. It records it whole (8.4). The empty manifest's hash is the hash of the
 empty string. Two renders that showed the model the same memories hash
 the same, so a product records the manifest only when its hash moves.
 The manifest names content, not metadata: a change to an entry's
-description changes its part and not the manifest (section 16).
+description changes its part and not the manifest (section 17).
 
 ## 8. Session records
 
@@ -1167,15 +1210,20 @@ without it, or with `base` `null`, which agentsession reads as an
 absent member, is whole.
 
 - A **whole record** is the manifest itself: `{"entries":[…],
-  "omitted":[…]}`, `omitted` left out when empty. A writer MUST write
+  "omitted":[…], "dropped":true}`, `omitted` left out when empty and
+  `dropped` left out when false, so a record of a block shown is what
+  draft 0.2 wrote. A writer MUST write
   `entries`, as `[]` when it is empty. A reader MUST read an absent or
   `null` `entries` as empty, since writers before draft 0.2 wrote
   `null`.
-- A **delta** is `{"base":…, "hash":…, "entries":[…], "omitted":[…]}`:
-  `base` is the hash of the manifest it is written on, `hash` the hash
-  of the manifest it gives, and each list, left out when empty, is a
-  list of elements, each either a manifest element written whole or
-  `{"keep":n}`, a positive integer and no other member.
+- A **delta** is `{"base":…, "hash":…, "entries":[…], "omitted":[…],
+  "dropped":true}`: `base` is the hash of the manifest it is written
+  on, `hash` the hash of the manifest it gives, `dropped`, left out
+  when false, the `dropped` of the manifest it gives, never taken from
+  the base, though a writer never records a delta with it true (below);
+  and each list, left out when empty, is a list of elements, each
+  either a manifest element written whole or `{"keep":n}`, a positive
+  integer and no other member.
 
 A delta's list is read against the same list of its base manifest with
 a cursor that starts at the base list's first element:
@@ -1205,6 +1253,10 @@ A writer:
   and every other element whole;
 - MUST record whole when either list of either manifest names one
   entry twice, since a keep could not say which it means;
+- MUST record whole when the manifest or its base has `dropped` true,
+  so a reader before draft 0.3 never meets a delta carrying `dropped`
+  or based on a hash that counts it; a reader still reads `dropped` on
+  a delta;
 - SHOULD record whole when the delta is not smaller than the whole
   record, as the reference does.
 
@@ -1383,13 +1435,14 @@ The root module is the reference binding.
 | record | `Change{Seq, Entry, Prev, Replaced, Session, Source, At}`, `SourceReconciled` |
 | lost updates | `LostUpdates(ctx, store, after)`, `LostUpdate{Change, Over, Break, AfterDamage}` |
 | last sequence number | `LastSeqer`, `LastSeq(ctx, s)` |
-| tools | `Tools(store, scopes, opts...)`; `SaveTool`, `PatchTool`, `ForgetTool`, `SearchTool`, `InsertTool`, `InsertName` |
+| tools | `Tools(store, scopes, opts...)`; `SaveTool`, `PatchTool`, `ForgetTool`, `SearchTool`, `InsertTool`, `InsertName`; the writers `WriteTools()` |
+| a block left out (6.8) | `Manifest.Dropped`; `CheckWrite(manifest, tool)` where a call is decided; `ErrBlockDropped`, the message; the writers refuse at execution under `WithRendered` |
 | tool options | `WithReadScopes`, `WithRendered` (6.8), `WithFixedNames`, `WithInsert`, `WithSearchLimit`, `WithSearchBytes`, `WithSearchReads`, `DefaultSearchLimit`, `DefaultSearchBytes` |
 | write record | `WriteRecord{Tool, Change}`, `WriteNS`, as an `agenttool.Recordable` |
 | usage paragraph | `Usage()` |
 | render | `Render`, `RenderParts`, `JoinParts`, `Part{ID, Text, Trust}`, `Trust{Reads}`, `EntryPart`, `PartSeparator`, `TitlePartID`, `SummaryPartID`, `PartID` |
 | render options | `WithMaxTotalBytes`, `WithScopeMaxBytes`, `WithScopeTrust`, `DefaultMaxTotalBytes`, `ErrBudget` |
-| manifest | `Manifest{Entries, Omitted}`, `ManifestEntry{Scope, Name, Hash, Bytes, Reason}`, `OmitBudget`, `OmitBlock`, `Manifest.Hash` |
+| manifest | `Manifest{Entries, Omitted, LeftOut}` (`LeftOut` is `dropped`), `ManifestEntry{Scope, Name, Hash, Bytes, Reason}`, `OmitBudget`, `OmitBlock`, `Manifest.Hash`, `Manifest.LeaveOut` for a block left out |
 | render record | `ManifestNS`; `Manifest.Record` (whole), `Manifest.RecordSince` (delta on a base) |
 | fold | `ManifestFold` (`Apply`, `Manifest`, `Record`), `ManifestFoldDepth`; `ApplyManifestRecord` is the single-base reader; `ErrManifestBase` is *unresolved* |
 | stores | `NewMemStore` (in memory), `filestore.Open` (Annex A, with `Reconcile`, `LockHolder`, `BreakLock`, `ErrLocked`), `sqlite.Open` (nested module) |
@@ -1417,8 +1470,11 @@ it, and a store elsewhere can run it.
 says, enforces its own schema, refuses read scopes and unlisted scopes,
 anchors every save and patch as sections 6.2 and 6.3 say, keeps fixed
 names and names inserts as 6.5 says, offers only the search options its
-store supports, declares `memory_search`'s flow, and carries the write
-record of every write it makes.
+store supports, declares `memory_search`'s flow, refuses every write in
+a turn whose block was left out as 6.8 says, reproducing
+`testdata/dropped.json`, and carries the write record of every write
+it makes. **A conforming product** that leaves the block out refuses a
+write where the call is decided, before anyone is asked (6.8).
 
 **A conforming renderer** meets sections 7.1 to 7.4, neutralises
 content and labels every part as 7.2 says, reproducing
@@ -1447,7 +1503,8 @@ reserved namespaces only, and redacts them as 8.6 says.
 **A conforming session reader** folds `agentmemory:render` by section
 8.5 with a window of 8, refuses an unresolved or malformed record
 without changing its fold, verifies every delta against its `hash`,
-reproduces every fixture under `testdata/manifest`, and keeps
+reproduces every fixture under `testdata/manifest`, `left-out.json`
+among them, and keeps
 `agentmemory:` namespaces it does not know.
 
 **A conforming writer of the filestore directory** meets Annex A.
@@ -1488,7 +1545,14 @@ not a new meaning under the old one.
   journal is that per entry, with the base recorded so the loss is
   visible without a three-way diff.
 
-## 15. Changes from draft 0.1
+## 15. Changes since 0.2
+
+| what | sections | the change |
+|---|---|---|
+| agentkit#95 | 6.8, 11, 12 | A write in a turn whose block was left out is refused where the call is decided, before any person or reviewer is asked, and again by the writing tool when it runs, with one message; `memory_insert` is a writer as `memory_save`, `memory_patch` and `memory_forget` are. Draft 0.2 said nothing of a dropped block's writes, so a product refused them only when they ran, after asking a person about a call no answer could let through. The fixture `testdata/dropped.json` gives the cases. |
+| agentkit#95 | 7.6, 8.4, 6.8 | A manifest has `dropped`, true for a block the product left out whole, in the whole record and in a delta, which carries its own and never its base's, left out when false; the manifest hash ends with `x block\n` when it is set; and a writer records a manifest whole when it or its base has the flag, so a reader before this draft never meets it in a delta. Draft 0.2 told a block left out only by every element under `omitted` with the reason `block`, so one left out over an empty store was the empty manifest, hashed as a block shown empty, was never recorded, and let a write through. A record without `dropped` is read as before, and every manifest without it hashes as before. The fixture `testdata/manifest/left-out.json` folds it. |
+
+## 16. Changes from draft 0.1
 
 | what | sections | the change |
 |---|---|---|
@@ -1503,11 +1567,11 @@ not a new meaning under the old one.
 | question 5 | 8.1 | An omitted memory part's `size` is agentsession's: the part's bytes and separator. |
 | question 6 | 8.4 | Writers MUST write `"entries":[]`; readers accept `null`. |
 | question 7 | 4.9 | Compaction deferred; a journal without its start, and a write record before it. |
-| question 8 | Motivation, 16 | This document stays here. |
+| question 8 | Motivation, 17 | This document stays here. |
 | security | 3.1, 7.2, 8.1, 10, Annex A | Stores follow no link; parts carry trust labels and content headings are neutralised; `memory_search` reads untrusted. |
 | review | 1, 3.1, 3.2, 3.5, 4.3, 6.1, 6.10, 7.6, 8.4, 8.6 | White space and lowercase defined; reads do not validate; the unjournalable file deferred to Annex A; one sequence rule; full schemas, `meta: null`, idempotence; element presence; `base: null`; redaction; fixtures. |
 
-## 16. Decisions
+## 17. Decisions
 
 Draft 0.1's open questions, as answered for draft 0.2:
 

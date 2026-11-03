@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -322,6 +323,14 @@ func foldCases() map[string][]foldStep {
 			{Note: "a's budget moves one entry into the block", Record: rec(a3.RecordSince(a2))},
 			{Note: "a drops the block whole", Record: rec(dropped.RecordSince(a3))},
 			{Note: "back to a3 on the dropped manifest", Record: rec(a3.RecordSince(dropped))},
+		},
+		"left-out": {
+			{Note: "a block left out before the flag: every entry omitted for the block", Record: rec(dropped.Record())},
+			{Note: "the same block with the flag: whole, never a delta", Record: rec(dropped.LeaveOut().RecordSince(dropped))},
+			{Note: "back without the flag: whole, since its base is a block left out", Record: rec(dropped.RecordSince(dropped.LeaveOut()))},
+			{Note: "a delta carrying the flag, which a writer never records and a reader still reads", Record: raw(`{"base":"` + dropped.Hash() + `","hash":"` + dropped.LeaveOut().Hash() + `","omitted":[{"keep":` + strconv.Itoa(len(dropped.Omitted)) + `}],"dropped":true}`)},
+			{Note: "a block left out over an empty store: the flag tells it from a block shown empty", Record: rec(Manifest{}.LeaveOut().Record())},
+			{Note: "the block shown empty, whole", Record: rec(Manifest{}.RecordSince(Manifest{}.LeaveOut()))},
 		},
 		"refusals": {
 			{Note: "a delta on the empty manifest before anything is folded", Record: raw(`{"base":"` + empty + `","hash":"` + b.Hash() + `","entries":[` + jsonOf(b.Entries[0]) + `]}`)},
@@ -638,5 +647,79 @@ func TestHashFixture(t *testing.T) {
 		if got := MetaHash(m.Meta); got != m.MetaHash {
 			t.Errorf("MetaHash(%v) = %s, want %s", m.Meta, got, m.MetaHash)
 		}
+	}
+}
+
+// droppedFixture is testdata/dropped.json: a store, a tool set over it,
+// and for each case the manifest of the block the model is reading, a
+// call, and the refusal it gets, none when error is absent. It is
+// written by hand, not with -update: it states RFC 0001's rule (6.8)
+// rather than recording what the reference does.
+type droppedFixture struct {
+	Scopes     []Scope          `json:"scopes"`
+	ReadScopes []Scope          `json:"read_scopes"`
+	Insert     []Scope          `json:"insert"`
+	Entries    []renderInputRow `json:"entries"`
+	Cases      []struct {
+		Name string `json:"name"`
+		// Entries, when present, is the store this case starts from in
+		// place of the fixture's.
+		Entries  *[]renderInputRow `json:"entries"`
+		Manifest Manifest          `json:"manifest"`
+		Tool     string            `json:"tool"`
+		Args     json.RawMessage   `json:"args"`
+		Error    string            `json:"error"`
+	} `json:"cases"`
+}
+
+// TestDroppedFixture checks that a write in a turn whose block was left
+// out is refused where the call is decided, by CheckWrite, and again
+// when it runs, before anything else is checked and with nothing
+// written; and that every other call goes through.
+func TestDroppedFixture(t *testing.T) {
+	var fx droppedFixture
+	dec := json.NewDecoder(bytes.NewReader(readFixture(t, filepath.Join("testdata", "dropped.json"))))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&fx); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range fx.Cases {
+		t.Run(c.Name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewMemStore()
+			entries := fx.Entries
+			if c.Entries != nil {
+				entries = *c.Entries
+			}
+			for _, e := range entries {
+				if _, err := store.Put(ctx, Entry{Scope: e.Scope, Name: e.Name, Content: e.Content, Meta: e.Meta}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got := ""
+			if err := CheckWrite(c.Manifest, c.Tool); err != nil {
+				got = err.Error()
+			}
+			if got != c.Error {
+				t.Errorf("CheckWrite = %q, want %q", got, c.Error)
+			}
+			man := c.Manifest
+			tools := Tools(store, fx.Scopes, WithReadScopes(fx.ReadScopes...), WithInsert(fx.Insert...), WithRendered(func() Manifest { return man }))
+			if !slices.ContainsFunc(tools, func(tool agenttool.Tool) bool { return tool.Name() == c.Tool }) {
+				return
+			}
+			before := journalLen(store)
+			_, err := call(t, tools, c.Tool, string(c.Args))
+			got = ""
+			if err != nil {
+				got = err.Error()
+			}
+			if got != c.Error {
+				t.Errorf("%s ran with error %q, want %q", c.Tool, got, c.Error)
+			}
+			if c.Error != "" && journalLen(store) != before {
+				t.Errorf("%s wrote %d records though refused", c.Tool, journalLen(store)-before)
+			}
+		})
 	}
 }
