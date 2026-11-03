@@ -1,11 +1,12 @@
 # RFC 0001: Agent Memory
 
-Status: draft 0.1
+Status: draft 0.2
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; `filestore` is the reference store,
-`storetest` the conformance suite for stores, and `testdata/render` the
-golden fixtures for the rendered block.
+`storetest` the conformance suite for stores, and the JSON fixtures
+under `testdata/` the conformance corpus for everything else
+([section 12](#12-conformance)).
 
 ## Summary
 
@@ -14,7 +15,8 @@ project and its own past work. This document states the contract a
 memory has, in terms a program in any language can implement:
 
 - an **entry**, one remembered thing, named within a **scope**, with
-  Markdown content, one-line metadata and a content hash;
+  Markdown content, one-line metadata, a content hash and a metadata
+  hash;
 - a **store** that holds entries, changes them only by whole-entry
   writes and tombstones, and keeps a **journal**: an append-only,
   numbered record of every state, chained per entry, from which a
@@ -22,8 +24,9 @@ memory has, in terms a program in any language can implement:
 - the **tools** through which a model reads and changes a store, so
   every change is a function call in the transcript;
 - the **rendered block**, the part of memory the model always sees: a
-  Markdown section of the instructions, in parts with stable IDs,
-  bounded in bytes, with a **manifest** of what it held and left out;
+  Markdown section of the instructions, in parts with stable IDs and
+  trust labels, bounded in bytes, with a **manifest** of what it held
+  and left out;
 - the **session records** that join a session to the store: the
   manifest under `agentmemory:render`, folded along the session's path,
   and the journal record of each write under `agentmemory:write`, both
@@ -32,13 +35,12 @@ memory has, in terms a program in any language can implement:
 The on-disk format of the reference store is Annex A, kept in
 [`docs/filestore-format.md`](../filestore-format.md).
 
-Draft 0.1 states the contract as the code at v0.0.10 holds it. Four
-vetted issues change it (#46, #47, #48, #49); each place they touch
-carries a **Changes** note, and [Changes the open issues
-make](#15-changes-the-open-issues-make) lists them, so the fixes implement
-this document rather than the other way round. Where the code and its
-documents disagree, [Appendix B](#appendix-b-inconsistencies-found)
-lists the disagreement; nothing here settles one silently.
+Draft 0.2 states the contract as the code holds it after the fixes for
+#46, #47, #48 and #49, the security fixes of the same batch, and the
+answers to draft 0.1's open questions. [Changes from draft
+0.1](#15-changes-from-draft-01) lists what moved;
+[Appendix B](#appendix-b-inconsistencies-draft-01-found) says how each
+inconsistency draft 0.1 found was resolved.
 
 ## Motivation
 
@@ -55,12 +57,14 @@ run of instruction parts, a manifest is a `custom` entry, a write is a
 call with a record beside it. What it lacked was a document saying
 what those records hold and how a reader folds them. agentsession's
 RFC names `agentmemory` as an instruction part's source; this document
-is what that name points at.
+is what that name points at, and stays in this repository
+([section 16](#16-decisions)).
 
 ## Goals
 
 - **Language-neutral.** Every rule is stated over JSON values, byte
-  strings and hashes. A Go name appears only in [Bindings](#11-bindings).
+  strings and hashes, and every computed output has a JSON fixture. A
+  Go name appears only in [Bindings](#11-bindings).
 - **The journal is the record.** Every change is a numbered, hashed,
   full state, so "what did memory hold at sequence N" and "which write
   lost which" are answerable from the journal alone.
@@ -83,8 +87,9 @@ is what that name points at.
 - Access control between users. A store is opened by a product for the
   scopes it chooses; who may open it is the product's.
 - Authentication, transport or a wire protocol for a remote store.
-- Compaction of the journal. The journal is unbounded in this draft
-  (see [Open questions](#16-open-questions)).
+- Compaction of the journal. Draft 0.2 defines no way to compact, and
+  says what a reader does with a journal whose start is gone and a
+  session record from before it ([section 4.9](#49-a-journal-without-its-start)).
 
 ## 1. Terminology
 
@@ -96,11 +101,25 @@ interpreted as in RFC 2119.
 - **Scope**: a name that says whose memory an entry is. Products define
   scopes; `user`, `project` and `session` are the conventional three.
 - **Entry**: one remembered thing: a scope, a name unique within it,
-  content, metadata, a hash, and the time it was last written.
+  content, metadata, a hash, a metadata hash, and the time it was last
+  written.
 - **Live entry**: an entry a store currently holds, which reads return.
 - **Hash**: `sha256:` followed by the 64 lowercase hexadecimal digits
   of the SHA-256 digest of a byte string. An entry's hash is the hash
   of its content's UTF-8 bytes, and of nothing else.
+- **Metadata hash**: the hash of an entry's metadata in the form of
+  [section 2.3](#23-metadata), or the empty string for none.
+- **White space**: the code points with the Unicode `White_Space`
+  property: U+0009 to U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000
+  to U+200A, U+2028, U+2029, U+202F, U+205F and U+3000. The list is
+  closed: a later Unicode version does not change it here.
+- **Lowercased**: each code point replaced by its Unicode *simple*
+  lowercase mapping (field 13 of `UnicodeData.txt`), one code point
+  for one, with no special casing and no context: U+0130 becomes
+  U+0069, and a final sigma becomes U+03C3. A code point without a
+  mapping is unchanged. The reference uses Unicode 15.0; a store on
+  another version may differ on the code points the versions map
+  differently, and nothing but search matching depends on it.
 - **Store**: the holder of entries and their journal.
 - **Record**: one line of the journal: an entry's state after a
   change, with what it was built on and what it replaced.
@@ -116,7 +135,7 @@ interpreted as in RFC 2119.
 - **Part**: one piece of the block with a stable ID.
 - **Manifest**: the list of entries a block held and left out.
 - **Session**: an agentsession session (agentsession RFC 0001); its
-  **path** and **`custom` entry** are that document's.
+  **path**, **`custom` entry** and **trust** are that document's.
 
 ## 2. Entries
 
@@ -151,8 +170,8 @@ Metadata is a map from names to strings, beside the content:
 
 - A key MUST be a name and MUST NOT be `name` or `updated`, which are
   reserved because the reference store writes them in its frontmatter.
-- A value MUST be valid UTF-8 on one line, with no carriage return or
-  line feed, and no leading or trailing white space. It MAY be empty.
+- A value MUST be valid UTF-8 with no U+000D or U+000A, and no white
+  space (section 1) at its start or its end. It MAY be empty.
 - Keys and values together MUST NOT exceed 1024 bytes.
 - An empty map and no map are the same metadata, and a store returns
   the second.
@@ -161,8 +180,18 @@ The key `description` is the one this document gives a meaning: the
 one-line description the rendered block, the search result and the
 reference store's index show beside the entry.
 
-The hash covers the content alone. Two states that differ only in
-metadata have one hash (see [Open questions](#16-open-questions)).
+The content hash covers the content alone. The **metadata hash** covers
+the metadata: it is the hash of the string made of one line per key, in
+byte order of the keys, each the key, `=`, the value and U+000A:
+
+```
+description=How to answer\n
+type=feedback\n
+```
+
+and the empty string for no metadata. A key is a name and a value holds
+no line feed, so the form is unambiguous. A conditional write names
+both hashes when it keeps metadata it read (section 3.2).
 
 ### 2.4 The entry value
 
@@ -176,8 +205,14 @@ record, it is an object with these members:
 | `content` | string | required | the content; for a tombstone, the last content the entry held |
 | `meta` | object of string to string | omitted when empty | the metadata |
 | `hash` | string, a hash | required | the hash of `content` |
+| `meta_hash` | string, a hash | omitted when `meta` is empty | the metadata hash of `meta` |
 | `updated` | RFC 3339 time | required | when the store last wrote the entry |
 | `deleted` | `true` | omitted when false | the record is a tombstone |
+
+A writer SHOULD write `meta_hash` whenever `meta` is not empty. A record
+written before draft 0.2 has none, so a reader that needs it computes it
+from `meta`, and a reader MAY check a present one against `meta`. A
+reader reads `meta` absent or `null` as no metadata.
 
 ## 3. The store
 
@@ -186,8 +221,8 @@ rules are about what each does.
 
 ### 3.1 Reads
 
-- **Get** (scope, name) returns the live entry, with its hash and
-  updated time filled, or fails with *not found*.
+- **Get** (scope, name) returns the live entry, with its hash, its
+  metadata hash and its updated time filled, or fails with *not found*.
 - **List** (scope) returns the live entries of one scope in byte order
   of their names. A scope with no entries lists nothing, and so does a
   scope the store has never seen.
@@ -198,10 +233,19 @@ rules are about what each does.
 A read never returns a tombstone, and returns the caller's own copy: a
 caller that changes what it was given changes nothing in the store.
 
-A store MAY refuse a scope or name that is not a name with *invalid*,
-and the reference directory and SQLite stores do, so that nothing
-outside the store is reached through a path; the in-memory store reads
-it as unknown instead (Appendix B, item 4).
+A store MUST refuse a scope or a name that is not a name with
+*invalid*, in get, list, search and forget alike, before it looks
+anything up, so that nothing is reached through one, whatever the store
+maps names onto, and every store answers it the same. The conformance
+suite pins it.
+
+**Reads do not validate.** A store whose entries can change outside it,
+as the reference directory's files can under a person's editor, returns
+an entry as it finds it: empty, over the entry bound, or with metadata a
+put would refuse. Its hash and metadata hash are those of what it
+returns. A renderer and a tool MUST NOT assume a read entry meets
+section 2; the renderer renders it as it is (section 7), and such an
+entry is never journaled until a write replaces it (section 4.6).
 
 ### 3.2 Put
 
@@ -213,8 +257,8 @@ is a list of full states.
 - A store MUST validate the entry against section 2 and refuse a
   violation with *invalid*, and content over its bound with *too
   large*, before anything is written.
-- The caller does not set the hash or the updated time; the store
-  computes the hash of the content and stamps the time, and ignores
+- The caller does not set the hash, the metadata hash or the updated
+  time; the store computes both hashes and stamps the time, and ignores
   what the caller put there. A put always makes a live entry.
 - A successful put appends exactly one record for the write, and
   returns that record, as the journal holds it. A store that notices,
@@ -224,24 +268,40 @@ is a list of full states.
 - A put that stores the same content and metadata the entry already
   holds is still a write and still appends a record.
 
-Two options, both optional, say what the write was built on:
+Three options, each optional, say what the write was built on:
 
-- **If-hash** (h) makes the put conditional: it fails with *conflict*
-  unless the live entry's hash is h, where the empty string means the
-  entry must not be live. A conditional put whose condition fails
-  writes nothing. A create with the empty string never overwrites.
+- **If-hash** (h) makes the put conditional on the content: it fails
+  with *conflict* unless the live entry's hash is h, where the empty
+  string means the entry must not be live. A create with the empty
+  string never overwrites.
+- **If-meta-hash** (m) makes the put conditional on the metadata: it
+  fails with *conflict* unless the live entry's metadata hash is m,
+  where a missing entry's is the empty string.
 - **Based-on** (h) names the base without making it a condition: the
   put lands on whatever the store holds, and the record's `prev` is h.
 
-The record's `prev` is the base: the if-hash when the put is
-conditional, else the based-on hash when one was given, else the hash
-of the state the write landed on, which is empty for a create. Both
-options given, the if-hash wins.
+A conditional put whose condition fails writes nothing. Its check and
+its write are one step with respect to other writers (section 3.7).
+
+The record's `prev` is the base: the if-hash when the put has one, else
+the based-on hash when one was given, else the hash of the state the
+write landed on, which is empty for a create. Both given, the if-hash
+wins. If-meta-hash never changes `prev`.
 
 A writer that composes a whole entry from a read SHOULD name the hash
-it read, with either option. A write that names no base is recorded as
+it read, with if-hash or based-on, and a writer that writes back
+metadata it read without changing it SHOULD name its metadata hash with
+if-meta-hash, since the content hash does not move when another writer
+changes only the metadata. A write that names no base is recorded as
 built on whatever it landed on, and a write it lost is invisible
 (section 4.7).
+
+The state a write "lands on", which `replaced` names (section 4.1), is
+the journal's last state for the entry. In a store whose entries change
+outside it, the live entry may be a state the store cannot journal (an
+empty or over-bound file a person wrote); then `replaced` and a base
+taken from that state are as Annex A says, so that the chain never
+names a hash no record holds.
 
 ### 3.3 Errors
 
@@ -251,9 +311,10 @@ but MUST let a caller tell the kinds apart:
 | kind | when | what it carries |
 |---|---|---|
 | *not found* | get or forget of an entry that is not live | the scope and name |
-| *invalid* | an entry, scope or name that breaks section 2 | which rule, in words |
+| *invalid* | an entry, scope, name or metadata key that breaks section 2 | which rule, in words |
 | *too large* | put content over the bound | the scope and name, the attempted size, the bound, and the size of the live entry or "none" |
-| *conflict* | a conditional put whose condition fails | the scope and name, the hash expected and the hash held, empty for no entry on either side |
+| *conflict* | a conditional put whose condition fails | the scope and name, which condition, content or metadata, and the hash expected and the hash held, empty for none on either side |
+| *unsupported* | a search with an option the store does not support (section 3.5) | the option |
 
 The *too large* error carries the three numbers because its reader is
 the model, which trims or splits by arithmetic rather than guessing.
@@ -270,41 +331,60 @@ found* and writes nothing. The next put of the name is a create.
 
 ### 3.5 Search
 
-**Search** (scopes, query, limit) returns live entries of the given
-scopes that match the query, at most `limit` of them when `limit` is
-positive and all of them otherwise. A scope the store has never seen
-contributes nothing.
+**Search** (scopes, query, limit, options) returns live entries of the
+given scopes that match the query, at most `limit` of them when `limit`
+is positive and all of them otherwise. A scope the store has never seen
+contributes nothing; a scope that is not a name is *invalid*.
 
 What matches, and in what order, is the store's. The **reference
 match**, which the in-memory and directory stores use, is:
 
-- the query is split at white space into words, and lowercased;
-- an entry matches when every word occurs, as a substring, in the
-  lowercased text made of its name, each of its metadata values and its
-  content; metadata keys are not searched;
+- the query is lowercased (section 1) and split at white space
+  (section 1) into words, each distinct word once;
+- the **text** of an entry is its name, then each of its metadata values
+  in any order, then its content, joined by U+000A, lowercased;
+  metadata keys are not searched;
+- an entry matches when every word occurs in its text as a substring of
+  code points;
 - an empty query, or one of white space alone, matches every entry;
 - results come in the order the scopes were given, then by name.
 
 The SQLite store matches every word as a token prefix in a full-text
-index of the name, the metadata values and the content, ranks by
-relevance and breaks ties by scope name and entry name (Appendix B,
-item 3).
+index of the name, the metadata values and the content, so `eovi`
+finds `Neovim` there and not in the reference match, and ranks by
+relevance, ties broken by scope name and entry name. A caller MUST NOT
+assume one store's matching of another.
 
-**Changes (#47).** A store MAY support search options beside the
-query: `any`, an entry matching any word of the query rather than every
-word, ranked by the store; `meta`, entries whose metadata holds every
-given key with the given value; and `updated_after` and
-`updated_before`, bounds on the entry's `updated` time, exclusive. A
-store MUST refuse an option it does not support rather than ignore it.
-These are an optional capability (section 5.1).
+**Options.** A store MAY support search options beside the query:
+
+| option | value | keeps |
+|---|---|---|
+| `any` | boolean | an entry whose text holds any word of the query rather than every word, ranked by the store |
+| `meta` | object of name to string | an entry whose metadata holds every given key with exactly the given value |
+| `updated_after` | RFC 3339 time | an entry whose `updated` is after the time, exclusive |
+| `updated_before` | RFC 3339 time | an entry whose `updated` is before the time, exclusive |
+
+Options combine: an entry is kept when it passes every option given and
+the query. A store that supports options declares which (section 5.1).
+A store MUST refuse a search naming an option it does not support with
+*unsupported*, rather than ignore it, and MUST refuse a `meta` key that
+is not a name with *invalid*. `limit` applies after the options.
+
+Under `any`, the reference ranks an entry by how many distinct words of
+the query its text holds, most first, ties in the order a plain search
+gives; the SQLite store uses its index's relevance (bm25). Without
+`any`, an option filters and does not reorder.
 
 ### 3.6 Attribution
 
-Every record names the **session** that wrote it, an opaque string the
-writer supplies with each write, or the empty string for a person or
-an unattributed writer. One store serves many sessions at once, so the
-session travels with the write, not with the store. This document
-gives the string no structure (see [Open questions](#16-open-questions)).
+Every record names the **session** that wrote it, a string the writer
+supplies with each write, or the empty string for a person or an
+unattributed writer. One store serves many sessions at once, so the
+session travels with the write, not with the store. A product that
+records its sessions in the agentsession format SHOULD give the
+agentsession session ID, so a reader joins the journal to sessions
+without the product's help; a product that does not MAY give any
+string. Nothing authenticates it (section 10).
 
 ### 3.7 Concurrency
 
@@ -351,16 +431,32 @@ Each record yielded is the caller's own copy.
 A store that holds a record it cannot read, a damaged line in a file,
 an undecodable row, MUST yield an error in its place, naming where it
 is, and SHOULD go on to the records after it, as the reference stores
-do. A reader MUST NOT treat the error as the journal's end.
+do. A reader MUST NOT treat the error as the journal's end. A store
+cannot tell whether a record it cannot read is after the cursor, so it
+MAY yield the error to a reader whose cursor is past it; the reference
+directory store does.
 
 ### 4.3 Sequence
 
-A store MUST allocate `seq` as one more than the `seq` of the last
-record its journal holds, or 1 for an empty journal. Along the journal
-`seq` MUST strictly increase. A fresh store's journal is therefore
-numbered 1, 2, 3 and on, and the conformance suite checks it, but a
-reader MUST NOT assume a journal is contiguous: a damaged record, or a
-journal edited behind the store, leaves gaps.
+A store MUST give each record a `seq` greater than that of every record
+in its journal it can read, and SHOULD give it one more than the
+greatest `seq` it knows the journal to hold, or 1 for an empty journal.
+Along the journal `seq` MUST strictly increase. A fresh store's journal
+is therefore numbered 1, 2, 3 and on, and the conformance suite checks
+it.
+
+The reference stores take one more than the greatest they know: the
+in-memory store its length; the SQLite store the largest `seq` in its
+table, an undecodable row's included; the directory store the greater
+of the last record read from the file's tail and the last its cursor
+saw (Annex A), which are the same unless the journal was edited behind
+it.
+
+A reader MUST NOT assume a journal is contiguous: a journal edited
+behind the store, or one whose start was removed (4.9), leaves gaps. A
+damaged record carries no number a reader can trust, so the record
+written after it MAY take the number the damaged record had; a reader
+MUST NOT take a damaged record's number as taken.
 
 `seq` orders records within one store. It promises nothing across
 stores, and nothing across a journal replaced by another.
@@ -405,21 +501,11 @@ someone fixes it. Annex A says when the reference store notices.
 ### 4.7 Lost updates
 
 A **lost update** is a record that was not built on the state it
-replaced. An auditor lists them to say what a session may have
-discarded.
-
-As the reference reader does it today: it reads the journal from a
-cursor and tracks, per entry, the hash of the last state the window
-holds, empty after a tombstone. A record whose `prev` differs from the
-tracked state is reported, with that state as what it was over. The
-first record of an entry in a window that does not start at 0 is not
-judged, since nothing was tracked for it. The reader stops at the first
-error the journal yields and returns what it has with the error.
-
-**Changes (#46, #49).** Both of the reader's limits contradict section
-4.2 and the reason forks are recorded: damage hides every fork after
-it, and a fork right after the cursor is never reported. A fork is a
-property of the record alone, so the rule becomes:
+replaced, or that does not continue the chain a reader holds for its
+entry. An auditor lists them to say what a session may have discarded.
+A reader reads the journal from a cursor and holds, per entry, the
+hash of the last state its window held for it, empty after a
+tombstone.
 
 > A reader listing lost updates MUST NOT stop at a record it cannot
 > read. It reports the lost updates on both sides of it and the damage
@@ -432,38 +518,80 @@ property of the record alone, so the rule becomes:
 > reports a break in the chain only for an entry whose earlier record
 > the window holds.
 
-Under the rule the conformance suite's "nothing from cursor 2" case
-inverts: the fork at sequence 3 is reported from cursor 2.
+A window read from 0 over a journal whose first record is 1 holds every
+entry's start, which is no live entry, so an entry's first record there
+whose `replaced` is not empty is a break. A window from a later cursor,
+or over a journal whose start is gone (4.9), holds no start, and judges
+an entry's first record in it as a fork alone.
+
+For each record reported, a reader gives:
+
+- **over**: the last state the window holds for the entry, empty for no
+  live entry, or the record's `replaced` when the window holds nothing
+  earlier for the entry;
+- whether it is a **fork** (`prev` differs from `replaced`) and whether
+  it is a **break** (`replaced` differs from over);
+- for a break, whether the reader met a record it could not read after
+  the entry's earlier record, or after the start of the window, and
+  before this one: the break is then **after damage**, and may be that
+  damage, since the missing record may be the one the chain runs
+  through.
+
+One record may be both a fork and a break. A reader returns the errors
+for the records it could not read beside the list.
 
 ### 4.8 The last sequence number
 
-**Changes (#49).** A store SHOULD answer the journal's last sequence
-number without the reader reading the journal; a reader MAY fall back
-to reading to the end. This is an optional capability (section 5.2).
-The reference stores have it cheaply: the directory store's cursor
-file, SQLite's largest `seq`, the in-memory store's length. Until #49
-lands, a reader reads to the end.
+A store SHOULD answer the journal's **last sequence number** without
+the reader reading the journal: a number after which the journal yields
+no record now, 0 for an empty journal, which is the `seq` of the last
+record the store can read or a greater number the store holds for a
+record it cannot (SQLite's undecodable row). The next record appended
+takes a greater one. A reader MAY fall back to reading the journal to
+its end, counting only the records it can read. This is an optional
+capability (section 5.2); a background pass resuming from a cursor
+needs it without reading an unbounded journal.
+
+### 4.9 A journal without its start
+
+Draft 0.2 defines no compaction, and a store MUST NOT remove records
+from its journal. A journal may still lose its start: restored from a
+partial backup, or truncated by hand, or compacted by a later draft.
+Such a journal's first record has a `seq` greater than 1.
+
+- A reader MUST NOT read the absence of records before the first as
+  damage, nor take the first record of an entry there for a create.
+- A lost-update reader reads such a journal from 0 as it reads from a
+  cursor just before its first record (4.7).
+- A reader holding an `agentmemory:write` record (section 8.3) whose
+  `seq` is before the journal's first record, or whose `seq` the
+  journal holds for another entry or another hash, MUST take the
+  record's own `change` as the state it names at that `seq`, MUST NOT
+  report the record or the journal as damaged for it, and SHOULD say
+  that the journal no longer holds it. The write record stands alone
+  for exactly this reason.
 
 ## 5. Optional store capabilities
 
 A capability is something a store MAY offer beyond section 3. A store
 that offers one MUST make its presence discoverable without calling it
 (in the Go binding, a second interface the store implements), and a
-caller MUST NOT assume a capability the store does not declare. Draft
-0.1 has no capability in the code; both below are the vetted changes.
+caller MUST NOT assume a capability the store does not declare. Every
+store in this repository offers both.
 
-### 5.1 Search options (#47)
+### 5.1 Search options
 
 The options of section 3.5: `any`, `meta`, `updated_after`,
-`updated_before`. A store declares which of them it supports. It MUST
-refuse a search naming an option it does not support, rather than
-ignore it, and `memory_search` MUST offer only the options its store
-supports (section 6.6). How `any` ranks is the store's.
+`updated_before`. A store declares the names of those it supports. It
+MUST refuse a search naming an option it does not support with
+*unsupported*, and a caller that searches a store declaring no options
+with any option set MUST be refused the same way. `memory_search` MUST
+offer only the options its store supports (section 6.6). How `any`
+ranks is the store's.
 
-### 5.2 Last sequence number (#49)
+### 5.2 Last sequence number
 
-Returns the `seq` of the last record the journal holds, 0 for an empty
-journal, by the rule of section 4.3: damaged records are not records.
+Section 4.8.
 
 ## 6. The tools
 
@@ -474,19 +602,21 @@ of **writable scopes**, one or more, and optionally **read scopes**.
 
 ### 6.1 Common rules
 
-- The tools are named `memory_save`, `memory_patch`, `memory_forget`
-  and `memory_search`. **Changes (#48)** adds `memory_insert`.
+- The tools are named `memory_save`, `memory_patch`, `memory_forget`,
+  `memory_search`, and, when the product offers an insert (6.5),
+  `memory_insert`.
 - Writable scopes MUST be distinct names, and there MUST be at least
   one. Read scopes MUST be distinct names and none of them writable.
   A tool set built otherwise is a programming error, not a call error.
 - Each writing tool's parameter schema has a `scope` property whose
-  `enum` lists the writable scopes. With more than one, `scope` is
+  `enum` lists the scopes it writes. With more than one, `scope` is
   required; with one, it MAY be left out and means that one.
   `memory_search`'s `scopes` items have an `enum` of the writable and
-  read scopes together.
+  read scopes together. Section 6.10 gives every schema.
 - The tool checks every call against its own schema before it runs,
-  so a required property or an enum is enforced, not advisory: a
-  `memory_patch` that omits `new_text` is an error, not a deletion.
+  so a required property, a type or an enum is enforced, not advisory:
+  a `memory_patch` that omits `new_text` is an error, not a deletion,
+  and `"meta": null` is an error, not "keep the metadata".
 - A writing tool given a read scope fails with the message `scope
   <scope> is read-only`, before the schema check, and its description
   says which scopes are read-only and that message.
@@ -497,19 +627,25 @@ of **writable scopes**, one or more, and optionally **read scopes**.
 - Every content size a tool reports is in bytes, beside the store's
   bound.
 
-Annotations and replay, as agenttool defines them:
+Annotations, flow and replay, as agenttool defines them:
 
-| tool | title | read-only | destructive | open-world | replay |
-|---|---|---|---|---|---|
-| `memory_save` | Save memory entry | no | yes | no | unknown |
-| `memory_patch` | Edit memory entry | no | no | no | unknown |
-| `memory_forget` | Forget memory entry | no | yes | no | unknown |
-| `memory_search` | Search memory | yes | no | no | safe |
+| tool | title | read-only | destructive | idempotent | open-world | replay | reads |
+|---|---|---|---|---|---|---|---|
+| `memory_save` | Save memory entry | no | yes | no | no | unknown | not stated |
+| `memory_patch` | Edit memory entry | no | no | no | no | unknown | not stated |
+| `memory_forget` | Forget memory entry | no | yes | no | no | unknown | not stated |
+| `memory_search` | Search memory | yes | no | (n/a) | no | safe | `untrusted`, unless the product says otherwise |
+| `memory_insert` | Insert memory entry | no | no | no | no | unknown | not stated |
 
-No writer is safe to run again: a save run again is a second write and,
-anchored in the block, reports the session's own first run as lost; a
-patch run again fails or edits twice; a forget run again removes what
-another session saved in between.
+No writer is idempotent or safe to run again: a save run again is a
+second write and, anchored in the block, reports the session's own
+first run as lost; a patch run again fails or edits twice; a forget run
+again removes what another session saved in between; an insert run
+again inserts again. `memory_search`'s flow declares that its output
+reads `untrusted` content, since it returns memory a model wrote
+(section 10), and sends nothing; a product whose searchable scopes only
+people write MAY narrow it, and SHOULD declare the union of the labels
+it gives the scopes in the block (7.2).
 
 ### 6.2 `memory_save`
 
@@ -518,13 +654,19 @@ Arguments: `scope`, `name` (required), `content` (required), `meta`
 
 It reads the live entry, then puts the whole entry:
 
+- When the product fixed the scope's names (6.5), a name outside them
+  fails before anything is read.
 - `meta` given replaces the metadata, and `{}` clears it. `meta` left
   out keeps the metadata the live entry has, since a model rewriting
-  the content is not saying to drop the description.
+  the content is not saying to drop the description; the put is then
+  conditional on that metadata, with if-meta-hash, and on *conflict*
+  the tool reads the metadata again and puts again, up to four attempts
+  in all, so a description another session changed in between is kept.
 - The put is anchored with based-on (3.2): in the hash the block showed
   for the entry when the product says what the block showed (6.8) and
-  the block held the entry; otherwise in the hash it read; and for a
-  create, in nothing.
+  the block held the entry; otherwise in the hash of its first read;
+  and for a create, in nothing. A metadata retry keeps that base, so a
+  content change in between is still the fork the journal shows.
 - The result says whether it created or replaced, the size it replaced,
   what became of the metadata, and, when the product says what the
   block showed, which base the write took, and that the entry changed
@@ -544,19 +686,19 @@ It replaces one exact occurrence of `old_text` in the live content with
   than once fails, saying how many times.
 - A missing entry fails with *not found* and a pointer to
   `memory_save`.
-- The put is conditional with if-hash of the state read. On *conflict*
-  the tool reads again and applies the edit to the new content, up to
-  four attempts in all, then fails. Two sessions patching one entry
-  keep both edits; an edit whose anchor another session removed fails
-  out loud.
+- The put is conditional with if-hash and if-meta-hash of the state
+  read. On *conflict*, of either, the tool reads again and applies the
+  edit to the new content, up to four attempts in all, then fails. Two
+  sessions patching one entry keep both edits; a description another
+  session changed is kept; an edit whose anchor another session
+  removed fails out loud.
 
 ### 6.4 `memory_forget`
 
-Arguments: `scope`, `name`. It forgets the entry (3.4).
+Arguments: `scope`, `name`. It forgets the entry (3.4). When the
+product fixed the scope's names, a fixed name fails (6.5).
 
-### 6.5 Fixed names and insert (#48)
-
-**Changes (#48).** Not in the code at v0.0.10:
+### 6.5 Fixed names and insert
 
 > A product MAY fix a scope's entry names. `memory_save` MUST then
 > refuse any other name in that scope, and `memory_forget` MUST refuse
@@ -567,22 +709,46 @@ Arguments: `scope`, `name`. It forgets the entry (3.4).
 > It creates the entry with the must-not-exist precondition, and its
 > result names the entry.
 
-`memory_insert` takes `scope`, `content` and `meta`. Its write is a put
-with if-hash of the empty string, so an insert never overwrites an
-entry, and two inserts of one content in one second get two names. The
-exact form of the generated name is an [open
-question](#16-open-questions).
+Fixed names are for a scope of a few named blocks the model rewrites
+and never adds to or removes, as Letta's `persona` and `human` are: a
+model told to rewrite one otherwise saves a new name beside it. The
+writers' descriptions name the fixed entries. `memory_patch` edits a
+fixed entry as any other. A scope with fixed names takes no insert.
+
+`memory_insert` takes `scope` (under the scope rule, over the scopes
+the product offers inserts into), `content` (required) and `meta`
+(optional). Its n-th attempt names the entry
+
+```
+YYYYMMDD-HHMMSS-hhhhhhhh        for n = 1
+YYYYMMDD-HHMMSS-hhhhhhhh-n      for n ≥ 2
+```
+
+with the date and time the tool begins the write, in UTC, to the
+second, and `hhhhhhhh` the first eight hexadecimal digits of the
+content's hash, after `sha256:`. Each attempt is a put with if-hash of
+the empty string; on *conflict* the tool tries the next n, up to 100.
+An insert never overwrites, and two inserts of one content in one
+second get `…-1a2b3c4d` and `…-1a2b3c4d-2`. Names sort by time, and the
+block renders in name order (7.3), so under the budget a scope of
+inserts shows its oldest and leaves out its newest, which
+`memory_search` reaches.
 
 ### 6.6 `memory_search`
 
 Arguments: `query` (required), `scopes` (optional array), `limit`
-(optional integer).
+(optional integer), and one argument for each search option its store
+supports (3.5): `any` (boolean), `meta` (object of string to string),
+`updated_after` and `updated_before` (strings, RFC 3339). An option the
+store does not support has no argument, and the description says which
+it offers.
 
 - A query that is empty or white space alone fails.
 - `scopes` left out or empty searches every writable and read scope,
   in that order.
 - `limit` left out, or under one, is the product's default, 5 unless
   it sets another.
+- A bound that is not an RFC 3339 time fails, naming the argument.
 - The result lists each match with its scope, name, size, description
   and whole content, while the content shown stays within the product's
   result bound, 16384 bytes unless it sets another. A match whose
@@ -591,9 +757,6 @@ Arguments: `query` (required), `scopes` (optional array), `limit`
   in the transcript for the rest of the session, which is why both
   defaults are low.
 - A search writes nothing and carries no record.
-
-**Changes (#47).** `memory_search` adds an argument for each search
-option its store supports, and none for one it does not.
 
 ### 6.7 The write record
 
@@ -621,15 +784,82 @@ and reported as lost.
 The reference binding offers one paragraph telling the model what the
 block is and which tool makes which change, for the product to append
 to its instructions when it offers the tools. It asks the model to use
-headings of level four or none inside an entry, since levels one to
-three read as the block's own structure. Its text is not normative.
+headings of level four or none inside an entry; the block writes levels
+one to three at level four anyway (7.2). Its text is not normative.
+
+### 6.10 Parameter schemas
+
+The schemas below are for writable scopes `user` and `project`, read
+scope `rules`, inserts into `user`, and a store that supports every
+search option. A tool set over other scopes writes its own in the
+`enum`s; with one scope, `scope` leaves `required`. The descriptions
+are the reference's and not normative; the types, the `enum`s and
+`required` are. No schema sets `additionalProperties` at its top level,
+so a member it does not list is ignored, except that a search option a store does not
+support is refused by the store (5.1).
+
+`memory_save`:
+
+```json
+{"type":"object","properties":{
+  "scope":{"type":"string","enum":["user","project"],"description":"Which memory the entry belongs to; name one of the values"},
+  "name":{"type":"string","description":"Kebab-case name, unique within the scope: lowercase letters, digits and hyphens"},
+  "content":{"type":"string","description":"The whole content of the entry, Markdown"},
+  "meta":{"type":"object","additionalProperties":{"type":"string"},"description":"Metadata beside the content: a description is shown in the block and the index; keys are kebab-case, values one line. Omit it to keep the metadata the entry has; give {} to clear it"}},
+ "required":["scope","name","content"]}
+```
+
+`memory_patch`:
+
+```json
+{"type":"object","properties":{
+  "scope":{"type":"string","enum":["user","project"],"description":"Which memory the entry belongs to; name one of the values"},
+  "name":{"type":"string","description":"The entry to edit"},
+  "old_text":{"type":"string","description":"Text that appears exactly once in the entry, copied exactly"},
+  "new_text":{"type":"string","description":"What replaces it; empty removes it"}},
+ "required":["scope","name","old_text","new_text"]}
+```
+
+`memory_forget`:
+
+```json
+{"type":"object","properties":{
+  "scope":{"type":"string","enum":["user","project"],"description":"Which memory the entry belongs to; name one of the values"},
+  "name":{"type":"string","description":"The entry to remove"}},
+ "required":["scope","name"]}
+```
+
+`memory_search`:
+
+```json
+{"type":"object","properties":{
+  "query":{"type":"string","description":"Words that must all appear in an entry's name, metadata or content, in any case"},
+  "scopes":{"type":"array","items":{"type":"string","enum":["user","project","rules"]},"description":"Which memories to search; all of them when omitted"},
+  "limit":{"type":"integer","description":"At most this many entries; keep it low, results stay in the conversation"},
+  "any":{"type":"boolean","description":"Match entries holding any of the words rather than all of them, best matches first"},
+  "meta":{"type":"object","additionalProperties":{"type":"string"},"description":"Only entries whose metadata has each of these keys with exactly this value"},
+  "updated_after":{"type":"string","description":"Only entries last written after this time, RFC 3339"},
+  "updated_before":{"type":"string","description":"Only entries last written before this time, RFC 3339"}},
+ "required":["query"]}
+```
+
+`memory_insert`, with one insert scope, so `scope` is optional:
+
+```json
+{"type":"object","properties":{
+  "scope":{"type":"string","enum":["user"],"description":"Which memory the passage belongs to"},
+  "content":{"type":"string","description":"The passage to keep, Markdown"},
+  "meta":{"type":"object","additionalProperties":{"type":"string"},"description":"Metadata beside the content: a description is shown in the block and the index; keys are kebab-case, values one line"}},
+ "required":["content"]}
+```
 
 ## 7. The rendered block
 
 ### 7.1 Inputs
 
 The block is rendered from a store, an ordered list of scopes, a
-**block bound** in bytes, and optionally a **cap** per scope.
+**block bound** in bytes, and optionally a **cap** per scope and
+**trust labels** per scope.
 
 - The scopes MUST be distinct names; a renderer refuses a scope given
   twice or not a name with *invalid*, since its parts would collide.
@@ -639,27 +869,62 @@ The block is rendered from a store, an ordered list of scopes, a
   out when its share reaches zero.
 - A cap is a non-negative byte count; a negative one is a budget
   error. A cap on a scope not rendered does nothing; the last cap given
-  for a scope holds.
+  for a scope holds. A cap of zero shows none of the scope's entries
+  and, since the omission line counts inside the cap, names none of
+  them in the block either; the manifest lists every one.
+- A scope's trust labels are agentsession's (`untrusted`, `private`,
+  or none); a scope without them is `untrusted`. They change no byte.
+
+The fixtures under `testdata/render` give each input as JSON
+(`<case>.input.json`: `scopes`, `block_bound`, `entry_bound`, `caps`
+and the `entries` put into an empty store) beside its outputs.
 
 ### 7.2 Parts
 
-The block is a list of parts, each an `id` and a `text`, joined by one
-blank line, the two characters `\n\n`, which is agentsession's rule for
-joining instructions parts. In order:
+The block is a list of parts, each an `id`, a `text` and a `trust`,
+joined by one blank line, the two characters `\n\n`, which is
+agentsession's rule for joining instructions parts. In order:
 
-| part | `id` | `text` |
-|---|---|---|
-| title | `memory` | `# Memory` |
-| per scope, its heading | `memory/<scope>` | `## <scope>`; for a scope that lists no entries, `## <scope>`, a blank line and `No entries.` |
-| per entry shown, in list order | `memory/<scope>/<name>` | the entry part, below |
-| per scope that left entries out, after its entries | `memory/<scope>:omitted` | the omission line, below |
-| summary | `memory:summary` | the summary line, below |
+| part | `id` | `text` | `trust` |
+|---|---|---|---|
+| title | `memory` | `# Memory` | `{"reads":[]}` |
+| per scope, its heading | `memory/<scope>` | `## <scope>`; for a scope that lists no entries, `## <scope>`, a blank line and `No entries.` | `{"reads":[]}` |
+| per entry shown, in list order | `memory/<scope>/<name>` | the entry part, below | the scope's labels |
+| per scope that left entries out, after its entries | `memory/<scope>:omitted` | the omission line, below | the scope's labels |
+| summary | `memory:summary` | the summary line, below | `{"reads":[]}` |
 
 An **entry part** is `### <name> (<size> of <bound> bytes)`, then, when
 the entry has a non-empty description, ` — ` (space, U+2014, space) and
 the description, then a blank line, then the content with one trailing
-`\n` removed if it has one. `<size>` is the content's byte length and
-`<bound>` the store's entry bound. The content is otherwise verbatim.
+`\n` removed if it has one and its headings neutralised, below.
+`<size>` is the content's byte length and `<bound>` the store's entry
+bound.
+
+**Neutralised headings.** The block uses heading levels one to three
+for its own structure, so content MUST NOT open one. Split the content
+at `\n`; a line's body is the line without its `\n` and without one
+`\r` before it; its indent is its run of leading U+0020, and its rest
+what follows. Outside a code fence, in order:
+
+- A line whose indent is at most three and whose rest is one to three
+  `#` followed by U+0020, U+0009 or the end of the body, an ATX
+  heading, has `#` inserted after its indent until the run is four.
+- A line whose indent is at most three and whose rest is one or more
+  `=`, or one or more `-`, then only U+0020 and U+0009, a setext
+  underline, directly after a line that is not blank, not a heading
+  this rule rewrote and not a fence line, has `\` inserted after its
+  indent, which makes it text. A blank line's body is only U+0020 and
+  U+0009, or empty.
+- A line whose indent is at most three and whose rest begins with three
+  or more `` ` `` or `~`, the backtick form with no `` ` `` after the
+  run, opens a fence; the fence closes at a line whose indent is at
+  most three and whose rest is a run of the same character at least as
+  long, then only U+0020 and U+0009. Nothing inside a fence, nor
+  anything after a fence that never closes, changes.
+
+Nothing else changes: a heading of level four or more, a heading inside
+a block quote or a list item, an indented line and the bytes of every
+other line stay as written. `<size>` remains the content's size.
 
 An **omission line** is `Not shown, over the block budget; fetch with
 memory_search: ` followed by `<name> (<size> bytes)` for each entry it
@@ -680,10 +945,16 @@ spaces to the width of the bound's decimal digits, and `<limit>` is the
 store's entry bound. Padding `<free>` makes the summary's width depend
 on `<size>` alone, so the size it states can be its own.
 
+**Trust.** A part's `trust` is agentsession's member: `reads`, a list
+of labels. The renderer's own parts read nothing. An entry part and an
+omission line carry their scope's labels, `untrusted` unless the
+product gives the scope others; a product gives none only to a scope
+people alone write. A renderer MUST set it on every part.
+
 The IDs are distinct within a block, because scopes and names are
-names. Every ID is `memory` or begins `memory/` or `memory:`; a product
-that records parts of its own beside these gives them IDs outside that
-space (Appendix B, item 6).
+names. Every ID is `memory` or begins `memory/` or `memory:`; that
+space is reserved to this document, and a product that records parts
+of its own beside these gives them IDs outside it.
 
 ### 7.3 Budget and order
 
@@ -707,15 +978,17 @@ space (Appendix B, item 6).
 ### 7.4 Determinism
 
 The block, its parts and its manifest MUST be a function of the store's
-live entries, the entry bound, the scope list, the block bound and the
-caps, and of nothing else: no time, no randomness, no state of an
-earlier render. An unchanged store renders the same bytes.
+live entries, the entry bound, the scope list, the block bound, the
+caps and the trust labels, and of nothing else: no time, no randomness,
+no state of an earlier render. An unchanged store renders the same
+bytes.
 
 ### 7.5 The reference packing
 
 A renderer whose blocks are to be byte-identical to the reference's,
 which a session's instructions parts and a prompt cache both reward,
-packs as follows; `cost(t)` is `len(t) + 2`, a part with its separator.
+packs as follows; `cost(t)` is `len(t) + 2`, a part with its separator,
+and an entry part's text is the neutralised one of 7.2.
 
 1. `fixed` is `len("# Memory")`, plus `cost` of the summary with
    `<shown>` and `<omitted>` both the total number of entries listed,
@@ -740,8 +1013,8 @@ packs as follows; `cost(t)` is `len(t) + 2`, a part with its separator.
    the length of the block it completes; stop when it no longer moves.
 
 The fixtures under `testdata/render` are the conformance corpus for a
-byte-identical renderer: for each, the joined block, the parts with
-their lengths, and the manifest.
+byte-identical renderer: for each, its input, the joined block, the
+parts with their lengths, and the manifest.
 
 ### 7.6 The manifest
 
@@ -749,13 +1022,18 @@ A render returns a **manifest**: `entries`, the entries the block
 holds in block order, and `omitted`, the entries the bound or a cap
 left out, in the order they would have appeared. Each element is:
 
-| member | type | meaning |
-|---|---|---|
-| `scope` | string | the entry's scope |
-| `name` | string | the entry's name |
-| `hash` | string | the hash of the content shown or left out |
-| `bytes` | integer | the content's size |
-| `reason` | string, omitted when empty | why it was left out; empty for an entry the block holds |
+| member | type | presence | meaning |
+|---|---|---|---|
+| `scope` | string | required | the entry's scope |
+| `name` | string | required | the entry's name |
+| `hash` | string | required | the hash of the content shown or left out |
+| `bytes` | integer | required | the content's size |
+| `reason` | string | omitted when empty | why it was left out; empty for an entry the block holds |
+
+A writer MUST write every required member. A reader reads a missing
+`hash` as the empty string and a missing `bytes` as 0, so it can still
+hash what it was given; the hash then tells it the record is not the
+one a writer meant.
 
 Reasons:
 
@@ -780,6 +1058,8 @@ element, `entries` first and then `omitted`, each in order:
 with `<bytes>` in decimal. The empty manifest's hash is the hash of the
 empty string. Two renders that showed the model the same memories hash
 the same, so a product records the manifest only when its hash moves.
+The manifest names content, not metadata: a change to an entry's
+description changes its part and not the manifest (section 16).
 
 ## 8. Session records
 
@@ -797,17 +1077,29 @@ has, and adds no entry type:
   `keep`.
 - Each entry the manifest left out is an `instructions_omitted`
   element whose `id` is that entry's part ID, `memory/<scope>/<name>`,
-  and whose `reason` is the manifest's reason.
-- The manifest is a `custom` entry under `agentmemory:render` (8.2).
+  whose `reason` is the manifest's reason, and whose `size` is what
+  agentsession means by it, the bytes the part would have added: the
+  length of the entry's part text (7.2) plus 2 for its separator. It is
+  not the manifest's `bytes`, which is the content's size.
+- The manifest is a `custom` entry under `agentmemory:render` (8.4).
 - A write is a function call, and its write record is a `custom`
   entry under `agentmemory:write` beside the call (8.3).
 
 A part or omitted element that comes from the memory block SHOULD carry
 `source` `agentmemory`, the well-known instruction source value for
-this layer, which agentsession is adding to its RFC; a reader
-recognises the memory block by that value without knowing the product.
-In the reference binding a part carries no source, and the product
-sets it (agentkit does).
+this layer, which agentsession is adding to its RFC (0.17, in review);
+a reader recognises the memory block by that value without knowing the
+product. In the reference binding a part carries no source, and the
+product sets it.
+
+A part's `trust` (7.2) is a record member agentsession defines on
+items, compactions and branch summaries; agentsession 0.16 does not
+define it on an instructions part. Where the session format defines it
+there, a writer MUST carry each part's labels. Until it does, a reader
+that decides anything by trust MUST read every part whose `source` is
+`agentmemory` and whose ID names an entry or an omission line as
+`untrusted`, and a `memory_search` output carries its flow's labels as
+agentsession's `trust` on the output item, as any tool's does.
 
 ### 8.2 Namespaces
 
@@ -831,16 +1123,21 @@ whose result carried it; a recorder that writes it beside the call puts
 it between the call's dispatch and its output, which is what the
 agenttool record rule and agentturn's recorder do. It joins the session
 to the store's journal by `seq` and hash without reading a journal that
-may since have moved. It is not folded; each stands alone.
+may since have moved. It is not folded; each stands alone, and a reader
+whose journal no longer holds it reads it as section 4.9 says.
 
 ### 8.4 `agentmemory:render`
 
 `data` is a **render record**, one of two forms told apart by the
-presence of the member `base`:
+member `base`: a record with `base` a string is a delta, and a record
+without it, or with `base` `null`, which agentsession reads as an
+absent member, is whole.
 
 - A **whole record** is the manifest itself: `{"entries":[…],
-  "omitted":[…]}`, `omitted` left out when empty. A reader MUST read an
-  absent or `null` `entries` as empty (Appendix B, item 9).
+  "omitted":[…]}`, `omitted` left out when empty. A writer MUST write
+  `entries`, as `[]` when it is empty. A reader MUST read an absent or
+  `null` `entries` as empty, since writers before draft 0.2 wrote
+  `null`.
 - A **delta** is `{"base":…, "hash":…, "entries":[…], "omitted":[…]}`:
   `base` is the hash of the manifest it is written on, `hash` the hash
   of the manifest it gives, and each list, left out when empty, is a
@@ -914,6 +1211,41 @@ A reader before v0.0.9 resolved a delta only against the manifest in
 force. A writer that writes a delta on another manifest does so only
 once its session's readers fold with the window.
 
+The fixtures under `testdata/manifest` are records on a path, with the
+hash of the manifest in force after each, or the refusal: two agents
+taking turns, and every malformed and unresolved form above, a `base`
+of `null` and an `entries` of `null` among them.
+
+### 8.6 Redaction
+
+agentsession lets a redactor rewrite a `custom` entry's `data`
+(agentsession RFC 0001, Redaction). The records here hold hashes that
+cover the text a redaction removes, so a redactor of a session that
+holds them:
+
+- that changes any element of an `agentmemory:render` record MUST write
+  that record whole, with the elements it wrote, never as a delta; and
+  every later delta on the path whose `base` is a manifest the
+  redaction changed MUST be re-based: written whole, or as a delta on
+  the redacted manifest with `base` and `hash` computed over the
+  manifests the redacted session holds. A delta left as it was names a
+  base no reader of the redacted session holds, and is refused as
+  unresolved;
+- that changes an entry's content or metadata in an
+  `agentmemory:write` record MUST compute `entry.hash` and
+  `entry.meta_hash` over what it wrote, and MAY replace `prev` and
+  `replaced`, which name states of the original journal. A reader of a
+  redacted session MUST NOT expect a write record to join the journal.
+
+A content hash, a metadata hash and a manifest element's `hash` are
+unsalted SHA-256 of the text. A holder of a redacted session who can
+guess a short secret, a PIN, a short password, a phone number, confirms
+the guess by hashing it. A redaction that removes such a value from an
+entry MUST also replace every hash of a text that held it: `entry.hash`
+and `entry.meta_hash`, the `prev` and `replaced` that name it, and the
+manifest elements that name it, re-basing as above; otherwise it hides
+nothing.
+
 ## 9. Annex A: the filestore format
 
 The reference store keeps a directory: one directory per scope, one
@@ -922,7 +1254,11 @@ append-only `journal.jsonl` of records in the shape of section 4.1, a
 cursor file, and a lock. A second program that reads or writes that
 directory, a viewer, a sync daemon, an agent in another language, MUST
 follow [`docs/filestore-format.md`](../filestore-format.md), which is
-this document's Annex A and normative.
+this document's Annex A and normative. It says, among the rest, that
+nothing reading or writing the directory follows a link (*Links*), how
+the next `seq` is taken (*Sequence*), and what `replaced` and `prev`
+are for a write over a file the store cannot journal (*Chains and
+forks*).
 
 The annex stays where it is rather than moving under `docs/rfcs/`:
 `filestore/format_test.go` reads it by path and checks the package
@@ -937,20 +1273,51 @@ part of this document.
 
 ## 10. Security considerations
 
-- **Memory is instructions.** The block is part of what the model
+- **Memory is untrusted input.** The block is part of what the model
   obeys, and its content was written by a model, which may have read
   text an attacker wrote. An injected instruction saved to memory
-  persists across sessions. Read scopes give a product scopes the model
-  cannot write; whose text reaches a writable scope is the product's
-  question.
+  persists across sessions and reaches every later session's
+  instructions. This document therefore labels every entry part and
+  omission line `untrusted` unless the product says a scope is written
+  by people alone (7.2), declares `memory_search`'s output `untrusted`
+  (6.1), and has a session reader treat memory parts as `untrusted`
+  where the session format cannot yet carry the label (8.1). Read
+  scopes give a product scopes the model cannot write.
+- **Forged structure.** An entry's content is placed inside the block,
+  among headings the model reads as the block's structure. A heading of
+  level one to three inside content is written at level four and a
+  setext underline is escaped (7.2), so an entry cannot open a scope
+  such as `## project`, an entry part with a size it does not have, or
+  a section that reads as the end of memory. A line of plain text such
+  as one that looks like the summary is still possible; the summary is
+  always the block's last part, and the labels say the rest is
+  untrusted.
+- **Links.** The name grammar admits no separator, dot or upper case,
+  so a scope and a name are always one path segment under the store's
+  root, and every store refuses a non-name before it reads (3.1). That
+  is not enough for a directory a person commits: a link inside it,
+  `project/x.md` pointing at `~/.ssh/id_ed25519`, would be read,
+  rendered into the instructions and copied into the journal. A store
+  over a file system MUST NOT follow a link inside its directory, nor
+  reach anything outside it through any path; Annex A's *Links* says
+  what the reference does with each kind.
+- **Lost metadata.** A conditional write on the content alone does not
+  see a concurrent change to the metadata, so a write that writes back
+  metadata it read undoes another session's description without a
+  trace. Writers that keep metadata name its hash (3.2, 6.2, 6.3).
 - **Secrets.** Nothing stops a model saving a secret it saw, and the
   journal keeps every state, tombstones included, forever. A product
   that may see secrets redacts before the store or keeps the store
-  where the secret could be.
-- **Paths.** The name grammar admits no separator, dot or upper case,
-  so a scope and a name are always one path segment under the store's
-  root, and a store that refuses a non-name before using it as a path
-  reaches nothing outside it.
+  where the secret could be. The hashes in records and manifests
+  confirm a guessed short secret (8.6).
+- **Attribution is a claim.** A record's `session` is whatever the
+  writer supplied, and `source: reconciled` whatever a store wrote;
+  nothing authenticates either, and a journal a person can edit holds
+  whatever they wrote. An auditor treats both as the store's account,
+  not as proof.
+- **Scope isolation.** The tools write only the scopes in their `enum`
+  and refuse read scopes before their schema check (6.1); the scope a
+  call names is checked at call time as well as in the schema.
 - **Bounds.** The entry bound, the metadata bound, the block bound and
   the search result bound keep a model from filling its own context
   through memory.
@@ -963,25 +1330,25 @@ The root module is the reference binding.
 
 | Contract | Go |
 | --- | --- |
-| name rule | `ValidName`, `ValidScope`, `MaxNameBytes` |
-| entry, entry value | `Entry{Scope, Name, Content, Meta, Hash, Updated, Deleted}`, `Scope`, `MetaDescription`, `Entry.Description`, `Entry.Size` |
+| name rule | `ValidName`, `ValidScope`, `MaxNameBytes`, `CheckScope`, `CheckRef` |
+| entry, entry value | `Entry{Scope, Name, Content, Meta, Hash, MetaHash, Updated, Deleted}`, `Scope`, `MetaDescription`, `Entry.Description`, `Entry.Size` |
 | entry rules | `CheckEntry`, `MaxMetaBytes`, `DefaultMaxEntryBytes` |
-| hash | `Hash` |
+| hash, metadata hash | `Hash`, `MetaHash` |
 | store | `Store`: `Get`, `List`, `Put`, `Forget`, `Search`, `Journal`, `MaxEntryBytes` |
-| if-hash, based-on | `IfHash(h)`, `BasedOn(h)`; `PutOption`, `PutOptions`, `ResolvePutOptions`, `PutOptions.BaseFor`, `PutOptions.Check` for a store's own use |
-| error kinds | `ErrNotFound`, `ErrInvalid`, `ErrTooLarge` with `SizeError`, `ErrConflict` with `ConflictError` |
-| reference match | `Match` |
+| put options | `IfHash(h)`, `IfMetaHash(m)`, `BasedOn(h)`; `PutOption`, `PutOptions`, `ResolvePutOptions`, `PutOptions.BaseFor`, `PutOptions.Check` for a store's own use |
+| error kinds | `ErrNotFound`, `ErrInvalid`, `ErrTooLarge` with `SizeError`, `ErrConflict` with `ConflictError{…, Meta}`, `ErrUnsupported` |
+| reference match | `Match`, `SearchOptions.Filter` |
+| search options | `Searcher` (`SearchOptions`, `SearchWith`), `SearchOptions{Any, Meta, UpdatedAfter, UpdatedBefore}`, `SearchAny`, `SearchMeta`, `SearchUpdatedAfter`, `SearchUpdatedBefore`, `AllSearchOptions`, `SearchSupport`, `SearchWith` |
 | attribution | `WithSession(ctx, id)`, `SessionFrom(ctx)` |
 | record | `Change{Seq, Entry, Prev, Replaced, Session, Source, At}`, `SourceReconciled` |
-| lost updates | `LostUpdates(ctx, store, after)`, `LostUpdate{Change, Over}` |
-| search options (#47) | an optional `Searcher` interface with `SearchOptions`, to come |
-| last sequence number (#49) | an optional `LastSeqer` interface and `LastSeq(ctx, s)` falling back to a read, to come |
-| tools | `Tools(store, scopes, opts...)`; `SaveTool`, `PatchTool`, `ForgetTool`, `SearchTool` |
-| tool options | `WithReadScopes`, `WithRendered` (6.8), `WithSearchLimit`, `WithSearchBytes`, `DefaultSearchLimit`, `DefaultSearchBytes`; `WithFixedNames` and `WithInsert` to come (#48) |
+| lost updates | `LostUpdates(ctx, store, after)`, `LostUpdate{Change, Over, Break, AfterDamage}` |
+| last sequence number | `LastSeqer`, `LastSeq(ctx, s)` |
+| tools | `Tools(store, scopes, opts...)`; `SaveTool`, `PatchTool`, `ForgetTool`, `SearchTool`, `InsertTool`, `InsertName` |
+| tool options | `WithReadScopes`, `WithRendered` (6.8), `WithFixedNames`, `WithInsert`, `WithSearchLimit`, `WithSearchBytes`, `WithSearchReads`, `DefaultSearchLimit`, `DefaultSearchBytes` |
 | write record | `WriteRecord{Tool, Change}`, `WriteNS`, as an `agenttool.Recordable` |
 | usage paragraph | `Usage()` |
-| render | `Render`, `RenderParts`, `JoinParts`, `Part{ID, Text}`, `PartSeparator`, `TitlePartID`, `SummaryPartID`, `PartID` |
-| render options | `WithMaxTotalBytes`, `WithScopeMaxBytes`, `DefaultMaxTotalBytes`, `ErrBudget` |
+| render | `Render`, `RenderParts`, `JoinParts`, `Part{ID, Text, Trust}`, `Trust{Reads}`, `EntryPart`, `PartSeparator`, `TitlePartID`, `SummaryPartID`, `PartID` |
+| render options | `WithMaxTotalBytes`, `WithScopeMaxBytes`, `WithScopeTrust`, `DefaultMaxTotalBytes`, `ErrBudget` |
 | manifest | `Manifest{Entries, Omitted}`, `ManifestEntry{Scope, Name, Hash, Bytes, Reason}`, `OmitBudget`, `OmitBlock`, `Manifest.Hash` |
 | render record | `ManifestNS`; `Manifest.Record` (whole), `Manifest.RecordSince` (delta on a base) |
 | fold | `ManifestFold` (`Apply`, `Manifest`, `Record`), `ManifestFoldDepth`; `ApplyManifestRecord` is the single-base reader; `ErrManifestBase` is *unresolved* |
@@ -996,31 +1363,44 @@ and a recorder that reads `agenttool.Recordable` writes the
 ## 12. Conformance
 
 **A conforming store** validates every write against section 2,
-refuses with the error kinds of section 3.3, writes whole entries
-atomically, appends one record per write and returns it, keeps the
-chain, numbers records by section 4.3, yields its journal in order and
-reports a record it cannot read in place, serialises writers, and
-declares every optional capability it offers and refuses an option it
-does not. `storetest` is the suite; every store in this repository
-passes it, and a store elsewhere can run it.
+refuses a non-name in every read, refuses with the error kinds of
+section 3.3, writes whole entries atomically, appends one record per
+write and returns it, fills both hashes, honours if-hash, if-meta-hash
+and based-on, keeps the chain, numbers records by section 4.3, yields
+its journal in order and reports a record it cannot read in place,
+serialises writers, declares every optional capability it offers and
+refuses an option it does not, and, over a file system, follows no
+link. `storetest` is the suite; every store in this repository passes
+it, and a store elsewhere can run it.
 
 **A conforming tool set** names and schemas its tools as section 6
 says, enforces its own schema, refuses read scopes and unlisted scopes,
-anchors every save and patch as sections 6.2 and 6.3 say, and carries
-the write record of every write it makes.
+anchors every save and patch as sections 6.2 and 6.3 say, keeps fixed
+names and names inserts as 6.5 says, offers only the search options its
+store supports, declares `memory_search`'s flow, and carries the write
+record of every write it makes.
 
-**A conforming renderer** meets sections 7.1 to 7.4 and returns the
-manifest of 7.6. A **byte-identical renderer** also reproduces every
-fixture under `testdata/render`.
+**A conforming renderer** meets sections 7.1 to 7.4, neutralises
+headings and labels every part as 7.2 says, and returns the manifest of
+7.6. A **byte-identical renderer** also reproduces every fixture under
+`testdata/render` from its input.
 
-**A conforming session writer** records the block, its omissions, its
-manifest and its writes as section 8 says, under the reserved
-namespaces only.
+**A conforming lost-update reader** meets section 4.7 and reproduces
+every fixture under `testdata/lostupdates`: a journal of lines, where a
+line that does not decode as a record with a positive `seq`, an entry
+and a hash is a record the reader cannot read, and for each cursor the
+records reported, each with `over`, `fork`, `break` and `after_damage`,
+and the number of records it could not read.
+
+**A conforming session writer** records the block, its omissions with
+their sizes, its manifest and its writes as section 8 says, under the
+reserved namespaces only, and redacts them as 8.6 says.
 
 **A conforming session reader** folds `agentmemory:render` by section
 8.5 with a window of 8, refuses an unresolved or malformed record
 without changing its fold, verifies every delta against its `hash`,
-and keeps `agentmemory:` namespaces it does not know.
+reproduces every fixture under `testdata/manifest`, and keeps
+`agentmemory:` namespaces it does not know.
 
 **A conforming writer of the filestore directory** meets Annex A.
 
@@ -1033,143 +1413,132 @@ conforming store, tool set, renderer or reader non-conforming is listed
 in the changelog as breaking.
 
 The records in a session and in the journal carry no version member.
-Members are added only as optional and omitted when empty, so a reader
-that ignores what it does not know reads a later writer's records; the
-meaning of an existing member does not change. A change that would
-change one is a new namespace, not a new meaning under the old one.
+Members are added only as optional and omitted when empty, as
+`meta_hash` is in draft 0.2, so a reader that ignores what it does not
+know reads a later writer's records; the meaning of an existing member
+does not change. A change that would change one is a new namespace,
+not a new meaning under the old one.
 
 ## 14. Prior art
 
 - **Letta memory blocks**: bounded text in the window that the agent
   edits through tools, with archival memory behind a search tool and
   `archival_memory_insert` for unnamed passages. This document takes
-  the bound, rendered to the model, the edit by exact replacement, and,
-  with #48, the insert and fixed block names.
+  the bound, rendered to the model, the edit by exact replacement, the
+  insert and fixed block names.
 - **Claude Code's memory directory**: one fact per Markdown file with
   an index loaded each session. This document takes the file as the
   unit, in the reference store, and the index.
 - **agentsession RFC 0001**: the session format. This document defines
   no entry type; it uses `config` with `instructions_parts` and
-  `instructions_omitted`, and `custom`, and borrows the `keep` cursor
-  and the hash notation.
-- **agenttool RFC 0001**: the tool contract, its annotations, replay
-  and records.
+  `instructions_omitted`, and `custom`, and borrows the `keep` cursor,
+  the hash notation and the trust labels.
+- **agenttool RFC 0001**: the tool contract, its annotations, flow,
+  replay and records.
 - **Git**: a content-addressed history of whole states, where a merge
   that lost a change is visible only by reading the history. The
   journal is that per entry, with the base recorded so the loss is
   visible without a three-way diff.
 
-## 15. Changes the open issues make
+## 15. Changes from draft 0.1
 
-| issue | sections | the change | today |
-|---|---|---|---|
-| #46 | 4.2, 4.7 | Lost updates are judged by a record's own `prev` against its `replaced`; a reader does not stop at damage, and reports chain breaks, attributing one after damage to the damage. | The reader compares `prev` with the state it tracked and stops at the first error. |
-| #47 | 3.5, 5.1, 6.6 | Optional search options `any`, `meta`, `updated_after`, `updated_before`; refused when unsupported; offered by `memory_search` only when supported. | Query, scopes and limit only. |
-| #48 | 6.1, 6.5 | Fixed entry names per scope, refused by save and forget; `memory_insert` naming the entry itself. | Any valid name; no insert. |
-| #49 | 4.7, 4.8, 5.2 | A fork is reported from any cursor; chain breaks only where the window holds a predecessor; an optional last-sequence-number capability. | The first record of an entry after a cursor is not judged; a reader reads to the end. |
+| what | sections | the change |
+|---|---|---|
+| #46 | 4.2, 4.7 | Lost updates are judged by a record's own `prev` against its `replaced`; a reader does not stop at damage, and reports chain breaks, attributing one after damage to the damage. |
+| #47 | 3.3, 3.5, 5.1, 6.6, 6.10 | Optional search options `any`, `meta`, `updated_after`, `updated_before`; refused as *unsupported* when a store lacks them; offered by `memory_search` only when supported. |
+| #48 | 6.1, 6.2, 6.4, 6.5 | Fixed entry names per scope, refused by save and forget; `memory_insert` naming the entry `YYYYMMDD-HHMMSS-<8 hex>[-n]`. |
+| #49 | 4.7, 4.8, 5.2 | A fork is reported from any cursor; chain breaks only where the window holds a predecessor; the last sequence number as a capability. |
+| question 1 | 1, 2.3, 2.4, 3.2, 3.3, 6.2, 6.3 | The metadata hash, `meta_hash` in the entry value, if-meta-hash; patch, and save that keeps metadata, are conditional on it. |
+| question 2 | 3.1 | Every store refuses a non-name in every read as *invalid*. |
+| question 3 | 3.6 | `session` SHOULD be the agentsession session ID. |
+| question 4 | 6.5 | The inserted name's form. |
+| question 5 | 8.1 | An omitted memory part's `size` is agentsession's: the part's bytes and separator. |
+| question 6 | 8.4 | Writers MUST write `"entries":[]`; readers accept `null`. |
+| question 7 | 4.9 | Compaction deferred; a journal without its start, and a write record before it. |
+| question 8 | Motivation, 16 | This document stays here. |
+| security | 3.1, 7.2, 8.1, 10, Annex A | Stores follow no link; parts carry trust labels and content headings are neutralised; `memory_search` reads untrusted. |
+| review | 1, 3.1, 3.2, 3.5, 4.3, 6.1, 6.10, 7.6, 8.4, 8.6 | White space and lowercase defined; reads do not validate; the unjournalable file deferred to Annex A; one sequence rule; full schemas, `meta: null`, idempotence; element presence; `base: null`; redaction; fixtures. |
 
-The fix for #46 also corrects the `Store.Journal` doc comment and the
-annex's paragraph on lost updates, which describe today's reader.
+## 16. Decisions
 
-## 16. Open questions
+Draft 0.1's open questions, as answered for draft 0.2:
 
-- **Metadata in the hash.** The hash covers content alone, so a
-  conditional put does not see a concurrent metadata change, and a
-  write that drops another session's new description is no fork. A
-  second hash over the metadata, as the reference store's cursor
-  already keeps, would make it visible; it would also be a new member
-  in every record.
-- **Reads of a non-name.** The in-memory store reads an invalid scope
-  or name as unknown, the other two refuse it as *invalid* (Appendix B,
-  item 4). Whether to require one behaviour, and which, is open; the
-  conformance suite pins neither.
-- **The session string.** A record's `session` is opaque. Requiring it
-  to be the agentsession session ID would let a reader join a journal
-  to sessions without a product's help; products that do not record
-  sessions in that format would then have nothing to put there.
-- **The inserted name's form (#48).** The vetting fixes what goes into
-  the name, the time and the content's hash, and that a taken name gets
-  a suffix, but not the form. Fixing it would let two implementations
-  agree; leaving it free costs nothing a reader depends on.
-- **`size` of an omitted memory part.** agentsession defines an
-  `instructions_omitted` element's `size` as the bytes the part would
-  have added; the one writer of memory omissions, agentkit, writes the
-  entry's content size (Appendix B, item 7). Which this document
-  requires is open.
-- **The manifest of a block dropped whole.** A product records it with
-  every entry under `omitted` as `block`, and agentkit writes
-  `"entries":null` for it (Appendix B, item 9). Whether a writer MUST
-  write `[]` is open; readers accept both here.
-- **Journal compaction.** The journal is unbounded. With `seq` and the
-  chain it is tractable to drop everything before a sequence number
-  that has a full state at it, but who may do it, and how a reader of
-  an `agentmemory:write` record whose `seq` was compacted away learns
-  so, is open.
-- **The venue.** Whether this document stays here or joins
-  agentsession's RFCs as a companion profile.
+1. **Metadata in the hash.** Not in the content hash; beside it, as the
+   optional `meta_hash`, with if-meta-hash, which patch and a
+   metadata-keeping save name.
+2. **Reads of a non-name.** *Invalid*, in every store; `storetest`
+   pins it.
+3. **The session string.** SHOULD be the agentsession session ID when
+   the product records in that format.
+4. **The inserted name's form.** Time first, `YYYYMMDD-HHMMSS-<8
+   hex>[-n]`, since name order is render order and the form decides
+   which inserts a full block leaves out: the newest.
+5. **`size` of an omitted memory part.** agentsession's meaning, the
+   bytes the part would add; a profile does not redefine the host's
+   members.
+6. **`"entries":null`.** Writers MUST write `[]`; readers accept both.
+7. **Journal compaction.** Deferred; section 4.9 defines a journal
+   without its start and a write record from before it.
+8. **The venue.** This document stays in this repository;
+   agentsession points to it for `agentmemory`.
 
-## Appendix B: Inconsistencies found
+Open in draft 0.2:
 
-Places where the code and the documents, or two documents, disagree at
-v0.0.10. Each is a finding; this draft states the code's behaviour
-where it states one, and the fix is a separate change.
+- **Trust on instructions parts.** agentsession defines `trust` on
+  items, not on instructions parts, so a session cannot carry a memory
+  part's label (8.1). It needs a change to agentsession.
+- **Metadata in the manifest.** The manifest hash covers content
+  hashes, not metadata, so a description edit changes the block's part
+  but not the manifest, and a save based on the block (6.8) does not
+  see a description changed after the render. Adding the metadata hash
+  to the manifest element changes the manifest hash, which section 13
+  allows only under a new namespace.
+- **Compaction** itself: who may compact, and how a compacted journal
+  says what it dropped.
 
-1. **What lost updates compare.** The README ("A record whose `Prev` is
-   not its `Replaced` … `LostUpdates` lists them"), `Change.Replaced`'s
-   doc comment, the plan and the annex all say a lost update is a
-   record whose `prev` differs from its `replaced`. `LostUpdates`
-   compares `prev` with the state it tracked in its window, which is
-   `replaced` only when the window holds the chain. (#46, #49)
-2. **Lost updates and damage.** The annex says a reader MUST NOT stop
-   at a damaged line and a damaged line loses that one change; the
-   reference reader stops at the first error. The annex admits it
-   ("reports the forks before the damage"). (#46)
-3. **What search matches.** `Store.Search`'s doc says "the reference
-   stores use `Match` and list by scope then name"; SQLite, a
-   reference store, matches token prefixes rather than substrings, so
-   `eovi` finds `Neovim` in one and not the other, and orders by rank,
-   then by scope name rather than the order the scopes were given.
-   `memory_search`'s description, and its `query` argument's, say a
-   word must appear in the entry's "name, description or content"; all
-   three stores search every metadata value, not only the description.
-4. **Reads of a non-name.** `Store.List`'s doc says "An unknown scope
-   lists nothing". The directory and SQLite stores refuse an invalid
-   scope in `List` and an invalid scope or name in `Get` and `Forget`
-   with `ErrInvalid`; the in-memory store lists nothing and answers
-   `ErrNotFound`. `storetest` checks neither.
-5. **The plan's account of the store.** `docs/plans/memory-layer.md`
-   says the journal keeps both writes "with `Prev` naming what each
-   replaced"; `replaced` names that, and `prev` the base. It twice says
-   "the store applies the patch"; `memory_patch` applies it and the
-   store only puts. It puts an entry's description "under" its heading;
-   the block puts it on the heading line. Its milestones list "the
-   three tools"; there are four.
-6. **Part IDs a product adds.** `TitlePartID`'s doc says every ID of
-   the block starts `memory`, so a product's own parts take another
-   prefix. agentkit names the usage paragraph `memory:usage`, inside
-   the block's ID space; no block part has that ID today, but the
-   reservation does not hold.
-7. **`size` of an omitted part.** agentsession RFC 0001 defines an
-   `instructions_omitted` element's `size` as the bytes the part would
-   have added; agentkit writes the manifest's `bytes`, the content's
-   size, which is less than the part (heading and separator). The
-   README says only that the manifest's omissions "are its omitted
-   parts".
-8. **Where the manifest goes.** `AGENTS.md` says "the manifest lands
-   in an `env` or `custom` entry"; the plan explains why `env` cannot
-   carry it, and the code and README use `custom` alone.
-9. **An empty `entries`.** `Manifest`'s doc and `OmitBlock`'s describe
-   a manifest with "none under Entries"; `Render` writes
-   `"entries":[]`, while a product that builds the dropped-block
-   manifest from a nil list, as agentkit does, records
-   `"entries":null`. The Go reader accepts both; a reader in another
-   language that expects an array does not.
-10. **A cap of zero.** `WithScopeMaxBytes`'s doc says a cap of zero
-    "shows none of the scope's entries and names them, room
-    permitting". The omission line is counted inside the cap, so at a
-    cap of zero there is never room and the scope's entries are not
-    named in the block; the manifest still lists them.
-11. **`Change.Replaced`'s chain.** Its doc comment says each record's
-    `Replaced` names the hash of the record before it for that entry,
-    and leaves out the tombstone case, after which it is empty; the
-    annex and `LostUpdates` have it.
+## Appendix B: Inconsistencies draft 0.1 found
+
+Draft 0.1 listed eleven places the code and the documents, or two
+documents, disagreed at v0.0.10. Each is resolved in draft 0.2, in the
+code or the document that was wrong, or left to agentkit as a
+follow-up:
+
+1. **What lost updates compare.** Code: `LostUpdates` judges a record's
+   `prev` against its `replaced` and reports chain breaks separately
+   (#46, #49).
+2. **Lost updates and damage.** Code: `LostUpdates` reads past damage
+   and returns the errors joined (#46); the annex no longer admits a gap.
+3. **What search matches.** Documents: `Store.Search`'s comment names
+   which stores use the reference match, and `memory_search`'s
+   description and `query` say every metadata value is searched. The
+   SQLite store's token-prefix matching and rank order stay, as section
+   3.5 allows.
+4. **Reads of a non-name.** Code: the in-memory store refuses them as
+   the others do, and `storetest` pins it; `Store.List`'s comment says
+   so.
+5. **The plan's account of the store.** Document: the plan says
+   `replaced` names what a write replaced and `prev` its base, that the
+   tool applies a patch, that the description is on the heading line,
+   and lists the tools.
+6. **Part IDs a product adds.** agentkit follow-up: its usage paragraph
+   is `memory:usage`, inside the space section 7.2 reserves.
+7. **`size` of an omitted part.** Document: section 8.1 requires
+   agentsession's meaning, and the binding offers `EntryPart` to compute
+   it. agentkit follow-up: it writes the content's size.
+8. **Where the manifest goes.** Document: `AGENTS.md` says `custom`.
+9. **An empty `entries`.** Code: `Manifest` marshals `entries` as `[]`
+   when it has none, so a product that records through
+   `Manifest.Record` writes `[]`. agentkit follow-up: confirm once it
+   requires this release.
+10. **A cap of zero.** Document: `WithScopeMaxBytes`'s comment says the
+    scope's entries are not named in the block at a cap of zero.
+11. **`Change.Replaced`'s chain.** Document: its comment includes the
+    tombstone case.
+
+agentkit follow-ups, for agentkit's own change: rename the usage part
+out of the `memory` ID space (6); write an omitted memory part's `size`
+as `len(EntryPart(e, bound).Text) + 2` (7); require this release so its
+dropped-block manifest records `"entries":[]` (9); carry `Part.Trust`
+into the session once agentsession defines trust on a part, and pass
+`WithScopeTrust` and `WithSearchReads` for its read scopes; and add
+`memory_insert` to the writes it withholds when it drops the block.

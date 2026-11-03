@@ -20,6 +20,16 @@ versions may break the API.
   their issue, the Go binding is a table, and an appendix lists the
   places the code and the documents disagree. `docs/filestore-format.md`
   is its Annex A and stays at its path.
+- RFC 0001 draft 0.2 states the contract after this release's changes:
+  the rules of #46–#49 as current; the answers to draft 0.1's eight
+  open questions; one sequence rule; reads that refuse a non-name and
+  do not validate; white space and lowercasing defined; every tool's
+  schema, annotations with idempotence, and flow; neutralised headings
+  and trust labels on parts; the metadata hash; element presence and a
+  `base` of `null`; redaction of the session records; a journal
+  without its start; the links rule; and the JSON fixtures as the
+  conformance corpus. Appendix B says how each of the eleven
+  inconsistencies was resolved and lists agentkit's follow-ups.
 
 - `Entry.MetaHash`, `MetaHash(meta)` and `IfMetaHash(h)`: the hash of
   an entry's metadata, which every store fills on what it returns and
