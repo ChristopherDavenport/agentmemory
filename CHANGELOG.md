@@ -21,6 +21,11 @@ versions may break the API.
   places the code and the documents disagree. `docs/filestore-format.md`
   is its Annex A and stays at its path.
 
+### Changed
+
+- Requires agenttool v0.0.28 and openresponses v0.0.18; the tools'
+  integration test runs under agentturn v0.0.35.
+
 ## v0.0.10 - 2026-10-02
 
 ### Added
