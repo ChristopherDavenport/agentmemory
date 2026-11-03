@@ -112,9 +112,17 @@ versions may break the API.
   title, the scope headings and the summary read nothing, and an entry
   part and an omission line carry their scope's labels,
   `untrusted` unless the product sets them with `WithScopeTrust`.
-  `memory_search` declares an `agenttool.Flow` whose `Reads` is
-  `untrusted` unless the product sets it with `WithSearchReads`, so a
-  harness labels its result in the session.
+  **Breaking:** `Part.Trust` is a pointer, so `==` between two parts
+  now compares the pointers and is false for equal parts of two
+  renders; compare `ID` and `Text`.
+- **Breaking:** `memory_search` declares an `agenttool.Flow` whose
+  `Reads` is `untrusted` unless the product sets it with
+  `WithSearchReads`, so a harness labels its result in the session and
+  a policy that decides by flow treats it as untrusted where it said
+  nothing before.
+- **Breaking:** filestore refuses links: an entry file that is a link
+  or a hard link is not an entry, and a linked scope directory is an
+  error (see Security below for the whole rule).
 - `memory_patch` is conditional on the metadata it read as well as the
   content, so a patch no longer undoes another session's change to the
   entry's description made between its read and its write; on a
