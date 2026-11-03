@@ -1326,8 +1326,10 @@ part of this document.
   `project/x.md` pointing at `~/.ssh/id_ed25519`, would be read,
   rendered into the instructions and copied into the journal. A store
   over a file system MUST NOT follow a link inside its directory, nor
-  reach anything outside it through any path; Annex A's *Links* says
-  what the reference does with each kind.
+  reach anything outside it through any path, and MUST refuse a scope
+  directory that is a link with an error rather than read it as empty;
+  Annex A's *Links* says what the reference does with each kind and
+  what it does not cover.
 - **Lost metadata.** A conditional write on the content alone does not
   see a concurrent change to the metadata, so a write that writes back
   metadata it read undoes another session's description without a

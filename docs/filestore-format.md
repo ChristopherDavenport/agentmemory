@@ -112,8 +112,10 @@ nothing outside the directory through any path it opens:
   and `Get` answers not found for its name, as for a name with no
   file. A write to the name replaces the link by the rename every write
   ends with, and never writes through it.
-- A scope directory that is a link holds no entries and takes no
-  write: a write into it fails.
+- A scope directory that is a link is refused: a read, a write, a
+  render and `Reconcile` over it fail with an error that says so. It is
+  not read as an empty scope, which would have `Reconcile` tombstone
+  every entry the journal holds for it.
 - `journal.jsonl` and the lock that are links are refused: a write
   fails and a read yields an error. `.state.json` that is a link is
   derived state and is rebuilt; an `INDEX.md` that is a link is

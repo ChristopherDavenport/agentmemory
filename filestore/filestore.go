@@ -169,7 +169,7 @@ func (s *Store) read(scope agentmemory.Scope, name string) (*agentmemory.Entry, 
 // that is a link, or anything but a regular file, is not an entry:
 // neither is followed.
 func readEntry(r *os.Root, scope agentmemory.Scope, name string) (*agentmemory.Entry, error) {
-	if ok, err := isDir(r, string(scope)); err != nil || !ok {
+	if ok, err := scopeIsDir(r, string(scope)); err != nil || !ok {
 		return nil, err
 	}
 	data, info, err := readRegular(r, entryName(scope, name))
@@ -213,7 +213,7 @@ func (s *Store) list(scope agentmemory.Scope) ([]agentmemory.Entry, error) {
 		return nil, err
 	}
 	defer r.Close()
-	if ok, err := isDir(r, string(scope)); err != nil || !ok {
+	if ok, err := scopeIsDir(r, string(scope)); err != nil || !ok {
 		return nil, err
 	}
 	d, err := r.Open(string(scope))
@@ -544,7 +544,7 @@ func (s *Store) Reconcile(ctx context.Context) ([]agentmemory.Change, error) {
 	return changes, nil
 }
 
-// scopes lists the scope directories, leaving out a link to one.
+// scopes lists the scope directories, and refuses a link to one.
 func (s *Store) scopes() ([]agentmemory.Scope, error) {
 	r, err := s.root()
 	if err != nil {
@@ -562,7 +562,11 @@ func (s *Store) scopes() ([]agentmemory.Scope, error) {
 	}
 	var out []agentmemory.Scope
 	for _, de := range entries {
-		if de.IsDir() && agentmemory.ValidName(de.Name()) {
+		switch {
+		case !agentmemory.ValidName(de.Name()):
+		case de.Type()&(fs.ModeSymlink|fs.ModeIrregular) != 0:
+			return nil, linkedScope(de.Name())
+		case de.IsDir():
 			out = append(out, agentmemory.Scope(de.Name()))
 		}
 	}

@@ -37,6 +37,27 @@ func (s *Store) root() (*os.Root, error) {
 	return r, nil
 }
 
+// scopeIsDir reports whether scope's directory in r exists, and refuses
+// one that is a link, or a Windows junction, which reads as irregular:
+// the store does not follow it, and says so rather than read the scope
+// as empty, which would have Reconcile tombstone what is behind it.
+func scopeIsDir(r *os.Root, scope string) (bool, error) {
+	info, err := r.Lstat(scope)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("filestore: %s: %w", scope, err)
+	case info.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0:
+		return false, linkedScope(scope)
+	}
+	return info.IsDir(), nil
+}
+
+func linkedScope(scope string) error {
+	return fmt.Errorf("filestore: scope directory %s is a link, which the store does not follow; replace it with a directory: %w", scope, errNotRegular)
+}
+
 // isDir reports whether name in r is a directory and not a link to
 // one; a name that does not exist is not.
 func isDir(r *os.Root, name string) (bool, error) {

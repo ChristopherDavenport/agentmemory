@@ -748,19 +748,44 @@ func TestNoLinks(t *testing.T) {
 		outside, _, unchanged := outsideDir(t)
 		s := open(t)
 		symlink(t, outside, filepath.Join(s.Dir(), "evil"))
-		if es, err := s.List(ctx, "evil"); err != nil || len(es) != 0 {
-			t.Errorf("List(evil) = %+v, %v; want nothing", es, err)
+		// A linked scope directory is refused out loud, not read as empty:
+		// a dotfiles setup that links one in learns it is not followed.
+		if es, err := s.List(ctx, "evil"); err == nil || len(es) != 0 {
+			t.Errorf("List(evil) = %+v, %v; want an error", es, err)
 		}
-		if _, err := s.Get(ctx, "evil", "a"); !errors.Is(err, agentmemory.ErrNotFound) {
-			t.Errorf("Get(evil/a) = %v, want ErrNotFound", err)
+		if _, err := s.Get(ctx, "evil", "a"); err == nil || errors.Is(err, agentmemory.ErrNotFound) {
+			t.Errorf("Get(evil/a) = %v, want an error other than not found", err)
 		}
 		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "evil", Name: "b", Content: "through the link"}); err == nil {
 			t.Error("a write through a linked scope directory was taken")
 		}
-		if changes, err := s.Reconcile(ctx); err != nil || len(changes) != 0 {
-			t.Errorf("Reconcile = %+v, %v; want nothing", changes, err)
+		if changes, err := s.Reconcile(ctx); err == nil || len(changes) != 0 {
+			t.Errorf("Reconcile = %+v, %v; want an error and nothing", changes, err)
 		}
-		noSecret(t, s)
+		if _, _, err := agentmemory.Render(ctx, s, []agentmemory.Scope{"evil"}); err == nil {
+			t.Error("Render over a linked scope directory succeeded")
+		}
+		unchanged(t)
+	})
+	t.Run("scope directory replaced by a link", func(t *testing.T) {
+		_, _, unchanged := outsideDir(t)
+		s := open(t)
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "dots", Name: "a", Content: "kept"}); err != nil {
+			t.Fatal(err)
+		}
+		moved := filepath.Join(t.TempDir(), "dots")
+		if err := os.Rename(filepath.Join(s.Dir(), "dots"), moved); err != nil {
+			t.Fatal(err)
+		}
+		symlink(t, moved, filepath.Join(s.Dir(), "dots"))
+		before := readFile(t, s.journalPath())
+		// The entries behind the link are not tombstoned in silence.
+		if changes, err := s.Reconcile(ctx); err == nil || len(changes) != 0 {
+			t.Errorf("Reconcile = %+v, %v; want an error and nothing", changes, err)
+		}
+		if after := readFile(t, s.journalPath()); after != before {
+			t.Errorf("Reconcile journaled:\n%s", strings.TrimPrefix(after, before))
+		}
 		unchanged(t)
 	})
 	t.Run("journal", func(t *testing.T) {
