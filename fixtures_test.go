@@ -11,6 +11,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/ChristopherDavenport/agenttool"
 )
 
 // The fixtures under testdata are the conformance corpus RFC 0001 names
@@ -398,4 +401,242 @@ func jsonOf(v any) string {
 		panic(err)
 	}
 	return string(data)
+}
+
+// trustFixture is a render input with trust labels per scope and the
+// trust each part carries.
+type trustFixture struct {
+	Input renderInput                 `json:"input"`
+	Trust map[Scope][]agenttool.Label `json:"trust"`
+	Parts []struct {
+		ID    string `json:"id"`
+		Trust *Trust `json:"trust"`
+	} `json:"parts"`
+}
+
+func renderTrust(t *testing.T, in renderInput, trust map[Scope][]agenttool.Label) []Part {
+	t.Helper()
+	ctx := context.Background()
+	st := NewMemStore(WithMaxEntryBytes(in.EntryBound))
+	for _, e := range in.Entries {
+		if _, err := st.Put(ctx, Entry{Scope: e.Scope, Name: e.Name, Content: e.Content, Meta: e.Meta}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := []RenderOption{WithMaxTotalBytes(in.BlockBound)}
+	for s, n := range in.Caps {
+		opts = append(opts, WithScopeMaxBytes(s, n))
+	}
+	for s, labels := range trust {
+		opts = append(opts, WithScopeTrust(s, labels...))
+	}
+	parts, _, err := RenderParts(ctx, st, in.Scopes, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parts
+}
+
+// TestTrustFixture writes the trust fixture and checks it from the file.
+func TestTrustFixture(t *testing.T) {
+	in := renderInput{Scopes: []Scope{"rules", "user", "inbox"}, BlockBound: 600, EntryBound: 256, Entries: []renderInputRow{
+		{Scope: "rules", Name: "style", Content: "Use Go."},
+		{Scope: "user", Name: "a", Content: filler(200, 'a')},
+		{Scope: "user", Name: "b", Content: filler(200, 'b')},
+		{Scope: "inbox", Name: "mail", Content: "From the inbox."},
+	}}
+	trust := map[Scope][]agenttool.Label{"rules": {}, "inbox": {agenttool.LabelUntrusted, agenttool.LabelPrivate}}
+	path := filepath.Join("testdata", "render", "trust.json")
+	if *update {
+		fx := trustFixture{Input: in, Trust: trust}
+		for _, p := range renderTrust(t, in, trust) {
+			fx.Parts = append(fx.Parts, struct {
+				ID    string `json:"id"`
+				Trust *Trust `json:"trust"`
+			}{p.ID, p.Trust})
+		}
+		data, err := json.MarshalIndent(fx, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkGolden(t, path, append(data, '\n'))
+		return
+	}
+	var fx trustFixture
+	if err := json.Unmarshal(readFixture(t, path), &fx); err != nil {
+		t.Fatal(err)
+	}
+	got := renderTrust(t, fx.Input, fx.Trust)
+	if len(got) != len(fx.Parts) {
+		t.Fatalf("%d parts, the fixture has %d", len(got), len(fx.Parts))
+	}
+	for i, p := range got {
+		if p.ID != fx.Parts[i].ID || jsonOf(p.Trust) != jsonOf(fx.Parts[i].Trust) {
+			t.Errorf("part %d: %s %s, want %s %s", i, p.ID, jsonOf(p.Trust), fx.Parts[i].ID, jsonOf(fx.Parts[i].Trust))
+		}
+	}
+}
+
+// searchFixture is the reference match over a set of entries.
+type searchFixture struct {
+	Entries []searchEntry `json:"entries"`
+	Cases   []searchCase  `json:"cases"`
+}
+
+type searchEntry struct {
+	renderInputRow
+	Updated time.Time `json:"updated"`
+}
+
+type searchCase struct {
+	Note          string            `json:"note"`
+	Scopes        []Scope           `json:"scopes"`
+	Query         string            `json:"query"`
+	Limit         int               `json:"limit,omitempty"`
+	Any           bool              `json:"any,omitempty"`
+	Meta          map[string]string `json:"meta,omitempty"`
+	UpdatedAfter  *time.Time        `json:"updated_after,omitempty"`
+	UpdatedBefore *time.Time        `json:"updated_before,omitempty"`
+	Want          []string          `json:"want"`
+}
+
+func runSearch(t *testing.T, fx searchFixture, c searchCase) []string {
+	t.Helper()
+	ctx := context.Background()
+	i := 0
+	st := NewMemStore(WithClock(func() time.Time { at := fx.Entries[i].Updated; i++; return at }))
+	for _, e := range fx.Entries {
+		if _, err := st.Put(ctx, Entry{Scope: e.Scope, Name: e.Name, Content: e.Content, Meta: e.Meta}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := SearchOptions{Any: c.Any, Meta: c.Meta}
+	if c.UpdatedAfter != nil {
+		opts.UpdatedAfter = *c.UpdatedAfter
+	}
+	if c.UpdatedBefore != nil {
+		opts.UpdatedBefore = *c.UpdatedBefore
+	}
+	found, err := SearchWith(ctx, st, c.Scopes, c.Query, c.Limit, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := []string{}
+	for _, e := range found {
+		out = append(out, string(e.Scope)+"/"+e.Name)
+	}
+	return out
+}
+
+// TestSearchFixture writes the reference search's fixture and checks it
+// from the file: what matches and in what order, with each option.
+func TestSearchFixture(t *testing.T) {
+	t0 := time.Date(2026, 11, 2, 19, 44, 0, 0, time.UTC)
+	at := func(s int) *time.Time { v := t0.Add(time.Duration(s) * time.Second); return &v }
+	row := func(scope Scope, name, content string, meta map[string]string, s int) searchEntry {
+		return searchEntry{renderInputRow{Scope: scope, Name: name, Content: content, Meta: meta}, *at(s)}
+	}
+	fx := searchFixture{
+		Entries: []searchEntry{
+			row("user", "editor", "Uses Neovim with a dark theme.", map[string]string{"description": "Editor preference", "type": "tool"}, 0),
+			row("user", "language", "Prefers Go over Python for tools.", map[string]string{"description": "Language preference", "type": "taste"}, 1),
+			row("user", "timezone", "Europe/London", nil, 2),
+			row("user", "greek", "ΣΊΣΥΦΟΣ and İstanbul", nil, 3),
+			row("project", "build", "Run make check before a commit; the Go toolchain is 1.25.", map[string]string{"type": "tool"}, 4),
+		},
+		Cases: []searchCase{
+			{Note: "one word", Scopes: []Scope{"user"}, Query: "neovim"},
+			{Note: "case and white space", Scopes: []Scope{"user"}, Query: " NEOVIM　dark "},
+			{Note: "every word", Scopes: []Scope{"user", "project"}, Query: "go python"},
+			{Note: "scope order then name", Scopes: []Scope{"project", "user"}, Query: "go"},
+			{Note: "a metadata value", Scopes: []Scope{"user"}, Query: "preference"},
+			{Note: "a metadata key is not searched", Scopes: []Scope{"user"}, Query: "description"},
+			{Note: "the name", Scopes: []Scope{"user"}, Query: "timezone"},
+			{Note: "simple lowercase mapping: Σ to σ, İ to i", Scopes: []Scope{"user"}, Query: "σίσυφοσ istanbul"},
+			{Note: "the full mapping's i and combining dot is not the simple one", Scopes: []Scope{"user"}, Query: "i\u0307stanbul"},
+			{Note: "the empty query", Scopes: []Scope{"user"}, Query: "", Limit: 2},
+			{Note: "any, ranked by words held", Scopes: []Scope{"user", "project"}, Query: "python go", Any: true},
+			{Note: "meta", Scopes: []Scope{"user", "project"}, Query: "", Meta: map[string]string{"type": "tool"}},
+			{Note: "updated after, exclusive", Scopes: []Scope{"user", "project"}, Query: "", UpdatedAfter: at(2)},
+			{Note: "updated before, exclusive", Scopes: []Scope{"user", "project"}, Query: "", UpdatedBefore: at(2)},
+		},
+	}
+	path := filepath.Join("testdata", "search", "reference.json")
+	if *update {
+		for i, c := range fx.Cases {
+			fx.Cases[i].Want = runSearch(t, fx, c)
+		}
+		data, err := json.MarshalIndent(fx, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkGolden(t, path, append(data, '\n'))
+		return
+	}
+	var read searchFixture
+	if err := json.Unmarshal(readFixture(t, path), &read); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range read.Cases {
+		if got := runSearch(t, read, c); !slices.Equal(got, c.Want) {
+			t.Errorf("%s: %v, want %v", c.Note, got, c.Want)
+		}
+	}
+}
+
+// hashFixture pins the content and metadata hashes.
+type hashFixture struct {
+	Content []struct {
+		Content string `json:"content"`
+		Hash    string `json:"hash"`
+	} `json:"content"`
+	Meta []struct {
+		Meta     map[string]string `json:"meta"`
+		MetaHash string            `json:"meta_hash"`
+	} `json:"meta"`
+}
+
+// TestHashFixture writes the hash fixture and checks it from the file.
+func TestHashFixture(t *testing.T) {
+	path := filepath.Join("testdata", "hashes.json")
+	if *update {
+		var fx hashFixture
+		for _, c := range []string{"", "Short answers.\n", "süß ✓ 日本", "no final newline"} {
+			fx.Content = append(fx.Content, struct {
+				Content string `json:"content"`
+				Hash    string `json:"hash"`
+			}{c, Hash(c)})
+		}
+		for _, m := range []map[string]string{
+			nil,
+			{"description": "How to answer"},
+			{"type": "feedback", "description": "How to answer"},
+			{"a": "", "b-2": "x=y", "b": "süß"},
+		} {
+			fx.Meta = append(fx.Meta, struct {
+				Meta     map[string]string `json:"meta"`
+				MetaHash string            `json:"meta_hash"`
+			}{m, MetaHash(m)})
+		}
+		data, err := json.MarshalIndent(fx, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkGolden(t, path, append(data, '\n'))
+		return
+	}
+	var fx hashFixture
+	if err := json.Unmarshal(readFixture(t, path), &fx); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range fx.Content {
+		if got := Hash(c.Content); got != c.Hash {
+			t.Errorf("Hash(%q) = %s, want %s", c.Content, got, c.Hash)
+		}
+	}
+	for _, m := range fx.Meta {
+		if got := MetaHash(m.Meta); got != m.MetaHash {
+			t.Errorf("MetaHash(%v) = %s, want %s", m.Meta, got, m.MetaHash)
+		}
+	}
 }

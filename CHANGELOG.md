@@ -43,8 +43,12 @@ versions may break the API.
   `testdata/lostupdates/*.json`, journals with damaged lines and what a
   reader reports from each cursor; and `testdata/manifest/*.json`,
   `agentmemory:render` records with the manifest in force after each,
-  or the refusal, unresolved or malformed. Tests read every fixture
-  back from the file alone; `go test . -update` writes them.
+  or the refusal, unresolved or malformed; `testdata/neutralise.json`,
+  the heading rule's cases; `testdata/render/trust.json`, the trust each
+  part carries; `testdata/search/reference.json`, the reference match
+  with each option; and `testdata/hashes.json`, content and metadata
+  hashes. Tests read every fixture back from the file alone;
+  `go test . -update` writes them.
 - `CheckScope` and `CheckRef`, which refuse a scope or a name that is
   not a name with `ErrInvalid`, for a store to call before a read.
 - `EntryPart(e, bound)`, the part an entry renders as whether or not a

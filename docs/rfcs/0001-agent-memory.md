@@ -1418,9 +1418,17 @@ store supports, declares `memory_search`'s flow, and carries the write
 record of every write it makes.
 
 **A conforming renderer** meets sections 7.1 to 7.4, neutralises
-headings and labels every part as 7.2 says, and returns the manifest of
-7.6. A **byte-identical renderer** also reproduces every fixture under
-`testdata/render` from its input.
+content and labels every part as 7.2 says, reproducing
+`testdata/neutralise.json` and `testdata/render/trust.json`, and
+returns the manifest of 7.6. A **byte-identical renderer** also
+reproduces every fixture under `testdata/render` from its input.
+
+**The hashes** of sections 1 and 2.3 are pinned by
+`testdata/hashes.json`, content and metadata hashes beside what they
+hash. **The reference match** of section 3.5, with each option, is
+pinned by `testdata/search/reference.json`: entries with their
+`updated` times, and for each search the entries it returns, in order;
+a store that claims the reference match reproduces it.
 
 **A conforming lost-update reader** meets section 4.7 and reproduces
 every fixture under `testdata/lostupdates`: a journal of lines, where a
