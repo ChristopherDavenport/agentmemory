@@ -911,47 +911,52 @@ does not validate (3.1) can hold a line end; on the heading line it
 would start a line of its own.
 
 **Neutralised content.** The block uses heading levels one to three
-for its own structure, so content MUST NOT open one, and MUST NOT
-leave open anything that runs into the parts after it. Split the
-content into lines at each `\r\n`, `\n` and lone `\r`, as CommonMark
-ends a line; a line's body is the line without its end; its indent is
-its run of leading U+0020, and its rest what follows. First, on every
-line, inside a code fence or not:
+for its own structure, so content MUST NOT open one, nor open an HTML
+block, nor leave a code fence open that runs into the parts after it.
+Split the content into lines at each `\r\n`, `\n` and lone `\r`, as
+CommonMark ends a line; a line's body is the line without its end. A
+line's **lead** is the longest leading run of U+0020, U+0009, `>` and
+list markers in its body, a list marker being `-`, `+` or `*`, or one
+to nine ASCII digits and `.` or `)`, each followed by U+0020 or U+0009;
+its **quote lead** is the longest leading run of U+0020, U+0009 and `>`
+alone. On every line, inside a code fence, a block quote or a list item
+or not, at most one of these applies, in this order:
 
-- A line whose indent is at most three and whose rest is one to three
-  `#` followed by U+0020, U+0009 or the end of the body, an ATX
-  heading, has `#` inserted after its indent until the run is four.
-- A line whose indent is at most three and whose rest is one or more
-  `=`, or one or more `-`, then only U+0020 and U+0009, a setext
-  underline, directly after a line that is neither blank nor an ATX
-  heading of any level (one to six `#` then U+0020, U+0009 or the end,
-  indent at most three), has `\` inserted after its indent, which makes
-  it text. A blank line's body is only U+0020 and U+0009, or empty.
+- A line whose rest after its lead is one to three `#` followed by
+  U+0020, U+0009 or the end of the body, an ATX heading, has `#`
+  inserted after its lead until the run is four.
+- A line whose rest after its lead begins with `<` has `\` inserted
+  after its lead, which makes the `<` text, so the line opens no HTML
+  block of any of CommonMark's seven kinds, a comment, `<pre>`,
+  `<script>`, `<style>`, `<textarea>`, `<?`, `<!X` and `<![CDATA[`
+  among them.
+- A line whose rest after its quote lead is one or more `=`, or one or
+  more `-`, then only U+0020 and U+0009, a setext underline, directly
+  after a line that is neither blank nor an ATX heading of any level
+  (one to six `#` after the lead, then U+0020, U+0009 or the end), has
+  `\` inserted after its quote lead. A blank line's body is only U+0020
+  and U+0009, or empty.
 
-Then, reading the lines in order for code fences and HTML comments:
+Then, reading the lines in order for code fences: a fence opens at a
+line of at most three U+0020, then three or more `` ` `` or `~`, the
+backtick form with no `` ` `` after the run, and closes at a line of
+at most three U+0020, then a run of the same character at least as
+long, then only U+0020 and U+0009. While a fence is open after the last
+line, `\` is inserted after the spaces of the line that opened it,
+which makes it text, and the lines are read again. A fence inside a
+block quote or a list item, which this reading does not see, ends with
+its container, which the blank line after the part ends.
 
-- A fence opens, outside a fence and a comment, at a line whose indent
-  is at most three and whose rest begins with three or more `` ` `` or
-  `~`, the backtick form with no `` ` `` after the run; it closes at a
-  line whose indent is at most three and whose rest is a run of the
-  same character at least as long, then only U+0020 and U+0009.
-- A comment opens, outside a fence and a comment, at a line whose
-  indent is at most three and whose rest begins with `<!--` and holds
-  no `-->` after it; it closes at the next line holding `-->`.
-- When a fence or a comment is open after the last line, `\` is
-  inserted after the indent of the line that opened it, which makes it
-  text, and the lines are read again, until nothing is open.
-
-Nothing else changes: a heading of level four or more, a heading inside
-a block quote or a list item, an indented line and the bytes of every
-other line stay as written, and line ends are kept. Applying the rule
-to its own output changes nothing. `<size>` remains the content's size.
-The fixture `testdata/neutralise.json` lists cases of the rule, each an
-`in` and its `out`.
+Nothing else changes: a heading of level four or more, a `<` that does
+not begin a line's rest, and the bytes of every other line stay as
+written, and line ends are kept. Applying the rule to its own output
+changes nothing. `<size>` remains the content's size. The fixture
+`testdata/neutralise.json` lists cases of the rule, each an `in` and its
+`out`, and `testdata/render/forged.*` renders the forgeries it stops.
 
 The model reads the neutralised text, so an `old_text` copied from the
 block may not occur in the stored content (`####` where the entry holds
-`##`); `memory_search` returns the stored text, and `memory_patch`'s
+`##`, `\<` where it holds `<`); `memory_search` returns the stored text, and `memory_patch`'s
 description says to copy from it.
 
 An **omission line** is `Not shown, over the block budget; fetch with
@@ -1313,20 +1318,18 @@ part of this document.
   scopes give a product scopes the model cannot write.
 - **Forged structure.** An entry's content is placed inside the block,
   among headings the model reads as the block's structure. Every
-  heading of level one to three in content is written at level four and
-  every setext underline is escaped, inside code fences too, with a
-  lone `\r` read as the line end CommonMark reads it; a description's
-  line ends are spaces; and a fence or HTML comment the content leaves
+  heading of level one to three in content is written at level four,
+  every setext underline is escaped and every line that begins with
+  `<` is escaped: on every line, inside a code fence, a block quote or
+  a list item, after any run of spaces, tabs, `>` and list markers, with
+  a lone `\r` read as the line end CommonMark reads it. A description's
+  line ends are spaces, and a top-level code fence the content leaves
   open has its opener escaped (7.2). So an entry cannot open a scope
   such as `## project` or an entry part with a size it does not have,
-  in any context, and cannot turn the parts after it into code or a
-  comment. The rule models fences and comments, not CommonMark's other
-  HTML blocks (`<div>`, `<pre>` and the rest), so a renderer may still
-  show more or less of an entry as code or HTML than this rule reads;
-  no heading is left at levels one to three either way. A line of plain
-  text such as one that looks like the summary is still possible; the
-  summary is always the block's last part, and the labels say the rest
-  is untrusted.
+  in any container, and cannot turn the parts after it into code, an
+  HTML block or a comment. A line of plain text such as one that looks
+  like the summary is still possible; the summary is always the block's
+  last part, and the labels say the rest is untrusted.
 - **Links.** The name grammar admits no separator, dot or upper case,
   so a scope and a name are always one path segment under the store's
   root, and every store refuses a non-name before it reads (3.1). That

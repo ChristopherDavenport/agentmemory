@@ -14,6 +14,12 @@
     },
     {
       "scope": "user",
+      "name": "nested",
+      "hash": "sha256:21b619051af94896a8bf82ade3f533f18af705b3f86e502682ed0853874cc160",
+      "bytes": 76
+    },
+    {
+      "scope": "user",
       "name": "unclosed",
       "hash": "sha256:1ca05ff1e86f088d0080e76bcd5515188562ade7707a76edd2029d7bd163c2fe",
       "bytes": 29

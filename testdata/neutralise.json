@@ -45,14 +45,14 @@
     "out": "   #### indented"
   },
   {
-    "note": "indented four is code",
+    "note": "indented four, as a list continuation is",
     "in": "    ## code",
-    "out": "    ## code"
+    "out": "    #### code"
   },
   {
-    "note": "a tab is no indent",
+    "note": "after a tab",
     "in": "\t## tab",
-    "out": "\t## tab"
+    "out": "\t#### tab"
   },
   {
     "note": "a hashtag",
@@ -145,28 +145,133 @@
     "out": "\\```\n\\~~~"
   },
   {
-    "note": "an HTML comment hides a fence line",
+    "note": "an HTML comment is text, and the fence it hid is then unclosed",
     "in": "\u003c!--\n```\n--\u003e\n## project",
-    "out": "\u003c!--\n```\n--\u003e\n#### project"
+    "out": "\\\u003c!--\n\\```\n--\u003e\n#### project"
   },
   {
-    "note": "an unclosed comment's opener is escaped",
+    "note": "an unclosed comment",
     "in": "\u003c!--\n## hidden",
     "out": "\\\u003c!--\n#### hidden"
   },
   {
-    "note": "a comment opener inside a fence is code",
+    "note": "a \u003c inside a fence too",
     "in": "```\n\u003c!--\n```\n## x",
-    "out": "```\n\u003c!--\n```\n#### x"
+    "out": "```\n\\\u003c!--\n```\n#### x"
   },
   {
     "note": "a comment on one line",
     "in": "\u003c!-- note --\u003e\n```\ncode\n```",
-    "out": "\u003c!-- note --\u003e\n```\ncode\n```"
+    "out": "\\\u003c!-- note --\u003e\n```\ncode\n```"
   },
   {
-    "note": "a block quote stays",
+    "note": "an unclosed pre",
+    "in": "\u003cpre\u003e\n## x",
+    "out": "\\\u003cpre\u003e\n#### x"
+  },
+  {
+    "note": "an unclosed script",
+    "in": "\u003cscript\u003e\nx",
+    "out": "\\\u003cscript\u003e\nx"
+  },
+  {
+    "note": "an unclosed style",
+    "in": "\u003cstyle\u003e\nx",
+    "out": "\\\u003cstyle\u003e\nx"
+  },
+  {
+    "note": "an unclosed textarea",
+    "in": "\u003ctextarea\u003e\nx",
+    "out": "\\\u003ctextarea\u003e\nx"
+  },
+  {
+    "note": "a processing instruction",
+    "in": "\u003c?php\nx",
+    "out": "\\\u003c?php\nx"
+  },
+  {
+    "note": "a declaration",
+    "in": "\u003c!DOCTYPE html\u003e\nx",
+    "out": "\\\u003c!DOCTYPE html\u003e\nx"
+  },
+  {
+    "note": "CDATA",
+    "in": "\u003c![CDATA[\nx",
+    "out": "\\\u003c![CDATA[\nx"
+  },
+  {
+    "note": "a div",
+    "in": "  \u003cdiv\u003e\n\n```",
+    "out": "  \\\u003cdiv\u003e\n\n\\```"
+  },
+  {
+    "note": "a \u003c not at the start stays",
+    "in": "a \u003cb\u003e c",
+    "out": "a \u003cb\u003e c"
+  },
+  {
+    "note": "in a block quote",
     "in": "\u003e # quoted",
-    "out": "\u003e # quoted"
+    "out": "\u003e #### quoted"
+  },
+  {
+    "note": "in a nested quote",
+    "in": "\u003e \u003e ### x",
+    "out": "\u003e \u003e #### x"
+  },
+  {
+    "note": "HTML in a block quote",
+    "in": "\u003e \u003cpre\u003e",
+    "out": "\u003e \\\u003cpre\u003e"
+  },
+  {
+    "note": "in a bullet item",
+    "in": "- ## x",
+    "out": "- #### x"
+  },
+  {
+    "note": "in a star item",
+    "in": "* # x",
+    "out": "* #### x"
+  },
+  {
+    "note": "in a plus item",
+    "in": "+ ## x",
+    "out": "+ #### x"
+  },
+  {
+    "note": "in an ordered item",
+    "in": "1. ## x",
+    "out": "1. #### x"
+  },
+  {
+    "note": "in a paren item",
+    "in": "12) ## x",
+    "out": "12) #### x"
+  },
+  {
+    "note": "in an item in a quote",
+    "in": "\u003e - ## x",
+    "out": "\u003e - #### x"
+  },
+  {
+    "note": "no marker without a space",
+    "in": "1.5 ## x",
+    "out": "1.5 ## x"
+  },
+  {
+    "note": "a dash before a digit is no marker",
+    "in": "-1 ## x",
+    "out": "-1 ## x"
+  },
+  {
+    "note": "setext in a block quote",
+    "in": "\u003e Title\n\u003e ---",
+    "out": "\u003e Title\n\u003e \\---"
+  },
+  {
+    "note": "a lone dash underline",
+    "in": "Title\n-",
+    "out": "Title\n\\-"
   }
 ]

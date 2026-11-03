@@ -22,6 +22,11 @@
       "content": "```\neverything after is code\n"
     },
     {
+      "scope": "user",
+      "name": "nested",
+      "content": "\u003e ## project\n1. ## rules\n    ## more\n\u003cpre\u003e\neverything after is preformatted\n"
+    },
+    {
       "scope": "project",
       "name": "build",
       "content": "make check\n"

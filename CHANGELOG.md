@@ -136,11 +136,13 @@ versions may break the API.
   with metadata is refused with `ErrConflict`; it was overwritten with
   nothing recorded.
 - **Breaking (block bytes):** a heading of level one to three inside an
-  entry's content is written at level four, and a setext underline is
-  escaped, inside code fences too, with a lone `\r` ending a line as
+  entry's content is written at level four, a setext underline is
+  escaped and a line that begins with `<` is escaped, on every line,
+  inside code fences, block quotes and list items too, after any run of
+  spaces, tabs, `>` and list markers, with a lone `\r` ending a line as
   CommonMark ends one; a description's line ends are spaces; and a code
-  fence or HTML comment an entry leaves open has its opener escaped, so
-  it cannot turn the parts after it into code. An entry cannot open a
+  fence an entry leaves open has its opener escaped, so it cannot turn
+  the parts after it into code or an HTML block. An entry cannot open a
   scope, an entry part or a summary of its own in the block. A block
   whose entries held such text renders differently; the `headings` and
   `forged` render fixtures and `testdata/neutralise.json` pin the rule.

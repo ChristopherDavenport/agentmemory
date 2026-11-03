@@ -941,47 +941,53 @@ func entryText(e Entry, limit int) string {
 
 // neutralise rewrites an entry's content so that no line of it reads as
 // a heading of level one to three, which the block uses for its own
-// structure, and so that nothing it opens runs past its part. A line
-// ends at "\r\n", "\n" or a lone "\r", as CommonMark ends one. On every
-// line, inside a code fence or not:
+// structure, nor opens an HTML block, and so that no code fence it opens
+// runs past its part. A line ends at "\r\n", "\n" or a lone "\r", as
+// CommonMark ends one. A line's lead is its longest leading run of
+// spaces, tabs, ">" and list markers, a marker being "-", "+" or "*", or
+// one to nine digits and "." or ")", followed by a space or a tab; its
+// quote lead is its longest leading run of spaces, tabs and ">" alone.
+// On every line, inside a code fence, a block quote or a list item or
+// not:
 //
-//   - A line of at most three spaces, then one to three "#", then a
+//   - A line whose rest after its lead is one to three "#", then a
 //     space, a tab or the end, an ATX heading, has "#" inserted after
-//     its spaces to make four.
-//   - A line of at most three spaces, then one or more "=" or one or
-//     more "-" alone, then only spaces and tabs, a setext underline,
+//     the lead to make four.
+//   - A line whose rest after its lead begins with "<" has "\" inserted
+//     after the lead, so it opens no HTML block of any kind.
+//   - A line whose rest after its quote lead is one or more "=" or one
+//     or more "-", then only spaces and tabs, a setext underline,
 //     directly after a line that is neither blank nor an ATX heading of
-//     any level, has "\" inserted after its spaces, which makes it text.
+//     any level, has "\" inserted after its quote lead.
 //
-// Then what the content leaves open is made inert. Lines are read for
-// code fences and HTML comments: a fence opens at a line of at most
-// three spaces, then three or more "`" or "~", the backtick form with no
-// "`" after the run, and closes at a line of at most three spaces, then
-// a run of the same character at least as long, then only spaces and
-// tabs; a comment opens at a line of at most three spaces, then "<!--",
-// outside a fence, and closes at the first line holding "-->", the
-// opening line's rest included; inside a comment no fence opens, and
-// inside a fence no comment. When a fence or a comment is open at the
-// end, "\" is inserted after the spaces of the line that opened it,
-// which makes it text, and the content is read again, until nothing is
-// open. A rewritten line is never one of these again, so applying the
-// rule twice gives what applying it once gave.
+// Then a code fence the content leaves open is made inert: a fence opens
+// at a line of at most three spaces, then three or more "`" or "~", the
+// backtick form with no "`" after the run, and closes at a line of at
+// most three spaces, then a run of the same character at least as long,
+// then only spaces and tabs. While a fence is open at the end, "\" is
+// inserted after the spaces of the line that opened it, which makes it
+// text, and the content is read again. A fence inside a block quote or a
+// list item ends with it, at the blank line after the part at the
+// latest. A rewritten line is none of these again, so applying the rule
+// twice gives what applying it once gave.
 func neutralise(content string) string {
 	lines := splitLines(content)
 	prevText := false
 	for i, l := range lines {
-		ind := len(l.body) - len(strings.TrimLeft(l.body, " "))
-		rest := l.body[ind:]
-		heading := ind <= 3 && atxLevel(rest) > 0
+		lead := leadLen(l.body, true)
+		rest := l.body[lead:]
+		n := atxLevel(rest)
 		switch {
-		case !heading:
-		case atxLevel(rest) <= 3:
-			lines[i].body = l.body[:ind] + strings.Repeat("#", 4-atxLevel(rest)) + rest
+		case n >= 1 && n <= 3:
+			lines[i].body = l.body[:lead] + strings.Repeat("#", 4-n) + rest
+		case n == 0 && strings.HasPrefix(rest, "<"):
+			lines[i].body = l.body[:lead] + "\\" + rest
+		case n == 0 && prevText:
+			if q := leadLen(l.body, false); isUnderline(l.body[q:]) {
+				lines[i].body = l.body[:q] + "\\" + l.body[q:]
+			}
 		}
-		if !heading && ind <= 3 && prevText && isUnderline(rest) {
-			lines[i].body = l.body[:ind] + "\\" + rest
-		}
-		prevText = !heading && strings.Trim(l.body, " \t") != ""
+		prevText = n == 0 && strings.Trim(l.body, " \t") != ""
 	}
 	for {
 		open := unclosed(lines)
@@ -998,6 +1004,37 @@ func neutralise(content string) string {
 		b.WriteString(l.end)
 	}
 	return b.String()
+}
+
+// leadLen returns the length of s's lead: its longest leading run of
+// spaces, tabs, ">" and, when markers is set, list markers followed by a
+// space or a tab.
+func leadLen(s string, markers bool) int {
+	i := 0
+	for i < len(s) {
+		switch c := s[i]; {
+		case c == ' ' || c == '\t' || c == '>':
+			i++
+			continue
+		case !markers:
+		case c == '-' || c == '+' || c == '*':
+			if i+1 < len(s) && (s[i+1] == ' ' || s[i+1] == '\t') {
+				i++
+				continue
+			}
+		case c >= '0' && c <= '9':
+			j := i
+			for j < len(s) && j-i < 9 && s[j] >= '0' && s[j] <= '9' {
+				j++
+			}
+			if j+1 < len(s) && (s[j] == '.' || s[j] == ')') && (s[j+1] == ' ' || s[j+1] == '\t') {
+				i = j + 1
+				continue
+			}
+		}
+		break
+	}
+	return i
 }
 
 // line is one line of content: its body and the line end after it,
@@ -1021,27 +1058,19 @@ func splitLines(s string) []line {
 	}
 }
 
-// unclosed returns the index of the line that opened a code fence or an
-// HTML comment still open at the end of lines, or -1.
+// unclosed returns the index of the line that opened a code fence still
+// open at the end of lines, or -1.
 func unclosed(lines []line) int {
 	var fence byte
-	fenceLen, opened, comment := 0, -1, false
+	fenceLen, opened := 0, -1
 	for i, l := range lines {
 		ind := len(l.body) - len(strings.TrimLeft(l.body, " "))
 		rest := l.body[ind:]
 		switch {
-		case comment:
-			if strings.Contains(l.body, "-->") {
-				comment, opened = false, -1
-			}
-		case fence != 0:
-			if ind <= 3 && closesFence(rest, fence, fenceLen) {
-				fence, opened = 0, -1
-			}
 		case ind > 3:
-		case strings.HasPrefix(rest, "<!--"):
-			if !strings.Contains(rest[len("<!--"):], "-->") {
-				comment, opened = true, i
+		case fence != 0:
+			if closesFence(rest, fence, fenceLen) {
+				fence, opened = 0, -1
 			}
 		default:
 			if c, n := opensFence(rest); n > 0 {
