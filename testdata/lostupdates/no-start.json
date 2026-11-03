@@ -1,0 +1,31 @@
+{
+  "journal": [
+    "{\"seq\":5,\"entry\":{\"scope\":\"user\",\"name\":\"a\",\"content\":\"five\",\"hash\":\"sha256:222b0bd51fcef7e65c2e62db2ed65457013bab56be6fafeb19ee11d453153c80\",\"updated\":\"0001-01-01T00:00:00Z\"},\"prev\":\"sha256:04efaf080f5a3e74e1c29d1ca6a48569382cbbcd324e8d59d2b83ef21c039f00\",\"replaced\":\"sha256:04efaf080f5a3e74e1c29d1ca6a48569382cbbcd324e8d59d2b83ef21c039f00\",\"at\":\"0001-01-01T00:00:00Z\"}",
+    "{\"seq\":6,\"entry\":{\"scope\":\"user\",\"name\":\"a\",\"content\":\"six\",\"hash\":\"sha256:44778d82365e4af681c40d5f0eef5cf6f5899d3f0ac335050a7ed6779cf3f674\",\"updated\":\"0001-01-01T00:00:00Z\"},\"prev\":\"sha256:222b0bd51fcef7e65c2e62db2ed65457013bab56be6fafeb19ee11d453153c80\",\"replaced\":\"sha256:222b0bd51fcef7e65c2e62db2ed65457013bab56be6fafeb19ee11d453153c80\",\"at\":\"0001-01-01T00:00:00Z\"}",
+    "{\"seq\":7,\"entry\":{\"scope\":\"user\",\"name\":\"a\",\"content\":\"seven\",\"hash\":\"sha256:3ba8d02b16fd2a01c1a8ba1a1f036d7ce386ed953696fa57331c2ac48a80b255\",\"updated\":\"0001-01-01T00:00:00Z\"},\"prev\":\"sha256:222b0bd51fcef7e65c2e62db2ed65457013bab56be6fafeb19ee11d453153c80\",\"replaced\":\"sha256:44778d82365e4af681c40d5f0eef5cf6f5899d3f0ac335050a7ed6779cf3f674\",\"at\":\"0001-01-01T00:00:00Z\"}"
+  ],
+  "reads": [
+    {
+      "after": 0,
+      "lost": [
+        {
+          "seq": 7,
+          "over": "sha256:44778d82365e4af681c40d5f0eef5cf6f5899d3f0ac335050a7ed6779cf3f674",
+          "fork": true
+        }
+      ],
+      "damaged": 0
+    },
+    {
+      "after": 5,
+      "lost": [
+        {
+          "seq": 7,
+          "over": "sha256:44778d82365e4af681c40d5f0eef5cf6f5899d3f0ac335050a7ed6779cf3f674",
+          "fork": true
+        }
+      ],
+      "damaged": 0
+    }
+  ]
+}

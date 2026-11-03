@@ -170,6 +170,13 @@ func lostCases() map[string]struct {
 			rec(4, "a", "four", h("gap"), h("gap")),
 			rec(5, "c", "see", h("x"), h("x")),
 		}, []uint64{0, 1, 2, 3, 4}},
+		// A journal whose first record is not 1 has lost its start, as a
+		// compacted one would: an entry's first record there is no break.
+		"no-start": {[]journalStep{
+			rec(5, "a", "five", h("four"), h("four")),
+			rec(6, "a", "six", h("five"), h("five")),
+			rec(7, "a", "seven", h("five"), h("six")),
+		}, []uint64{0, 5}},
 		"tombstone-and-recreate": {[]journalStep{
 			rec(1, "a", "one", "", ""),
 			{c: Change{Seq: 2, Entry: Entry{Scope: "user", Name: "a", Content: "one", Hash: h("one"), Deleted: true}, Prev: h("one"), Replaced: h("one")}},

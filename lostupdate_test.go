@@ -182,3 +182,22 @@ func TestLastSeq(t *testing.T) {
 		t.Errorf("LastSeq over a damaged tail = %d, %v; want 2 and the damage", n, err)
 	}
 }
+
+// TestLostUpdatesWithoutTheStart pins that a journal whose first record
+// is not 1, whose start was removed, holds no entry's start: read from
+// 0, an entry's first record there is not a break.
+func TestLostUpdatesWithoutTheStart(t *testing.T) {
+	h := Hash
+	st := journalStore{MemStore: NewMemStore(), steps: []journalStep{
+		rec(5, "a", "five", h("four"), h("four")),
+		rec(6, "a", "six", h("five"), h("five")),
+		rec(7, "a", "seven", h("five"), h("six")),
+	}}
+	lost, err := LostUpdates(context.Background(), st, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := describeLost(lost); fmt.Sprint(got) != "[7:fork]" {
+		t.Errorf("LostUpdates = %v, want [7:fork]", got)
+	}
+}
