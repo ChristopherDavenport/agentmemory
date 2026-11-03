@@ -694,6 +694,15 @@ func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error
 		base = append(base, BasedOn(shown))
 	case stored != nil:
 		base = append(base, BasedOn(stored.Hash))
+	default:
+		// Built on no entry: a create another session made in between
+		// is then a fork the journal shows, not an overwrite it hides.
+		base = append(base, BasedOn(""))
+	}
+	if stored == nil {
+		// And on no metadata, so a concurrent create with metadata is
+		// refused rather than written over.
+		base = append(base, IfMetaHash(""))
 	}
 	// A save that leaves meta out keeps the metadata it read, so it is
 	// conditional on it, and reads the metadata again when another
@@ -711,7 +720,8 @@ func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error
 		}
 		c, err = t.store.Put(ctx, e, opts...)
 		var ce *ConflictError
-		if err == nil || !errors.As(err, &ce) || !ce.Meta || attempt == patchAttempts {
+		kept := stored != nil && a.Meta == nil
+		if err == nil || !kept || !errors.As(err, &ce) || !ce.Meta || attempt == patchAttempts {
 			break
 		}
 		if stored, err = t.store.Get(ctx, scope, a.Name); errors.Is(err, ErrNotFound) {

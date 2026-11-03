@@ -665,8 +665,13 @@ It reads the live entry, then puts the whole entry:
 - The put is anchored with based-on (3.2): in the hash the block showed
   for the entry when the product says what the block showed (6.8) and
   the block held the entry; otherwise in the hash of its first read;
-  and for a create, in nothing. A metadata retry keeps that base, so a
-  content change in between is still the fork the journal shows.
+  and when the read found no entry, in the empty string, with
+  if-meta-hash of the empty string too, so another session's create
+  between the read and the put is a fork the journal shows, and one
+  with metadata is refused with *conflict* rather than written over. A
+  metadata retry, which only a save that keeps metadata makes, keeps
+  the base, so a content change in between is still the fork the
+  journal shows.
 - The result says whether it created or replaced, the size it replaced,
   what became of the metadata, and, when the product says what the
   block showed, which base the write took, and that the entry changed

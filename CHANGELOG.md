@@ -118,6 +118,11 @@ versions may break the API.
   leaves `meta` out, keeping the metadata it read, is conditional on it
   too, and reads the metadata again on a conflict (RFC 0001 open
   question 1).
+- `memory_save` of an entry its read did not find is based on the empty
+  string and conditional on no metadata, so another session's create
+  between the read and the put is a fork `LostUpdates` reports, and one
+  with metadata is refused with `ErrConflict`; it was overwritten with
+  nothing recorded.
 - **Breaking (block bytes):** a heading of level one to three inside an
   entry's content is written at level four, and a setext underline is
   escaped, inside code fences too, with a lone `\r` ending a line as

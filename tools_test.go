@@ -1068,3 +1068,44 @@ func TestWritersKeepAConcurrentMetaEdit(t *testing.T) {
 		})
 	}
 }
+
+// createRacer is a store where another session creates the entry
+// between memory_save's read, which finds nothing, and its put.
+type createRacer struct {
+	*MemStore
+	meta  map[string]string
+	raced bool
+}
+
+func (c *createRacer) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error) {
+	if !c.raced {
+		c.raced = true
+		if _, err := c.MemStore.Put(WithSession(ctx, "other"), Entry{Scope: e.Scope, Name: e.Name, Content: "Theirs.", Meta: c.meta}); err != nil {
+			return nil, err
+		}
+	}
+	return c.MemStore.Put(ctx, e, opts...)
+}
+
+// TestSaveCreateRace pins that a save that read no entry names that
+// as its base and its metadata: a concurrent create with metadata is
+// refused rather than overwritten, and one without is a fork the journal
+// shows.
+func TestSaveCreateRace(t *testing.T) {
+	ctx := context.Background()
+	withMeta := &createRacer{MemStore: NewMemStore(), meta: map[string]string{"description": "Theirs"}}
+	if _, err := call(t, Tools(withMeta, []Scope{"user"}), SaveTool, `{"name":"note","content":"Mine."}`); !errors.Is(err, ErrConflict) {
+		t.Errorf("save over a concurrent create with metadata = %v, want ErrConflict", err)
+	}
+	if got, _ := withMeta.Get(ctx, "user", "note"); got == nil || got.Content != "Theirs." {
+		t.Errorf("the concurrent create was overwritten: %+v", got)
+	}
+	bare := &createRacer{MemStore: NewMemStore()}
+	if _, err := call(t, Tools(bare, []Scope{"user"}), SaveTool, `{"name":"note","content":"Mine."}`); err != nil {
+		t.Fatal(err)
+	}
+	lost, err := LostUpdates(ctx, bare, 0)
+	if err != nil || len(lost) != 1 || lost[0].Change.Prev != "" || lost[0].Change.Replaced != Hash("Theirs.") {
+		t.Errorf("LostUpdates after a save over a concurrent create = %+v, %v; want the fork", lost, err)
+	}
+}
