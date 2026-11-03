@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -116,8 +115,11 @@ func (se stateEntry) agrees(e agentmemory.Entry) bool {
 // reads it.
 func (s *Store) loadState() (*journalState, error) {
 	st := &journalState{Entries: map[string]stateEntry{}}
-	data, err := os.ReadFile(s.statePath())
+	data, err := s.readFile(stateName)
 	switch {
+	case errors.Is(err, errNotRegular):
+		// A cursor that is a link is not the store's; it is derived, so
+		// it is rebuilt, and the next save replaces the link.
 	case err == nil:
 		if uerr := json.Unmarshal(data, st); uerr != nil {
 			st = &journalState{Entries: map[string]stateEntry{}}
@@ -187,7 +189,7 @@ func (s *Store) saveState(st *journalState) error {
 	if err != nil {
 		return fmt.Errorf("filestore: encode %s: %w", stateName, err)
 	}
-	return writeAtomic(s.statePath(), append(data, '\n'))
+	return s.writeAtomic(stateName, append(data, '\n'))
 }
 
 // nextSeq is the sequence number the next record takes. The cursor has
@@ -275,8 +277,8 @@ func (s *Store) outside(st *journalState, scope agentmemory.Scope, name string, 
 	e := *cur
 	// The file's own time is when the person changed it; the updated
 	// line, if any, is when the store last wrote the file.
-	if info, err := os.Stat(s.entryPath(scope, name)); err == nil {
-		e.Updated = info.ModTime().UTC()
+	if at, ok := s.modTime(entryName(scope, name)); ok {
+		e.Updated = at
 	}
 	prev := ""
 	if isKnown {

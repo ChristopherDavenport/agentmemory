@@ -25,7 +25,7 @@ func (s *Store) appendJournal(c agentmemory.Change) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("filestore: encode journal record: %w", err)
 	}
-	f, err := os.OpenFile(s.journalPath(), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+	f, err := s.openFile(journalName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return 0, fmt.Errorf("filestore: open journal: %w", err)
 	}
@@ -65,7 +65,7 @@ func (s *Store) appendJournal(c agentmemory.Change) (int64, error) {
 // or longer would otherwise be resumed at an offset that is not where
 // a record starts.
 func (s *Store) headLine() ([]byte, error) {
-	f, err := os.Open(s.journalPath())
+	f, err := s.openFile(journalName, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -94,7 +94,7 @@ const headLimit = 64 << 10
 // refused on a damaged tail would refuse for ever, since nothing
 // repairs the journal.
 func (s *Store) lastSeq() (uint64, error) {
-	f, err := os.Open(s.journalPath())
+	f, err := s.openFile(journalName, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return 0, nil
@@ -219,7 +219,7 @@ func (s *Store) readJournal(after uint64, fn func(agentmemory.Change, error) boo
 // held. A line that is not a record is reported through fn as an
 // error, with a zero Change, and reading continues if fn returns true.
 func (s *Store) scanJournal(off int64, fn func(agentmemory.Change, error) bool) (int64, error) {
-	f, err := os.Open(s.journalPath())
+	f, err := s.openFile(journalName, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return 0, nil

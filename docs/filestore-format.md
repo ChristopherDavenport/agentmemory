@@ -101,6 +101,31 @@ Content MUST be valid UTF-8 and MUST NOT be empty: an empty entry is
 removed, not emptied. A metadata value MUST be valid UTF-8 on one line,
 with no leading or trailing white space; it MAY be empty.
 
+### Links
+
+A reader or writer of the directory MUST NOT follow a link inside it,
+symbolic or otherwise not a plain file or directory, and MUST reach
+nothing outside the directory through any path it opens:
+
+- An entry file that is a link, or anything but a regular file, is not
+  an entry. It is not listed, read, rendered, indexed or journaled,
+  and `Get` answers not found for its name, as for a name with no
+  file. A write to the name replaces the link by the rename every write
+  ends with, and never writes through it.
+- A scope directory that is a link holds no entries and takes no
+  write: a write into it fails.
+- `journal.jsonl` and the lock that are links are refused: a write
+  fails and a read yields an error. `.state.json` that is a link is
+  derived state and is rebuilt; an `INDEX.md` that is a link is
+  replaced on the next write.
+
+The reference opens every path through an `os.Root` on the directory,
+so nothing resolves outside it, and checks each file and scope
+directory with `Lstat`, comparing the file it opened with the name's
+own `Lstat`, so a link inside it is not followed either. A committed
+`project/x.md` that points at `~/.ssh/id_ed25519` is therefore never
+read, shown to a model or copied into the journal.
+
 ## Entry files
 
 An entry file is a frontmatter block between `---` lines followed by
@@ -265,12 +290,16 @@ listed here will not change.
 ### Sequence
 
 `seq` is allocated by the writer, under the lock, as one more than the
-`seq` of the last record in the journal, or 1 for a journal with none.
-The last record is found by reading the file backwards from its end:
-a trailing partial line is not a record and a line that is not a
-record is skipped (see *Damage and the torn tail*). The reference also
-keeps its cursor's last number and takes the greater of the two, which
-is the same number unless the journal has been edited behind it.
+greatest `seq` the writer knows the journal to hold: the `seq` of the
+last record in the journal, or 1 for a journal with none. The last
+record is found by reading the file backwards from its end: a trailing
+partial line is not a record and a line that is not a record is
+skipped (see *Damage and the torn tail*). The reference also keeps its
+cursor's last number and takes the greater of the two, which is the
+same number unless the journal has been edited behind it. A damaged
+line carries no number a reader can trust, so the record written after
+it may take the number the damaged line once had. `LastSeq` is the
+last record's `seq`, read from the tail without the lock.
 
 Along the file `seq` MUST strictly increase. Readers MUST NOT assume
 it is contiguous: a journal a person has edited may have gaps. A reader

@@ -59,6 +59,19 @@ versions may break the API.
   breaks the chain, and one after a record the journal could not read
   may be that damage (#46).
 
+### Security
+
+- `filestore` follows no link. It opens every path through an
+  `os.Root` on its directory, so nothing it opens resolves outside it,
+  and checks each file and scope directory with `Lstat`, so a link
+  inside it is not followed either. A committed `project/x.md` that
+  points at `~/.ssh/id_ed25519` was read, rendered into the block and
+  copied into the journal; it is now not an entry, and a write to its
+  name replaces the link. A scope directory that is a link holds no
+  entries and refuses a write; a journal or lock that is a link is
+  refused; a cursor that is a link is rebuilt. Annex A states it under
+  *Links*.
+
 ### Changed
 
 - **Breaking:** `LostUpdates` judges a record by its own `Prev` and

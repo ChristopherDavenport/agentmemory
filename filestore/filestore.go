@@ -119,6 +119,11 @@ func (s *Store) entryPath(scope agentmemory.Scope, name string) string {
 	return filepath.Join(s.scopeDir(scope), name+".md")
 }
 
+// entryName is the entry file's name relative to the store's root.
+func entryName(scope agentmemory.Scope, name string) string {
+	return filepath.Join(string(scope), name+".md")
+}
+
 func (s *Store) journalPath() string { return filepath.Join(s.dir, journalName) }
 func (s *Store) lockPath() string    { return filepath.Join(s.dir, lockName) }
 
@@ -151,13 +156,28 @@ func (s *Store) Get(_ context.Context, scope agentmemory.Scope, name string) (*a
 
 // read loads one entry file, or returns nil for none.
 func (s *Store) read(scope agentmemory.Scope, name string) (*agentmemory.Entry, error) {
-	path := s.entryPath(scope, name)
-	data, err := os.ReadFile(path)
+	r, err := s.root()
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	defer r.Close()
+	return readEntry(r, scope, name)
+}
+
+// readEntry loads one entry file through r, or returns nil for none. A
+// scope directory that is a link holds no entries, and an entry file
+// that is a link, or anything but a regular file, is not an entry:
+// neither is followed.
+func readEntry(r *os.Root, scope agentmemory.Scope, name string) (*agentmemory.Entry, error) {
+	if ok, err := isDir(r, string(scope)); err != nil || !ok {
+		return nil, err
+	}
+	data, info, err := readRegular(r, entryName(scope, name))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errNotRegular) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("filestore: read %s: %w", path, err)
+		return nil, fmt.Errorf("filestore: read %s: %w", entryName(scope, name), err)
 	}
 	d := decode(data)
 	e := &agentmemory.Entry{
@@ -171,9 +191,7 @@ func (s *Store) read(scope agentmemory.Scope, name string) (*agentmemory.Entry, 
 	if e.Updated.IsZero() {
 		// A file a person wrote by hand: the file's own time is the
 		// best there is.
-		if info, err := os.Stat(path); err == nil {
-			e.Updated = info.ModTime().UTC()
-		}
+		e.Updated = info.ModTime().UTC()
 	}
 	return e, nil
 }
@@ -189,20 +207,30 @@ func (s *Store) List(_ context.Context, scope agentmemory.Scope) ([]agentmemory.
 }
 
 func (s *Store) list(scope agentmemory.Scope) ([]agentmemory.Entry, error) {
-	entries, err := os.ReadDir(s.scopeDir(scope))
+	r, err := s.root()
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
+		return nil, err
+	}
+	defer r.Close()
+	if ok, err := isDir(r, string(scope)); err != nil || !ok {
+		return nil, err
+	}
+	d, err := r.Open(string(scope))
+	if err != nil {
+		return nil, fmt.Errorf("filestore: list %s: %w", scope, err)
+	}
+	entries, err := d.ReadDir(-1)
+	d.Close()
+	if err != nil {
 		return nil, fmt.Errorf("filestore: list %s: %w", scope, err)
 	}
 	var out []agentmemory.Entry
 	for _, de := range entries {
 		name, ok := strings.CutSuffix(de.Name(), ".md")
-		if !ok || de.IsDir() || !agentmemory.ValidName(name) {
+		if !ok || !de.Type().IsRegular() || !agentmemory.ValidName(name) {
 			continue
 		}
-		e, err := s.read(scope, name)
+		e, err := readEntry(r, scope, name)
 		if err != nil {
 			return nil, err
 		}
@@ -250,7 +278,7 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	if err != nil {
 		return nil, err
 	}
-	if err := writeAtomic(s.entryPath(e.Scope, e.Name), encode(e)); err != nil {
+	if err := s.writeAtomic(entryName(e.Scope, e.Name), encode(e)); err != nil {
 		return nil, err
 	}
 	if err := s.reindex(e.Scope); err != nil {
@@ -329,7 +357,7 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Remove(s.entryPath(scope, name)); err != nil {
+	if err := s.remove(entryName(scope, name)); err != nil {
 		return nil, fmt.Errorf("filestore: remove %s/%s: %w", scope, name, err)
 	}
 	if err := s.reindex(scope); err != nil {
@@ -513,9 +541,19 @@ func (s *Store) Reconcile(ctx context.Context) ([]agentmemory.Change, error) {
 	return changes, nil
 }
 
-// scopes lists the scope directories.
+// scopes lists the scope directories, leaving out a link to one.
 func (s *Store) scopes() ([]agentmemory.Scope, error) {
-	entries, err := os.ReadDir(s.dir)
+	r, err := s.root()
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	d, err := r.Open(".")
+	if err != nil {
+		return nil, fmt.Errorf("filestore: list scopes: %w", err)
+	}
+	entries, err := d.ReadDir(-1)
+	d.Close()
 	if err != nil {
 		return nil, fmt.Errorf("filestore: list scopes: %w", err)
 	}
@@ -526,6 +564,32 @@ func (s *Store) scopes() ([]agentmemory.Scope, error) {
 		}
 	}
 	return out, nil
+}
+
+// remove removes name in the store's root; a link is removed, never
+// followed.
+func (s *Store) remove(name string) error {
+	r, err := s.root()
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	return r.Remove(name)
+}
+
+// modTime returns the modification time of name in the store's root,
+// without following a link, and false when there is none.
+func (s *Store) modTime(name string) (time.Time, bool) {
+	r, err := s.root()
+	if err != nil {
+		return time.Time{}, false
+	}
+	defer r.Close()
+	info, err := r.Lstat(name)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime().UTC(), true
 }
 
 func key(scope agentmemory.Scope, name string) string { return string(scope) + "/" + name }
@@ -559,43 +623,7 @@ func (s *Store) reindex(scope agentmemory.Scope) error {
 		}
 		b.WriteByte('\n')
 	}
-	return writeAtomic(filepath.Join(s.scopeDir(scope), indexName), []byte(b.String()))
-}
-
-// writeAtomic writes data to a temporary file beside path, syncs it,
-// and renames it into place, so a reader sees the old file or the new
-// one and never a partial write.
-func writeAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("filestore: create %s: %w", dir, err)
-	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return fmt.Errorf("filestore: create temporary file in %s: %w", dir, err)
-	}
-	name := tmp.Name()
-	_, werr := tmp.Write(data)
-	if werr == nil {
-		werr = tmp.Sync()
-	}
-	if cerr := tmp.Close(); werr == nil {
-		werr = cerr
-	}
-	if werr == nil {
-		werr = os.Rename(name, path)
-	}
-	if werr != nil {
-		os.Remove(name)
-		return fmt.Errorf("filestore: write %s: %w", path, werr)
-	}
-	if d, err := os.Open(dir); err == nil {
-		// Make the rename durable where the platform allows a
-		// directory to be synced; where it does not, the file is.
-		_ = d.Sync()
-		d.Close()
-	}
-	return nil
+	return s.writeAtomic(filepath.Join(string(scope), indexName), []byte(b.String()))
 }
 
 var (
