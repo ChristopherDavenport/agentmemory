@@ -21,6 +21,12 @@ versions may break the API.
   places the code and the documents disagree. `docs/filestore-format.md`
   is its Annex A and stays at its path.
 
+- `Entry.MetaHash`, `MetaHash(meta)` and `IfMetaHash(h)`: the hash of
+  an entry's metadata, which every store fills on what it returns and
+  every record it appends as the optional `meta_hash` member, and a put
+  condition on it, failing with a `ConflictError` whose `Meta` is set.
+  The content hash says nothing about the metadata. filestore's cursor
+  already kept this hash; Annex A's worked example now shows the member.
 - `CheckScope` and `CheckRef`, which refuse a scope or a name that is
   not a name with `ErrInvalid`, for a store to call before a read.
 - `EntryPart(e, bound)`, the part an entry renders as whether or not a
@@ -79,6 +85,13 @@ versions may break the API.
   `memory_search` declares an `agenttool.Flow` whose `Reads` is
   `untrusted` unless the product sets it with `WithSearchReads`, so a
   harness labels its result in the session.
+- `memory_patch` is conditional on the metadata it read as well as the
+  content, so a patch no longer undoes another session's change to the
+  entry's description made between its read and its write; on a
+  conflict it reads again, as it does for content. `memory_save` that
+  leaves `meta` out, keeping the metadata it read, is conditional on it
+  too, and reads the metadata again on a conflict (RFC 0001 open
+  question 1).
 - **Breaking (block bytes):** a heading of level one to three inside an
   entry's content is written at level four, and a setext underline is
   escaped, outside code fences, so an entry cannot open a scope, an

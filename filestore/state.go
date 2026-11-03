@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/ChristopherDavenport/agentmemory"
@@ -59,25 +57,8 @@ func (s *Store) statePath() string { return filepath.Join(s.dir, stateName) }
 
 // metaHash is the hash of an entry's metadata, "" for none, so the
 // state can tell a frontmatter edit from an unchanged file without
-// holding the metadata itself.
-func metaHash(meta map[string]string) string {
-	if len(meta) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(meta))
-	for k := range meta {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(meta[k])
-		b.WriteByte('\n')
-	}
-	return agentmemory.Hash(b.String())
-}
+// holding the metadata itself. It is [agentmemory.MetaHash].
+func metaHash(meta map[string]string) string { return agentmemory.MetaHash(meta) }
 
 // note records what the journal now holds for the entry of a change.
 func (st *journalState) note(e agentmemory.Entry) {
@@ -265,6 +246,7 @@ func (s *Store) outside(st *journalState, scope agentmemory.Scope, name string, 
 		e := last.Entry
 		e.Deleted = true
 		e.Updated = at
+		e.MetaHash = agentmemory.MetaHash(e.Meta)
 		return &agentmemory.Change{Entry: e, Prev: known.Hash, Replaced: known.Hash, At: at, Source: agentmemory.SourceReconciled}, nil
 	case isKnown && known.agrees(*cur):
 		return nil, nil

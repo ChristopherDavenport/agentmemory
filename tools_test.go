@@ -1016,3 +1016,55 @@ func TestSearchFlow(t *testing.T) {
 		})
 	}
 }
+
+// metaRacer is a store whose first conditional Put of an entry finds
+// that another session changed the entry's description since the tool
+// read it: it makes that change first, then puts.
+type metaRacer struct {
+	*MemStore
+	raced bool
+}
+
+func (m *metaRacer) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error) {
+	if !m.raced && e.Name == "style" {
+		m.raced = true
+		cur, err := m.MemStore.Get(ctx, e.Scope, e.Name)
+		if err != nil {
+			return nil, err
+		}
+		cur.Meta = map[string]string{"description": "Edited elsewhere"}
+		if _, err := m.MemStore.Put(WithSession(ctx, "other"), *cur); err != nil {
+			return nil, err
+		}
+	}
+	return m.MemStore.Put(ctx, e, opts...)
+}
+
+// TestWritersKeepAConcurrentMetaEdit pins that a patch, and a save that
+// keeps the metadata, do not undo another session's change to the
+// metadata made between their read and their write: the write is
+// conditional on the metadata it read, and on a conflict the tool reads
+// again.
+func TestWritersKeepAConcurrentMetaEdit(t *testing.T) {
+	for _, tt := range []struct {
+		name, tool, args, content string
+	}{
+		{"patch", PatchTool, `{"name":"style","old_text":"Short","new_text":"Brief"}`, "Brief answers."},
+		{"save keeping meta", SaveTool, `{"name":"style","content":"Long answers."}`, "Long answers."},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &metaRacer{MemStore: NewMemStore()}
+			if _, err := store.MemStore.Put(ctx, Entry{Scope: "user", Name: "style", Content: "Short answers.", Meta: map[string]string{"description": "How to answer"}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := call(t, Tools(store, []Scope{"user"}), tt.tool, tt.args); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := store.Get(ctx, "user", "style")
+			if got.Content != tt.content || got.Description() != "Edited elsewhere" {
+				t.Errorf("entry = %q, description %q; want %q and the concurrent description", got.Content, got.Description(), tt.content)
+			}
+		})
+	}
+}

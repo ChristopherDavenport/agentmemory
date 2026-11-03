@@ -687,19 +687,39 @@ func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error
 	if errors.Is(err, ErrNotFound) {
 		stored = nil
 	}
-	e := Entry{Scope: scope, Name: a.Name, Content: a.Content, Meta: a.Meta}
-	if stored != nil && a.Meta == nil {
-		e.Meta = stored.Meta
-	}
 	shown, fromBlock := t.shown(scope, a.Name)
-	var opts []PutOption
+	var base []PutOption
 	switch {
 	case fromBlock:
-		opts = append(opts, BasedOn(shown))
+		base = append(base, BasedOn(shown))
 	case stored != nil:
-		opts = append(opts, BasedOn(stored.Hash))
+		base = append(base, BasedOn(stored.Hash))
 	}
-	c, err := t.store.Put(ctx, e, opts...)
+	// A save that leaves meta out keeps the metadata it read, so it is
+	// conditional on it, and reads the metadata again when another
+	// session changed it in between; the base stays the first read's,
+	// so a content change in between is still the fork the journal
+	// shows.
+	var e Entry
+	var c *Change
+	for attempt := 1; ; attempt++ {
+		e = Entry{Scope: scope, Name: a.Name, Content: a.Content, Meta: a.Meta}
+		opts := base
+		if stored != nil && a.Meta == nil {
+			e.Meta = stored.Meta
+			opts = append(slices.Clone(base), IfMetaHash(MetaHash(stored.Meta)))
+		}
+		c, err = t.store.Put(ctx, e, opts...)
+		var ce *ConflictError
+		if err == nil || !errors.As(err, &ce) || !ce.Meta || attempt == patchAttempts {
+			break
+		}
+		if stored, err = t.store.Get(ctx, scope, a.Name); errors.Is(err, ErrNotFound) {
+			stored = nil
+		} else if err != nil {
+			return agenttool.Result{}, err
+		}
+	}
 	if err != nil {
 		return agenttool.Result{}, err
 	}
@@ -798,16 +818,19 @@ func (t *toolset) patch(ctx context.Context, a patchArgs) (agenttool.Result, err
 		}
 		next := *cur
 		next.Content = strings.Replace(cur.Content, a.OldText, a.NewText, 1)
-		c, err := t.store.Put(ctx, next, IfHash(cur.Hash))
+		// Conditional on the metadata too: the patch keeps what it read,
+		// and a description another session changed since would
+		// otherwise be undone under a content hash that did not move.
+		c, err := t.store.Put(ctx, next, IfHash(cur.Hash), IfMetaHash(MetaHash(cur.Meta)))
 		if err == nil {
 			return wrote(PatchTool, c, "Patched %s/%s (%d of %d bytes) %s", scope, a.Name, len(next.Content), t.store.MaxEntryBytes(), Hash(next.Content))
 		}
 		if !errors.Is(err, ErrConflict) {
 			return agenttool.Result{}, err
 		}
-		// Another writer changed the entry between the read and the
-		// write. The edit is anchored in old_text, so apply it to the
-		// new content.
+		// Another writer changed the entry, its content or its
+		// metadata, between the read and the write. The edit is anchored
+		// in old_text, so apply it to what the entry holds now.
 		lastErr = err
 	}
 	return agenttool.Result{}, fmt.Errorf("%w after %d attempts; another session keeps changing it, try again", lastErr, patchAttempts)

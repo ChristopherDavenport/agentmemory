@@ -38,6 +38,7 @@ func Run(t *testing.T, opts Options) {
 	t.Run("InvalidReads", func(t *testing.T) { testInvalidReads(t, opts) })
 	t.Run("Bounds", func(t *testing.T) { testBounds(t, opts) })
 	t.Run("IfHash", func(t *testing.T) { testIfHash(t, opts) })
+	t.Run("MetaHash", func(t *testing.T) { testMetaHash(t, opts) })
 	t.Run("Forget", func(t *testing.T) { testForget(t, opts) })
 	t.Run("Journal", func(t *testing.T) { testJournal(t, opts) })
 	t.Run("LostUpdates", func(t *testing.T) { testLostUpdates(t, opts) })
@@ -312,6 +313,73 @@ func testIfHash(t *testing.T, opts Options) {
 	}
 	if n := count(t, st, 0); n != 4 {
 		t.Errorf("journal has %d records, want 4", n)
+	}
+}
+
+// testMetaHash checks the metadata hash a store fills on every entry
+// it returns and every record it appends, and the put condition on it,
+// which is what keeps an edit of the content from undoing a concurrent
+// edit of the metadata.
+func testMetaHash(t *testing.T, opts Options) {
+	ctx := context.Background()
+	st := opts.New(t)
+	meta := map[string]string{"description": "How to answer", "type": "feedback"}
+	mh := agentmemory.MetaHash(meta)
+	rec, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "style", Content: "Short.", Meta: meta}, agentmemory.IfHash(""), agentmemory.IfMetaHash(""))
+	if err != nil {
+		t.Fatalf("Put(create, IfMetaHash \"\"): %v", err)
+	}
+	if rec.Entry.MetaHash != mh {
+		t.Errorf("record MetaHash = %q, want %q", rec.Entry.MetaHash, mh)
+	}
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "bare", Content: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Get(ctx, "user", "style")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MetaHash != mh {
+		t.Errorf("Get MetaHash = %q, want %q", got.MetaHash, mh)
+	}
+	es, _ := st.List(ctx, "user")
+	for _, e := range es {
+		if e.MetaHash != agentmemory.MetaHash(e.Meta) {
+			t.Errorf("List %s MetaHash = %q, want %q", e.Name, e.MetaHash, agentmemory.MetaHash(e.Meta))
+		}
+	}
+	// Another writer changes the description; a write conditional on the
+	// metadata it read fails, and changes nothing.
+	edited := map[string]string{"description": "How to answer, briefly", "type": "feedback"}
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "style", Content: "Short.", Meta: edited}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "style", Content: "Shorter.", Meta: meta}, agentmemory.IfHash(got.Hash), agentmemory.IfMetaHash(got.MetaHash))
+	var ce *agentmemory.ConflictError
+	if !errors.As(err, &ce) || !ce.Meta || ce.Want != mh || ce.Have != agentmemory.MetaHash(edited) {
+		t.Fatalf("Put(IfMetaHash stale) = %v, want a ConflictError on the metadata", err)
+	}
+	if now, _ := st.Get(ctx, "user", "style"); now.Content != "Short." || now.Description() != "How to answer, briefly" {
+		t.Errorf("a refused conditional Put changed the entry: %+v", now)
+	}
+	// On what it holds now, it lands, and the record names the base.
+	rec, err = st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "style", Content: "Shorter.", Meta: edited}, agentmemory.IfHash(got.Hash), agentmemory.IfMetaHash(agentmemory.MetaHash(edited)))
+	if err != nil {
+		t.Fatalf("Put(IfMetaHash right): %v", err)
+	}
+	if rec.Prev != got.Hash || rec.Entry.MetaHash != agentmemory.MetaHash(edited) {
+		t.Errorf("record = %+v", rec)
+	}
+	tomb, err := st.Forget(ctx, "user", "style")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tomb.Entry.MetaHash != agentmemory.MetaHash(edited) {
+		t.Errorf("tombstone MetaHash = %q", tomb.Entry.MetaHash)
+	}
+	// A missing entry has no metadata.
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "style", Content: "Back."}, agentmemory.IfMetaHash(mh)); !errors.As(err, &ce) || !ce.Meta || ce.Have != "" {
+		t.Errorf("Put(IfMetaHash) on a forgotten entry = %v", err)
 	}
 }
 

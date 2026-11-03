@@ -106,6 +106,7 @@ func (m *MemStore) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change
 	now := m.now()
 	e = cloneEntry(e)
 	e.Hash = Hash(e.Content)
+	e.MetaHash = MetaHash(e.Meta)
 	e.Updated = now
 	e.Deleted = false
 	if m.live[e.Scope] == nil {

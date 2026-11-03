@@ -310,6 +310,7 @@ func buildEntry(scope agentmemory.Scope, name, content, meta, hash, updated stri
 		return nil, fmt.Errorf("sqlite: updated of %s/%s: %w", scope, name, err)
 	}
 	e.Updated = t
+	e.MetaHash = agentmemory.MetaHash(e.Meta)
 	return e, nil
 }
 
@@ -392,6 +393,7 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	}
 	now := s.now()
 	e.Hash = agentmemory.Hash(e.Content)
+	e.MetaHash = agentmemory.MetaHash(e.Meta)
 	e.Updated = now
 	e.Deleted = false
 	if len(e.Meta) == 0 {

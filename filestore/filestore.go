@@ -185,8 +185,9 @@ func readEntry(r *os.Root, scope agentmemory.Scope, name string) (*agentmemory.E
 		Name:    name,
 		Content: d.content,
 		Meta:    d.meta,
-		Hash:    agentmemory.Hash(d.content),
-		Updated: d.updated,
+		Hash:     agentmemory.Hash(d.content),
+		MetaHash: agentmemory.MetaHash(d.meta),
+		Updated:  d.updated,
 	}
 	if e.Updated.IsZero() {
 		// A file a person wrote by hand: the file's own time is the
@@ -269,6 +270,7 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	}
 	now := s.now()
 	e.Hash = agentmemory.Hash(e.Content)
+	e.MetaHash = agentmemory.MetaHash(e.Meta)
 	e.Updated = now
 	e.Deleted = false
 	if len(e.Meta) == 0 {
@@ -381,6 +383,7 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	}
 	e.Deleted = true
 	e.Updated = now
+	e.MetaHash = agentmemory.MetaHash(e.Meta)
 	c, err := s.appendChange(st, agentmemory.Change{
 		Entry:    e,
 		Prev:     hashOf(held),

@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -50,6 +51,11 @@ type Entry struct {
 	Meta map[string]string `json:"meta,omitempty"`
 	// Hash is "sha256:" and the hex digest of Content. A store sets it.
 	Hash string `json:"hash"`
+	// MetaHash is [MetaHash] of Meta, "" for none. A store sets it on
+	// every entry it returns and every record it appends; a record
+	// written before it existed has none, and a reader computes it from
+	// Meta. [IfMetaHash] makes a write conditional on it.
+	MetaHash string `json:"meta_hash,omitempty"`
 	// Updated is when the store last wrote the entry. A store sets it.
 	Updated time.Time `json:"updated"`
 	// Deleted marks a tombstone in the journal; Content is then the
@@ -191,6 +197,10 @@ type PutOptions struct {
 	// too, and enforces it.
 	Base    string
 	HasBase bool
+	// IfMetaHash is the metadata hash the stored entry must have when
+	// MetaConditional is set, "" meaning none or no entry.
+	IfMetaHash      string
+	MetaConditional bool
 }
 
 // IfHash makes the Put conditional: it fails with [ErrConflict] when
@@ -221,6 +231,44 @@ func BasedOn(h string) PutOption {
 	}
 }
 
+// IfMetaHash makes the Put conditional on the metadata: it fails with
+// [ErrConflict], a [ConflictError] with Meta set, unless the live
+// entry's [MetaHash] is h, where a missing entry's is "". The content
+// hash says nothing about the metadata, so a write that keeps the
+// metadata it read, as memory_patch does, names it here, or it undoes a
+// description another session changed in between. It does not change
+// the record's Prev.
+func IfMetaHash(h string) PutOption {
+	return func(o *PutOptions) {
+		o.IfMetaHash = h
+		o.MetaConditional = true
+	}
+}
+
+// MetaHash returns the hash of an entry's metadata, the form
+// [Entry.MetaHash] carries: [Hash] of one line per key, in byte order of
+// the keys, each the key, "=", the value and a line feed; "" for no
+// metadata. A key is a name and a value one line, so the form is
+// unambiguous.
+func MetaHash(meta map[string]string) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(meta))
+	for k := range meta {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(meta[k])
+		b.WriteByte('\n')
+	}
+	return Hash(b.String())
+}
+
 // ResolvePutOptions applies the options to a zero PutOptions.
 func ResolvePutOptions(opts ...PutOption) PutOptions {
 	var o PutOptions
@@ -249,16 +297,27 @@ func (o PutOptions) BaseFor(stored *Entry) string {
 // Check reports an [ErrConflict] when the options are conditional and
 // stored, the live entry or nil for none, does not satisfy them. A
 // store calls it under its write lock, after reading the entry.
+//
+// The metadata condition is checked after the content's, against
+// [MetaHash] of stored's Meta.
 func (o PutOptions) Check(scope Scope, name string, stored *Entry) error {
-	if !o.Conditional {
-		return nil
+	if o.Conditional {
+		have := ""
+		if stored != nil {
+			have = stored.Hash
+		}
+		if have != o.IfHash {
+			return &ConflictError{Scope: scope, Name: name, Want: o.IfHash, Have: have}
+		}
 	}
-	have := ""
-	if stored != nil {
-		have = stored.Hash
-	}
-	if have != o.IfHash {
-		return &ConflictError{Scope: scope, Name: name, Want: o.IfHash, Have: have}
+	if o.MetaConditional {
+		have := ""
+		if stored != nil {
+			have = MetaHash(stored.Meta)
+		}
+		if have != o.IfMetaHash {
+			return &ConflictError{Scope: scope, Name: name, Want: o.IfMetaHash, Have: have, Meta: true}
+		}
 	}
 	return nil
 }
@@ -309,9 +368,15 @@ type ConflictError struct {
 	Scope      Scope
 	Name       string
 	Want, Have string
+	// Meta says the condition that failed is [IfMetaHash]'s, and Want
+	// and Have are metadata hashes.
+	Meta bool
 }
 
 func (e *ConflictError) Error() string {
+	if e.Meta {
+		return fmt.Sprintf("agentmemory: entry %s/%s metadata has hash %s, not %s; read it again", e.Scope, e.Name, orNone(e.Have), orNone(e.Want))
+	}
 	switch {
 	case e.Want == "":
 		return fmt.Sprintf("agentmemory: entry %s/%s already exists with hash %s", e.Scope, e.Name, e.Have)
@@ -323,6 +388,13 @@ func (e *ConflictError) Error() string {
 
 // Is reports [ErrConflict].
 func (e *ConflictError) Is(target error) bool { return target == ErrConflict }
+
+func orNone(h string) string {
+	if h == "" {
+		return "none"
+	}
+	return h
+}
 
 // Hash returns "sha256:" and the hex digest of content, the form
 // [Entry.Hash] and [Change.Prev] carry.
