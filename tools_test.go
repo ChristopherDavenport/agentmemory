@@ -993,3 +993,26 @@ func TestSearchToolOptions(t *testing.T) {
 		t.Error("an option the store lacks was taken")
 	}
 }
+
+// TestSearchFlow pins that memory_search says its output reads untrusted
+// content, memory a model wrote, unless the product narrows it, so a
+// harness labels the result in the session and a policy can act on it.
+func TestSearchFlow(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		opts []ToolOption
+		want []agenttool.Label
+	}{
+		{"default", nil, []agenttool.Label{agenttool.LabelUntrusted}},
+		{"narrowed", []ToolOption{WithSearchReads()}, nil},
+		{"private too", []ToolOption{WithSearchReads(agenttool.LabelUntrusted, agenttool.LabelPrivate)}, []agenttool.Label{agenttool.LabelUntrusted, agenttool.LabelPrivate}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tools := Tools(NewMemStore(), []Scope{"user"}, tt.opts...)
+			f, ok := agenttool.FlowOf(tools[3])
+			if !ok || f.Sends || !slices.Equal(f.Reads, tt.want) {
+				t.Errorf("memory_search flow = %+v, %v; want reads %v", f, ok, tt.want)
+			}
+		})
+	}
+}

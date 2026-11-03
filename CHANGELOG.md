@@ -71,6 +71,20 @@ versions may break the API.
   entries and refuses a write; a journal or lock that is a link is
   refused; a cursor that is a link is rebuilt. Annex A states it under
   *Links*.
+- Memory content is untrusted input to the model, and the block says
+  so. Every `Part` carries `Trust`, agentsession's trust form: the
+  title, the scope headings and the summary read nothing, and an entry
+  part and an omission line carry their scope's labels,
+  `untrusted` unless the product sets them with `WithScopeTrust`.
+  `memory_search` declares an `agenttool.Flow` whose `Reads` is
+  `untrusted` unless the product sets it with `WithSearchReads`, so a
+  harness labels its result in the session.
+- **Breaking (block bytes):** a heading of level one to three inside an
+  entry's content is written at level four, and a setext underline is
+  escaped, outside code fences, so an entry cannot open a scope, an
+  entry part or a summary of its own in the block. A block whose
+  entries held such headings renders differently; the `headings`
+  fixture pins the rule.
 
 ### Changed
 

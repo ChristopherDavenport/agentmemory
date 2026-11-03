@@ -77,6 +77,9 @@ type toolOptions struct {
 	fixed       map[Scope][]string
 	insert      []Scope
 	now         func() time.Time
+
+	searchReads    []agenttool.Label
+	searchReadsSet bool
 }
 
 // WithSearchLimit sets the number of entries memory_search returns
@@ -164,6 +167,21 @@ func WithFixedNames(scope Scope, names ...string) ToolOption {
 // whose names [WithFixedNames] fixed; [Tools] panics otherwise.
 func WithInsert(scopes ...Scope) ToolOption {
 	return func(o *toolOptions) { o.insert = append(o.insert, scopes...) }
+}
+
+// WithSearchReads sets the labels memory_search's output carries, its
+// [agenttool.Flow] Reads, which a harness writes as the trust of the
+// result in the session and a policy decides on: untrusted unless the
+// product says otherwise, since memory a model wrote may carry an
+// instruction it read elsewhere, and the result is that text. With no
+// labels the output is declared to hold neither untrusted nor private
+// content, which a product says only of scopes people alone write; it
+// passes the union of the labels it gives the scopes to [WithScopeTrust].
+func WithSearchReads(labels ...agenttool.Label) ToolOption {
+	return func(o *toolOptions) {
+		o.searchReads = slices.Clone(labels)
+		o.searchReadsSet = true
+	}
 }
 
 // withClock sets the clock memory_insert names entries by, for tests.
@@ -334,16 +352,16 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	// annotations, which a host such as mcpserver reads as none at all
 	// and MCP then defaults to destructive and open-world.
 	out := []agenttool.Tool{
-		tool(SaveTool, t.saveDescription(), t.save, scopes, o.readScopes, agenttool.Annotations{Title: "Save memory entry", Destructive: true}, agenttool.ReplayUnknown),
-		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, agenttool.Annotations{Title: "Edit memory entry"}, agenttool.ReplayUnknown),
-		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}, agenttool.ReplayUnknown),
-		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}, agenttool.ReplaySafe, t.unsupported()...),
+		tool(SaveTool, t.saveDescription(), t.save, scopes, o.readScopes, agenttool.Annotations{Title: "Save memory entry", Destructive: true}, agenttool.ReplayUnknown, nil),
+		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, agenttool.Annotations{Title: "Edit memory entry"}, agenttool.ReplayUnknown, nil),
+		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}, agenttool.ReplayUnknown, nil),
+		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}, agenttool.ReplaySafe, &agenttool.Flow{Reads: t.searchReads()}, t.unsupported()...),
 	}
 	if len(o.insert) > 0 {
 		// An insert never overwrites, so it is not destructive; run
 		// again it inserts again, so it is neither idempotent nor safe
 		// to replay.
-		out = append(out, tool(InsertTool, t.insertDescription(), t.insertEntry, o.insert, o.readScopes, agenttool.Annotations{Title: "Insert memory entry"}, agenttool.ReplayUnknown))
+		out = append(out, tool(InsertTool, t.insertDescription(), t.insertEntry, o.insert, o.readScopes, agenttool.Annotations{Title: "Insert memory entry"}, agenttool.ReplayUnknown, nil))
 	}
 	return out
 }
@@ -368,9 +386,12 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 //
 // replay is the tool's claim for every call, forwarded through the
 // wrapper as its annotations are.
-func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes, readOnly []Scope, a agenttool.Annotations, replay agenttool.Replay, drop ...string) agenttool.Tool {
+func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes, readOnly []Scope, a agenttool.Annotations, replay agenttool.Replay, flow *agenttool.Flow, drop ...string) agenttool.Tool {
 	tree, schema := scopeSchema[Args](scopes, drop...)
 	opts := []agenttool.Option{agenttool.WithParameters(schema), agenttool.WithAnnotations(a)}
+	if flow != nil {
+		opts = append(opts, agenttool.WithFlow(*flow))
+	}
 	if replay != agenttool.ReplayUnknown {
 		opts = append(opts, agenttool.WithReplay(func(context.Context, json.RawMessage) agenttool.Replay { return replay }))
 	}
@@ -555,6 +576,15 @@ func (t *toolset) insertDescription() string {
 func (t *toolset) searchDescription() string {
 	return fmt.Sprintf("Find memory entries: the ones the memory block omits, or one to read whole before editing it. Every word of the query must appear in an entry's name, one of its metadata values, such as its description, or its content, in any case.%s Returns up to %d entries unless limit says otherwise, and at most %d bytes of content; the rest are listed by name. Results stay in the conversation, so search for what you need and no more. %s",
 		t.optionsSentence(), t.opts.searchLimit, t.opts.searchBytes, t.searchScopes())
+}
+
+// searchReads is memory_search's Reads: [WithSearchReads]'s labels, or
+// untrusted.
+func (t *toolset) searchReads() []agenttool.Label {
+	if t.opts.searchReadsSet {
+		return t.opts.searchReads
+	}
+	return []agenttool.Label{agenttool.LabelUntrusted}
 }
 
 // unsupported returns the search options the store does not support,

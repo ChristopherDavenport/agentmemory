@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/ChristopherDavenport/agenttool"
 )
 
 // DefaultMaxTotalBytes is the bound [Render] starts with: the whole
@@ -20,6 +22,7 @@ type RenderOption func(*renderOptions)
 type renderOptions struct {
 	maxTotal int
 	scopeMax map[Scope]int
+	trust    map[Scope][]agenttool.Label
 }
 
 // WithMaxTotalBytes sets the block's bound; without it the bound is
@@ -542,7 +545,59 @@ type Part struct {
 	// Text is the piece, without the blank line that separates it from
 	// the next.
 	Text string `json:"text"`
+	// Trust is what the renderer knows of where the text came from, in
+	// agentsession's form: the title, the scope headings and the
+	// summary are the renderer's own and read nothing, and an entry
+	// part and an omission line carry their scope's labels, untrusted
+	// unless the product says otherwise with [WithScopeTrust], since a
+	// model wrote them and it may have read text an attacker wrote.
+	// [RenderParts] always sets it; nil says nothing. Parts are compared
+	// by ID and Text: two renders give equal labels in distinct values.
+	Trust *Trust `json:"trust,omitempty"`
 }
+
+// Trust labels a part's text as agentsession's trust member labels an
+// item: Reads lists the labels, untrusted for text from a source the
+// product does not trust and private for text that must not leave the
+// session, and empty says the text was judged and holds neither. A
+// product that records the block's parts in a session carries it to
+// the part, where the format defines trust on a part.
+type Trust struct {
+	Reads []agenttool.Label `json:"reads"`
+}
+
+// WithScopeTrust sets the labels the parts of scope's entries, and its
+// omission line, carry; with no labels the scope's text is judged to
+// hold nothing untrusted or private, as a read scope only people write
+// may be. A scope without it is [agenttool.LabelUntrusted]: memory a
+// model wrote may carry an instruction it read from a web page. The
+// last call for a scope holds. Trust changes no byte of the block.
+func WithScopeTrust(scope Scope, labels ...agenttool.Label) RenderOption {
+	return func(o *renderOptions) {
+		if o.trust == nil {
+			o.trust = map[Scope][]agenttool.Label{}
+		}
+		var reads []agenttool.Label
+		for _, l := range labels {
+			if !slices.Contains(reads, l) {
+				reads = append(reads, l)
+			}
+		}
+		o.trust[scope] = reads
+	}
+}
+
+// scopeTrust is the trust of scope's entry parts and omission line.
+func (o renderOptions) scopeTrust(scope Scope) *Trust {
+	if labels, ok := o.trust[scope]; ok {
+		return &Trust{Reads: append([]agenttool.Label{}, labels...)}
+	}
+	return &Trust{Reads: []agenttool.Label{agenttool.LabelUntrusted}}
+}
+
+// ownTrust is the trust of the renderer's own parts, which hold no text
+// an entry gave them beyond a scope's name.
+func ownTrust() *Trust { return &Trust{Reads: []agenttool.Label{}} }
 
 // The IDs of the block's fixed parts.
 const (
@@ -569,8 +624,10 @@ func PartID(scope Scope, name string) string { return "memory/" + string(scope) 
 // len(Text)+len([PartSeparator]), the bytes the part would have added
 // to the block, which is the meaning agentsession gives size; the
 // manifest's Bytes is the content's size, which is less.
+//
+// Its Trust is the default, untrusted.
 func EntryPart(e Entry, bound int) Part {
-	return Part{ID: PartID(e.Scope, e.Name), Text: entryText(e, bound)}
+	return Part{ID: PartID(e.Scope, e.Name), Text: entryText(e, bound), Trust: renderOptions{}.scopeTrust(e.Scope)}
 }
 
 func scopePartID(scope Scope) string   { return "memory/" + string(scope) }
@@ -690,11 +747,11 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 	}
 
 	man := Manifest{Entries: []ManifestEntry{}}
-	parts := []Part{{ID: TitlePartID, Text: title}}
+	parts := []Part{{ID: TitlePartID, Text: title, Trust: ownTrust()}}
 	spent := 0 // the entries and the omission lines placed so far
 	for i, scope := range scopes {
 		es := lists[i]
-		parts = append(parts, Part{ID: scopePartID(scope), Text: scopeText(scope, len(es) == 0)})
+		parts = append(parts, Part{ID: scopePartID(scope), Text: scopeText(scope, len(es) == 0), Trust: ownTrust()})
 		if len(es) == 0 {
 			continue
 		}
@@ -714,7 +771,7 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 		for j, e := range es {
 			me := ManifestEntry{Scope: scope, Name: e.Name, Hash: e.Hash, Bytes: e.Size()}
 			if in[j] {
-				parts = append(parts, Part{ID: PartID(scope, e.Name), Text: entryText(e, limit)})
+				parts = append(parts, Part{ID: PartID(scope, e.Name), Text: entryText(e, limit), Trust: o.scopeTrust(scope)})
 				man.Entries = append(man.Entries, me)
 				continue
 			}
@@ -724,7 +781,7 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 		}
 		if len(dropped) > 0 {
 			if line := omitLine(dropped, room-used); line != "" {
-				parts = append(parts, Part{ID: omittedPartID(scope), Text: line})
+				parts = append(parts, Part{ID: omittedPartID(scope), Text: line, Trust: o.scopeTrust(scope)})
 				used += cost(line)
 			}
 		}
@@ -751,7 +808,7 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 		}
 		size = n
 	}
-	parts = append(parts, Part{ID: SummaryPartID, Text: last})
+	parts = append(parts, Part{ID: SummaryPartID, Text: last, Trust: ownTrust()})
 	return parts, man, nil
 }
 
@@ -866,7 +923,7 @@ func summary(shown, omitted, size, free, max, limit int) string {
 }
 
 // entryText renders one entry's part: its heading, a blank line, and
-// its content less one trailing newline.
+// its content less one trailing newline, its headings neutralised.
 func entryText(e Entry, limit int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "### %s (%d of %d bytes)", e.Name, e.Size(), limit)
@@ -875,8 +932,104 @@ func entryText(e Entry, limit int) string {
 		b.WriteString(d)
 	}
 	b.WriteString("\n\n")
-	b.WriteString(strings.TrimSuffix(e.Content, "\n"))
+	b.WriteString(neutralise(strings.TrimSuffix(e.Content, "\n")))
 	return b.String()
+}
+
+// neutralise rewrites the lines of an entry's content that Markdown
+// reads as a heading of level one to three, so that none does and an
+// entry cannot open a scope, an entry part or anything else of the
+// block's own structure, which uses those levels. Line by line, split
+// at "\n", outside a code fence:
+//
+//   - A line of at most three spaces, then one to three "#", then a
+//     space, a tab, a "\r" or the end, an ATX heading, has "#" inserted
+//     after its spaces to make four.
+//   - A line of at most three spaces, then one or more "=" or one or
+//     more "-" alone, then only spaces and tabs, a setext underline,
+//     directly after a line that is neither blank nor a heading nor a
+//     fence, has "\" inserted after its spaces, which makes it text.
+//
+// A fence opens at a line of at most three spaces, then three or more
+// "`" or "~", the backtick form with no "`" after the run, and closes
+// at a line of at most three spaces, then a run of the same character
+// at least as long, then only spaces and tabs; lines inside it, and an
+// unclosed fence's lines to the end, are left alone. Nothing else is
+// changed: a heading of level four or more, one inside a block quote or
+// a list item, and an indented line stay as written.
+func neutralise(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	var fence byte
+	fenceLen := 0
+	prevText := false
+	for i, line := range lines {
+		body := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+		ind := len(body) - len(strings.TrimLeft(body, " "))
+		rest := body[ind:]
+		if fence != 0 {
+			if ind <= 3 && closesFence(rest, fence, fenceLen) {
+				fence = 0
+			}
+			prevText = false
+			continue
+		}
+		if ind <= 3 {
+			if c, n := opensFence(rest); n > 0 {
+				fence, fenceLen = c, n
+				prevText = false
+				continue
+			}
+			if n := atxLevel(rest); n >= 1 && n <= 3 {
+				lines[i] = line[:ind] + strings.Repeat("#", 4-n) + line[ind:]
+				prevText = false
+				continue
+			}
+			if prevText && isUnderline(rest) {
+				lines[i] = line[:ind] + "\\" + line[ind:]
+				continue
+			}
+		}
+		prevText = strings.Trim(body, " \t") != ""
+	}
+	return strings.Join(lines, "")
+}
+
+// atxLevel returns the level of the ATX heading s opens, or 0.
+func atxLevel(s string) int {
+	n := len(s) - len(strings.TrimLeft(s, "#"))
+	if n == 0 || n > 6 || (n < len(s) && s[n] != ' ' && s[n] != '\t') {
+		return 0
+	}
+	return n
+}
+
+// opensFence returns the fence character and run length s opens a code
+// fence with, or 0.
+func opensFence(s string) (byte, int) {
+	if s == "" || (s[0] != '`' && s[0] != '~') {
+		return 0, 0
+	}
+	c := s[0]
+	n := len(s) - len(strings.TrimLeft(s, string(c)))
+	if n < 3 || (c == '`' && strings.Contains(s[n:], "`")) {
+		return 0, 0
+	}
+	return c, n
+}
+
+// closesFence reports whether s closes a fence of c at least n long.
+func closesFence(s string, c byte, n int) bool {
+	run := len(s) - len(strings.TrimLeft(s, string(c)))
+	return run >= n && strings.Trim(s[run:], " \t") == ""
+}
+
+// isUnderline reports whether s is a setext heading underline.
+func isUnderline(s string) bool {
+	if s == "" || (s[0] != '=' && s[0] != '-') {
+		return false
+	}
+	run := len(s) - len(strings.TrimLeft(s, string(s[0])))
+	return strings.Trim(s[run:], " \t") == ""
 }
 
 // Usage is one paragraph telling the model how to use the memory tools
