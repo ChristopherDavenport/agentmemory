@@ -66,7 +66,138 @@
       "in_force": "sha256:e4804599f8876e4eaef0dbc19eaed7d5dff4024d9e781e0f586c3ca3f396ba00"
     },
     {
-      "note": "the same block with the flag: a delta that keeps every element and sets it",
+      "note": "the same block with the flag: whole, never a delta",
+      "record": {
+        "entries": [],
+        "omitted": [
+          {
+            "scope": "user",
+            "name": "fact-000",
+            "hash": "sha256:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+            "bytes": 40,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-001",
+            "hash": "sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "bytes": 41,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-002",
+            "hash": "sha256:d7017ebcd65455e76e953d5b42fa96c3df28c7c3b616c7f069ed930fb4fae5fd",
+            "bytes": 42,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-003",
+            "hash": "sha256:4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce",
+            "bytes": 43,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-004",
+            "hash": "sha256:4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "bytes": 44,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-005",
+            "hash": "sha256:ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d",
+            "bytes": 45,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-006",
+            "hash": "sha256:e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683",
+            "bytes": 46,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-007",
+            "hash": "sha256:7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451",
+            "bytes": 47,
+            "reason": "block"
+          }
+        ],
+        "dropped": true
+      },
+      "in_force": "sha256:5e6c065a74446165fc9adefdc192797810b04687846bb7cc4e4bf39f04429b8b"
+    },
+    {
+      "note": "back without the flag: whole, since its base is a block left out",
+      "record": {
+        "entries": [],
+        "omitted": [
+          {
+            "scope": "user",
+            "name": "fact-000",
+            "hash": "sha256:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+            "bytes": 40,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-001",
+            "hash": "sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+            "bytes": 41,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-002",
+            "hash": "sha256:d7017ebcd65455e76e953d5b42fa96c3df28c7c3b616c7f069ed930fb4fae5fd",
+            "bytes": 42,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-003",
+            "hash": "sha256:4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce",
+            "bytes": 43,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-004",
+            "hash": "sha256:4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "bytes": 44,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-005",
+            "hash": "sha256:ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d",
+            "bytes": 45,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-006",
+            "hash": "sha256:e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683",
+            "bytes": 46,
+            "reason": "block"
+          },
+          {
+            "scope": "user",
+            "name": "fact-007",
+            "hash": "sha256:7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451",
+            "bytes": 47,
+            "reason": "block"
+          }
+        ]
+      },
+      "in_force": "sha256:e4804599f8876e4eaef0dbc19eaed7d5dff4024d9e781e0f586c3ca3f396ba00"
+    },
+    {
+      "note": "a delta carrying the flag, which a writer never records and a reader still reads",
       "record": {
         "base": "sha256:e4804599f8876e4eaef0dbc19eaed7d5dff4024d9e781e0f586c3ca3f396ba00",
         "hash": "sha256:5e6c065a74446165fc9adefdc192797810b04687846bb7cc4e4bf39f04429b8b",
@@ -78,19 +209,6 @@
         "dropped": true
       },
       "in_force": "sha256:5e6c065a74446165fc9adefdc192797810b04687846bb7cc4e4bf39f04429b8b"
-    },
-    {
-      "note": "back without the flag: a delta that keeps every element and does not set it",
-      "record": {
-        "base": "sha256:5e6c065a74446165fc9adefdc192797810b04687846bb7cc4e4bf39f04429b8b",
-        "hash": "sha256:e4804599f8876e4eaef0dbc19eaed7d5dff4024d9e781e0f586c3ca3f396ba00",
-        "omitted": [
-          {
-            "keep": 8
-          }
-        ]
-      },
-      "in_force": "sha256:e4804599f8876e4eaef0dbc19eaed7d5dff4024d9e781e0f586c3ca3f396ba00"
     },
     {
       "note": "a block left out over an empty store: the flag tells it from a block shown empty",

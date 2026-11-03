@@ -239,9 +239,11 @@ func (m Manifest) Record() (ns string, data []byte) {
 // member base is what tells it from a whole record.
 //
 // It returns the whole record, as [Manifest.Record] does, when that is
-// no larger than the delta, which it is for a first manifest, and when
+// no larger than the delta, which it is for a first manifest; when
 // either manifest names one entry twice in a list, since a keep could
-// not say which of the two it means.
+// not say which of the two it means; and when either is a block left
+// out, LeftOut, so a reader older than the flag never meets a delta
+// carrying it or based on a hash that counts it.
 //
 // The product keeps prev per session, and records a session's first
 // manifest whole. prev is the manifest in force on the session's path,
@@ -252,6 +254,11 @@ func (m Manifest) Record() (ns string, data []byte) {
 // [ManifestFold], and [ApplyManifestRecord] refuses it.
 func (m Manifest) RecordSince(prev Manifest) (ns string, data []byte) {
 	whole := marshalRecord(m)
+	if m.LeftOut || prev.LeftOut {
+		// A reader before the flag could neither read a delta's dropped
+		// nor compute a base hash that counts it.
+		return ManifestNS, whole
+	}
 	entries, ok1 := manifestDiff(prev.Entries, m.Entries)
 	omitted, ok2 := manifestDiff(prev.Omitted, m.Omitted)
 	if !ok1 || !ok2 {

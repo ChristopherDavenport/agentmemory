@@ -1428,18 +1428,29 @@ func TestManifestLeftOut(t *testing.T) {
 	if err != nil || !back.LeftOut || back.Hash() != out.Hash() {
 		t.Errorf("ApplyManifestRecord(%s) = %+v, %v", data, back, err)
 	}
-	// A delta carries its own flag: set onto a manifest without it...
-	_, delta := gone.RecordSince(empty)
-	if !bytes.Contains(delta, []byte(`"dropped":true`)) {
-		t.Errorf("delta onto the empty block left out = %s", delta)
+	// A writer records a manifest left out, and one after it, whole, so
+	// a reader before the flag never meets a delta carrying it or based
+	// on a hash it cannot compute.
+	big := manifestFixture(8, 5)
+	for _, c := range []struct {
+		name       string
+		next, prev Manifest
+	}{
+		{"onto a block left out", big.LeaveOut(), big},
+		{"from a block left out", big, big.LeaveOut()},
+		{"from one block left out to another", big.LeaveOut(), Manifest{Omitted: big.LeaveOut().Omitted[1:], LeftOut: true}},
+	} {
+		if _, rec := c.next.RecordSince(c.prev); bytes.Contains(rec, []byte(`"base"`)) {
+			t.Errorf("%s: recorded as a delta: %s", c.name, rec)
+		}
 	}
-	if got, err := ApplyManifestRecord(empty, delta); err != nil || !got.LeftOut {
+	// A reader still reads a delta's flag as its own: set onto a
+	// manifest without it, and unset from one with it.
+	if got, err := ApplyManifestRecord(empty, marshalRecord(manifestDelta{Base: empty.Hash(), Hash: gone.Hash(), Dropped: true})); err != nil || !got.LeftOut {
 		t.Errorf("delta onto the empty block left out folds to %+v, %v", got, err)
 	}
-	// ...and unset from one with it.
-	_, delta = empty.RecordSince(gone)
-	if got, err := ApplyManifestRecord(gone, delta); err != nil || got.LeftOut || got.Hash() != empty.Hash() {
-		t.Errorf("delta from the block left out back to the empty one (%s) folds to %+v, %v", delta, got, err)
+	if got, err := ApplyManifestRecord(gone, marshalRecord(manifestDelta{Base: gone.Hash(), Hash: empty.Hash()})); err != nil || got.LeftOut {
+		t.Errorf("delta from the block left out back to the empty one folds to %+v, %v", got, err)
 	}
 	var f ManifestFold
 	for _, rec := range [][]byte{data, mustDelta(gone, out), mustDelta(empty, gone)} {

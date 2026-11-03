@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -325,8 +326,9 @@ func foldCases() map[string][]foldStep {
 		},
 		"left-out": {
 			{Note: "a block left out before the flag: every entry omitted for the block", Record: rec(dropped.Record())},
-			{Note: "the same block with the flag: a delta that keeps every element and sets it", Record: rec(dropped.LeaveOut().RecordSince(dropped))},
-			{Note: "back without the flag: a delta that keeps every element and does not set it", Record: rec(dropped.RecordSince(dropped.LeaveOut()))},
+			{Note: "the same block with the flag: whole, never a delta", Record: rec(dropped.LeaveOut().RecordSince(dropped))},
+			{Note: "back without the flag: whole, since its base is a block left out", Record: rec(dropped.RecordSince(dropped.LeaveOut()))},
+			{Note: "a delta carrying the flag, which a writer never records and a reader still reads", Record: raw(`{"base":"` + dropped.Hash() + `","hash":"` + dropped.LeaveOut().Hash() + `","omitted":[{"keep":` + strconv.Itoa(len(dropped.Omitted)) + `}],"dropped":true}`)},
 			{Note: "a block left out over an empty store: the flag tells it from a block shown empty", Record: rec(Manifest{}.LeaveOut().Record())},
 			{Note: "the block shown empty, whole", Record: rec(Manifest{}.RecordSince(Manifest{}.LeaveOut()))},
 		},

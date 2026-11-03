@@ -1131,7 +1131,7 @@ x block\n                                      last, when dropped is true
 with `<bytes>` in decimal. A manifest whose `dropped` is false hashes
 as it did before draft 0.3, and a block left out hashes apart from the
 same lists shown, so a product that records a manifest only when its
-hash moves records the drop. The empty manifest's hash is the hash of the
+hash moves records the drop. It records it whole (8.4). The empty manifest's hash is the hash of the
 empty string. Two renders that showed the model the same memories hash
 the same, so a product records the manifest only when its hash moves.
 The manifest names content, not metadata: a change to an entry's
@@ -1220,8 +1220,10 @@ absent member, is whole.
   "dropped":true}`: `base` is the hash of the manifest it is written
   on, `hash` the hash of the manifest it gives, `dropped`, left out
   when false, the `dropped` of the manifest it gives, never taken from
-  the base, and each list, left out when empty, is a list of elements, each either a manifest element written whole or
-  `{"keep":n}`, a positive integer and no other member.
+  the base, though a writer never records a delta with it true (below);
+  and each list, left out when empty, is a list of elements, each
+  either a manifest element written whole or `{"keep":n}`, a positive
+  integer and no other member.
 
 A delta's list is read against the same list of its base manifest with
 a cursor that starts at the base list's first element:
@@ -1251,6 +1253,10 @@ A writer:
   and every other element whole;
 - MUST record whole when either list of either manifest names one
   entry twice, since a keep could not say which it means;
+- MUST record whole when the manifest or its base has `dropped` true,
+  so a reader before draft 0.3 never meets a delta carrying `dropped`
+  or based on a hash that counts it; a reader still reads `dropped` on
+  a delta;
 - SHOULD record whole when the delta is not smaller than the whole
   record, as the reference does.
 
@@ -1544,7 +1550,7 @@ not a new meaning under the old one.
 | what | sections | the change |
 |---|---|---|
 | agentkit#95 | 6.8, 11, 12 | A write in a turn whose block was left out is refused where the call is decided, before any person or reviewer is asked, and again by the writing tool when it runs, with one message; `memory_insert` is a writer as `memory_save`, `memory_patch` and `memory_forget` are. Draft 0.2 said nothing of a dropped block's writes, so a product refused them only when they ran, after asking a person about a call no answer could let through. The fixture `testdata/dropped.json` gives the cases. |
-| agentkit#95 | 7.6, 8.4, 6.8 | A manifest has `dropped`, true for a block the product left out whole, in the whole record and in a delta, which carries its own and never its base's, left out when false; the manifest hash ends with `x block\n` when it is set. Draft 0.2 told a block left out only by every element under `omitted` with the reason `block`, so one left out over an empty store was the empty manifest, hashed as a block shown empty, was never recorded, and let a write through. A record without `dropped` is read as before, and every manifest without it hashes as before. The fixture `testdata/manifest/left-out.json` folds it. |
+| agentkit#95 | 7.6, 8.4, 6.8 | A manifest has `dropped`, true for a block the product left out whole, in the whole record and in a delta, which carries its own and never its base's, left out when false; the manifest hash ends with `x block\n` when it is set; and a writer records a manifest whole when it or its base has the flag, so a reader before this draft never meets it in a delta. Draft 0.2 told a block left out only by every element under `omitted` with the reason `block`, so one left out over an empty store was the empty manifest, hashed as a block shown empty, was never recorded, and let a write through. A record without `dropped` is read as before, and every manifest without it hashes as before. The fixture `testdata/manifest/left-out.json` folds it. |
 
 ## 16. Changes from draft 0.1
 

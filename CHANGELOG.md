@@ -33,7 +33,9 @@ versions may break the API.
   from the one the block would have shown: every entry and omission
   under `Omitted` with `OmitBlock`, and the flag set. The whole record
   and a delta carry `dropped` when it is set, a delta its own and never
-  its base's, and `Manifest.Hash` ends with `x block\n` then, so a
+  its base's (`RecordSince` records whole when either manifest has the
+  flag, so a reader older than this release never meets it in a delta
+  or as a base hash), and `Manifest.Hash` ends with `x block\n` then, so a
   block left out over an empty store hashes apart from one shown empty
   and is recorded. A manifest without the flag records and hashes as
   before. `testdata/manifest/left-out.json` folds it.
