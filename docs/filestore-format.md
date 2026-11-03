@@ -4,8 +4,12 @@ Status: specified from the code at v0.0.9 and the fixes after it, and
 held to it by `filestore/format_test.go`, which reads the examples in
 this document and checks them against the package. A change to the
 format starts here, in the examples, and the test says what the code
-has to catch up on. Issue #12 asked for this document; it is not an
-RFC, and agentsession's `docs/rfcs/0001` is the shape if it becomes one.
+has to catch up on. Issue #12 asked for this document. It is Annex A of
+[RFC 0001: Agent Memory](rfcs/0001-agent-memory.md), and normative for
+a program that reads or writes the directory; the RFC defines the
+entry, the record and the lost-update rules this document applies to
+files, and a change here is a change to the RFC. It stays at this path
+because the test reads it here.
 
 The key words MUST, MUST NOT, SHOULD and MAY are to be read as in
 RFC 2119. They bind a writer of the directory other than the reference
@@ -96,6 +100,60 @@ and leaves a hand-written file over it out of the journal (see
 Content MUST be valid UTF-8 and MUST NOT be empty: an empty entry is
 removed, not emptied. A metadata value MUST be valid UTF-8 on one line,
 with no leading or trailing white space; it MAY be empty.
+
+### Links
+
+A reader or writer of the directory MUST NOT follow a link inside it,
+symbolic or otherwise not a plain file or directory, and MUST reach
+nothing outside the directory through any path it opens:
+
+- An entry file that is a link, or anything but a regular file, is not
+  an entry. It is not listed, read, rendered, indexed or journaled,
+  and `Get` answers not found for its name, as for a name with no
+  file. A write to the name replaces the link by the rename every write
+  ends with, and never writes through it.
+- A scope directory that is a link is refused: a read, a write, a
+  render and `Reconcile` over it fail with an error that says so. It is
+  not read as an empty scope, which would have `Reconcile` tombstone
+  every entry the journal holds for it.
+- `journal.jsonl` and the lock that are links are refused: a write
+  fails and a read yields an error. `.state.json` that is a link is
+  derived state and is rebuilt; an `INDEX.md` that is a link is
+  replaced on the next write.
+
+- A file with more than one hard link, where the platform reports a
+  link count, is treated as a link: an entry file is not an entry, and a
+  journal is refused. A second name for a file outside the directory
+  shares that file's identity, so no comparison of the two can tell it
+  from the store's own. The lock is the exception: a takeover links it
+  to its claim (*The lock*).
+- A FIFO, a socket or a device where a file is expected is refused, and
+  the reference opens files without blocking, so one swapped in after
+  the check cannot hang a writer that holds the lock.
+
+The reference opens every path through an `os.Root` on the directory,
+so nothing resolves outside it, and checks each file and scope
+directory with `Lstat`, comparing the file it opened with the name's
+own `Lstat` and checking the opened file is regular, so a link inside
+it is not followed either. A committed `project/x.md` that points at
+`~/.ssh/id_ed25519` is therefore never read, shown to a model or copied
+into the journal.
+
+What the rule does not cover:
+
+- The directory itself is the operator's choice, named when the store
+  is opened, and is followed: a store opened at a link to a directory
+  is the directory the link names. Only what is inside it is held to
+  this section.
+- A scope directory swapped for a link between the check and the open
+  is followed within the directory, never outside it, since the root
+  confines every open: the worst it does is read another scope's file.
+  Closing the race needs an open that refuses a link in any component,
+  which the standard library offers on no platform the reference
+  supports alike.
+- On Windows a junction reads as an irregular file, and is refused as a
+  link is; Windows reports no link count through the standard library,
+  so hard links are not refused there.
 
 ## Entry files
 
@@ -212,6 +270,7 @@ the whole store, whatever the scope.
 | `entry.content` | string | required | the whole content after the change; for a tombstone, the last content the entry held |
 | `entry.meta` | object of string to string | omitted when empty | the metadata after the change |
 | `entry.hash` | string | required | `sha256:` and the digest of `entry.content` |
+| `entry.meta_hash` | string | omitted when `entry.meta` is empty | the metadata hash of `entry.meta` (RFC 0001 section 2.3); a reader computes it from `entry.meta` when a record written before it was defined has none |
 | `entry.updated` | RFC 3339 time | required | when the entry was last written; for a reconciled edit or add, the file's modification time |
 | `entry.deleted` | `true` | omitted when false | the record is a tombstone |
 | `prev` | string | omitted when empty | the hash of the content the write was built on, as the writer claims it |
@@ -261,12 +320,16 @@ listed here will not change.
 ### Sequence
 
 `seq` is allocated by the writer, under the lock, as one more than the
-`seq` of the last record in the journal, or 1 for a journal with none.
-The last record is found by reading the file backwards from its end:
-a trailing partial line is not a record and a line that is not a
-record is skipped (see *Damage and the torn tail*). The reference also
-keeps its cursor's last number and takes the greater of the two, which
-is the same number unless the journal has been edited behind it.
+greatest `seq` the writer knows the journal to hold: the `seq` of the
+last record in the journal, or 1 for a journal with none. The last
+record is found by reading the file backwards from its end: a trailing
+partial line is not a record and a line that is not a record is
+skipped (see *Damage and the torn tail*). The reference also keeps its
+cursor's last number and takes the greater of the two, which is the
+same number unless the journal has been edited behind it. A damaged
+line carries no number a reader can trust, so the record written after
+it may take the number the damaged line once had. `LastSeq` is the
+last record's `seq`, read from the tail without the lock.
 
 Along the file `seq` MUST strictly increase. Readers MUST NOT assume
 it is contiguous: a journal a person has edited may have gaps. A reader
@@ -315,9 +378,14 @@ when the caller claimed nothing, the hash the store held, which is
 Record 4 of the worked example is a fork: two sessions read the entry
 at record 2's hash, each wrote whole, record 3 landed first, and record
 4 has `prev` naming record 2 where its `replaced` names record 3.
-`LostUpdates` reads the journal through `Journal` and stops at the
-first damaged line it yields, so over a journal with damage it reports
-the forks before the damage.
+A fork is judged by the record's own `prev` and `replaced`, so a reader
+reports it wherever it lies: past a damaged line, and in a window that
+starts after a cursor and holds nothing earlier for the entry.
+`LostUpdates` reads the journal through `Journal`, goes on past a
+damaged line and returns its error beside what it found, and also
+reports a *break*, a record whose `replaced` is not the last state the
+window holds for its entry, marking one after damage as possibly the
+damage (RFC 0001 section 4.7).
 
 ### Tombstones
 
@@ -516,7 +584,7 @@ by reading the journal whole, and a second writer MAY ignore it under
 the rules below. Its shape, for a reader that wants to use it:
 
 ```json file=memory/.state.json
-{"seq":6,"off":2462,"head":"sha256:0268bff9269c0e728a65c785a0f7372e9c1de8af332728db10dd6276536130ad","entries":{"user/style":{"hash":"sha256:3365f6ed0369b24253840a91206f90bec41fc5b78aa571fdbf1415a707ac9b3d","meta":"sha256:22d575523a9f97fdf61541518acf18395f12c6e5b8edfdff6b525bfadadd6d75"}}}
+{"seq":6,"off":2806,"head":"sha256:0268bff9269c0e728a65c785a0f7372e9c1de8af332728db10dd6276536130ad","entries":{"user/style":{"hash":"sha256:3365f6ed0369b24253840a91206f90bec41fc5b78aa571fdbf1415a707ac9b3d","meta":"sha256:22d575523a9f97fdf61541518acf18395f12c6e5b8edfdff6b525bfadadd6d75"}}}
 ```
 
 - `seq` is the last record's `seq` the cursor has seen and `off` the
@@ -596,10 +664,10 @@ The journal afterwards:
 
 ```jsonl file=memory/journal.jsonl
 {"seq":1,"entry":{"scope":"user","name":"editor","content":"Uses neovim.\n","hash":"sha256:bb849475c4187cc3b3d202a44fac78fd031244a2539675703b5c2415b8b82f85","updated":"2026-09-20T10:00:00Z"},"session":"slack-7f3a","at":"2026-09-20T10:00:00Z"}
-{"seq":2,"entry":{"scope":"user","name":"style","content":"Prefers short answers.\n","meta":{"description":"How to answer","type":"feedback"},"hash":"sha256:b9222ae357120af1d8c83927948ddc111cedb70023b6b694d2ad45df97b088ed","updated":"2026-09-20T10:00:01Z"},"session":"slack-7f3a","at":"2026-09-20T10:00:01Z"}
-{"seq":3,"entry":{"scope":"user","name":"style","content":"Prefers short answers \u0026 tabs.\n","meta":{"description":"How to answer","type":"feedback"},"hash":"sha256:db7ebdd5506e13726b52c567a6b21f52885cfd20aa6831ad3b9ac08eac644ce4","updated":"2026-09-20T10:00:02Z"},"prev":"sha256:b9222ae357120af1d8c83927948ddc111cedb70023b6b694d2ad45df97b088ed","replaced":"sha256:b9222ae357120af1d8c83927948ddc111cedb70023b6b694d2ad45df97b088ed","session":"telegram-c91e","at":"2026-09-20T10:00:02Z"}
-{"seq":4,"entry":{"scope":"user","name":"style","content":"Prefers short answers. Lives in Bristol.\n","meta":{"description":"How to answer","type":"feedback"},"hash":"sha256:4dab640d22b67f852e80d4775e6424c1564d97a293ca5fe79def3c632d55bbc4","updated":"2026-09-20T10:00:03Z"},"prev":"sha256:b9222ae357120af1d8c83927948ddc111cedb70023b6b694d2ad45df97b088ed","replaced":"sha256:db7ebdd5506e13726b52c567a6b21f52885cfd20aa6831ad3b9ac08eac644ce4","session":"slack-7f3a","at":"2026-09-20T10:00:03Z"}
-{"seq":5,"entry":{"scope":"user","name":"style","content":"Prefers short answers and tabs. Lives in Bristol.\n","meta":{"description":"How to answer","type":"feedback"},"hash":"sha256:3365f6ed0369b24253840a91206f90bec41fc5b78aa571fdbf1415a707ac9b3d","updated":"2026-09-20T10:00:03.5Z"},"prev":"sha256:4dab640d22b67f852e80d4775e6424c1564d97a293ca5fe79def3c632d55bbc4","replaced":"sha256:4dab640d22b67f852e80d4775e6424c1564d97a293ca5fe79def3c632d55bbc4","source":"reconciled","at":"2026-09-20T10:00:04Z"}
+{"seq":2,"entry":{"scope":"user","name":"style","content":"Prefers short answers.\n","meta":{"description":"How to answer","type":"feedback"},"hash":"sha256:b9222ae357120af1d8c83927948ddc111cedb70023b6b694d2ad45df97b088ed","meta_hash":"sha256:22d575523a9f97fdf61541518acf18395f12c6e5b8edfdff6b525bfadadd6d75","updated":"2026-09-20T10:00:01Z"},"session":"slack-7f3a","at":"2026-09-20T10:00:01Z"}
+{"seq":3,"entry":{"scope":"user","name":"style","content":"Prefers short answers \u0026 tabs.\n","meta":{"description":"How to answer","type":"feedback"},"hash":"sha256:db7ebdd5506e13726b52c567a6b21f52885cfd20aa6831ad3b9ac08eac644ce4","meta_hash":"sha256:22d575523a9f97fdf61541518acf18395f12c6e5b8edfdff6b525bfadadd6d75","updated":"2026-09-20T10:00:02Z"},"prev":"sha256:b9222ae357120af1d8c83927948ddc111cedb70023b6b694d2ad45df97b088ed","replaced":"sha256:b9222ae357120af1d8c83927948ddc111cedb70023b6b694d2ad45df97b088ed","session":"telegram-c91e","at":"2026-09-20T10:00:02Z"}
+{"seq":4,"entry":{"scope":"user","name":"style","content":"Prefers short answers. Lives in Bristol.\n","meta":{"description":"How to answer","type":"feedback"},"hash":"sha256:4dab640d22b67f852e80d4775e6424c1564d97a293ca5fe79def3c632d55bbc4","meta_hash":"sha256:22d575523a9f97fdf61541518acf18395f12c6e5b8edfdff6b525bfadadd6d75","updated":"2026-09-20T10:00:03Z"},"prev":"sha256:b9222ae357120af1d8c83927948ddc111cedb70023b6b694d2ad45df97b088ed","replaced":"sha256:db7ebdd5506e13726b52c567a6b21f52885cfd20aa6831ad3b9ac08eac644ce4","session":"slack-7f3a","at":"2026-09-20T10:00:03Z"}
+{"seq":5,"entry":{"scope":"user","name":"style","content":"Prefers short answers and tabs. Lives in Bristol.\n","meta":{"description":"How to answer","type":"feedback"},"hash":"sha256:3365f6ed0369b24253840a91206f90bec41fc5b78aa571fdbf1415a707ac9b3d","meta_hash":"sha256:22d575523a9f97fdf61541518acf18395f12c6e5b8edfdff6b525bfadadd6d75","updated":"2026-09-20T10:00:03.5Z"},"prev":"sha256:4dab640d22b67f852e80d4775e6424c1564d97a293ca5fe79def3c632d55bbc4","replaced":"sha256:4dab640d22b67f852e80d4775e6424c1564d97a293ca5fe79def3c632d55bbc4","source":"reconciled","at":"2026-09-20T10:00:04Z"}
 {"seq":6,"entry":{"scope":"user","name":"editor","content":"Uses neovim.\n","hash":"sha256:bb849475c4187cc3b3d202a44fac78fd031244a2539675703b5c2415b8b82f85","updated":"2026-09-20T10:00:05Z","deleted":true},"prev":"sha256:bb849475c4187cc3b3d202a44fac78fd031244a2539675703b5c2415b8b82f85","replaced":"sha256:bb849475c4187cc3b3d202a44fac78fd031244a2539675703b5c2415b8b82f85","session":"slack-7f3a","at":"2026-09-20T10:00:05Z"}
 ```
 

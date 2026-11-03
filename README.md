@@ -19,6 +19,13 @@ the loop is never imported here.
   search.
 - `storetest` is the conformance suite every store passes.
 
+The contract, in terms a program in any language can implement, is
+[RFC 0001: Agent Memory](docs/rfcs/0001-agent-memory.md): entries and
+scopes, the store and its conditional writes, the journal and lost
+updates, the tools, the rendered block and its manifest, and the
+`agentmemory:render` and `agentmemory:write` session records. The
+filestore format, `docs/filestore-format.md`, is its Annex A.
+
 ## Install
 
 ```sh
@@ -62,8 +69,11 @@ landed on, which chains the records, and `Prev`, the state it was built
 on, which the caller names with `IfHash` or, without making it a
 precondition, with `BasedOn`. A record whose `Prev` is not its
 `Replaced` is a write composed from a state another writer had already
-replaced, and `LostUpdates(ctx, store, after)` lists them, so an
-auditor can say what a session discarded. Content over the bound is
+replaced, and `LostUpdates(ctx, store, after)` lists them from any
+cursor, past a damaged record, with the records that break the chain,
+so an auditor can say what a session discarded. `LastSeq(ctx, store)`
+is the journal's last sequence number, from a store that answers it
+(`LastSeqer`, which every store here is) without reading the journal. Content over the bound is
 refused with a `SizeError` naming the attempted size, the limit and
 what the entry holds now.
 
@@ -140,7 +150,14 @@ whole record and the delta on each manifest the fold holds.
 
 `Render` produces the block: a title, one section per scope, one
 heading per entry with its size and the limit and its description, then
-the content verbatim, and last a line with the counts and the budget.
+the content, and last a line with the counts and the budget. The
+content is verbatim but for its headings: memory is text a model wrote,
+possibly from text an attacker wrote, so a heading of level one to three
+inside it is written at level four and a setext underline is escaped,
+outside code fences, and an entry cannot open a scope or an entry of
+its own. Each part carries `Trust`, agentsession's labels: an entry is
+`untrusted` unless `WithScopeTrust` says a scope is people's alone, and
+`memory_search` declares the same of its output (`WithSearchReads`).
 `MaxTotalBytes` (32 KiB by default) bounds the block itself, headings,
 descriptions and that last line included, and the line reports the
 block's own size. The block never comes out over it: a bound under one
@@ -189,11 +206,14 @@ last line `memory:summary`. A product that records its instructions as
 parts, through agentturn/session's `WithInstructionsParts`, gives
 agentsession the memory parts beside its own, and a write to one entry
 is recorded as that entry's part and the last line, the rest by hash;
-the manifest's omissions, named with `PartID`, are its omitted parts.
+the manifest's omissions, named with `PartID`, are its omitted parts,
+each with the `size` agentsession means, the bytes the part would have
+added: `len(EntryPart(e, bound).Text) + len(PartSeparator)`.
 
 ## The tools
 
-`Tools(store, scopes)` returns four tools restricted to the scopes the
+`Tools(store, scopes)` returns four tools, five with `WithInsert`,
+restricted to the scopes the
 product allows. The list is in each tool's schema as an enum on
 `scope`, not only in its description, and with more than one scope
 `scope` is required, so a call that omits it is an error the model can
@@ -208,6 +228,18 @@ a call names no scope, so what the block omitted from them is
 reachable, and the three writers refuse them with `scope <name> is
 read-only`, which their descriptions state.
 
+`WithFixedNames(scope, names...)` fixes a scope's entry names, as
+Letta's `persona` and `human` blocks are: `memory_save` refuses any
+other name there and `memory_forget` refuses those, each saying which
+entries are fixed. `WithInsert(scopes...)` adds `memory_insert`, which
+keeps a passage under a name the tool gives it, `InsertName`: the UTC
+time to the second and the first eight hex digits of the content's
+hash, `20261102-194400-1a2b3c4d`, with `-2`, `-3` and on when that name
+is taken. It creates with `IfHash("")`, so an insert never overwrites,
+and the result names the entry. Names sort by time, and the block
+renders in name order, so under the budget the newest inserts are the
+ones left out.
+
 The tools carry `agenttool.Annotations`, so a host can approve the
 search without asking: `memory_search` is read-only, `memory_save` and
 `memory_forget` destructive, `memory_patch` neither, and none is
@@ -219,6 +251,7 @@ open-world.
 | `memory_patch` | `scope`, `name`, `old_text`, `new_text` | replace one exact occurrence |
 | `memory_forget` | `scope`, `name` | write a tombstone |
 | `memory_search` | `query`, `scopes`, `limit` | find entries the block omits |
+| `memory_insert` | `scope`, `content`, `meta` | create under a name the tool gives |
 
 Each write's result carries the journal record it produced as
 `WriteRecord` in `agenttool.Result.Details`, which the model never
@@ -245,6 +278,17 @@ and two sessions patching one entry keep both edits; the tool reads,
 patches and puts with `IfHash`, retrying on a conflict. `memory_search`
 returns five entries and 16 KiB by default, because a tool result
 stays in the transcript where the block is replaced each turn.
+
+A store may support search options beside the query (`Searcher`):
+`any`, an entry holding any word rather than every word, ranked by the
+store; `meta`, entries whose metadata holds given values; and
+`updated_after` and `updated_before`, exclusive bounds on when an entry
+was last written. `SearchWith(ctx, store, scopes, query, limit, opts)`
+refuses an option the store does not support with `ErrUnsupported`
+rather than ignore it, and `memory_search` offers an argument for each
+option its store supports and none for the others. Every store here
+supports all four; the in-memory store and filestore rank `any` by how
+many of the words an entry holds, sqlite by bm25.
 
 ## Stores
 

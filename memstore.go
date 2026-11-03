@@ -56,6 +56,9 @@ func (m *MemStore) MaxEntryBytes() int { return m.max }
 
 // Get implements Store.
 func (m *MemStore) Get(_ context.Context, scope Scope, name string) (*Entry, error) {
+	if err := CheckRef(scope, name); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e, ok := m.live[scope][name]
@@ -68,6 +71,9 @@ func (m *MemStore) Get(_ context.Context, scope Scope, name string) (*Entry, err
 
 // List implements Store.
 func (m *MemStore) List(_ context.Context, scope Scope) ([]Entry, error) {
+	if err := CheckScope(scope); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.listLocked(scope), nil
@@ -100,6 +106,7 @@ func (m *MemStore) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change
 	now := m.now()
 	e = cloneEntry(e)
 	e.Hash = Hash(e.Content)
+	e.MetaHash = MetaHash(e.Meta)
 	e.Updated = now
 	e.Deleted = false
 	if m.live[e.Scope] == nil {
@@ -115,6 +122,9 @@ func (m *MemStore) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change
 
 // Forget implements Store.
 func (m *MemStore) Forget(ctx context.Context, scope Scope, name string) (*Change, error) {
+	if err := CheckRef(scope, name); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e, ok := m.live[scope][name]
@@ -145,22 +155,31 @@ func (m *MemStore) appendLocked(ctx context.Context, e Entry, prev, replaced str
 
 // Search implements Store with [Match], listing by scope order then
 // name.
-func (m *MemStore) Search(_ context.Context, scopes []Scope, query string, limit int) ([]Entry, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []Entry
+func (m *MemStore) Search(ctx context.Context, scopes []Scope, query string, limit int) ([]Entry, error) {
+	return m.SearchWith(ctx, scopes, query, limit, SearchOptions{})
+}
+
+// SearchOptions implements [Searcher]: every option.
+func (m *MemStore) SearchOptions() []string { return AllSearchOptions() }
+
+// SearchWith implements [Searcher] with [SearchOptions.Filter] over the
+// scopes in order.
+func (m *MemStore) SearchWith(_ context.Context, scopes []Scope, query string, limit int, opts SearchOptions) ([]Entry, error) {
 	for _, scope := range scopes {
-		for _, e := range m.listLocked(scope) {
-			if !Match(e, query) {
-				continue
-			}
-			out = append(out, e)
-			if limit > 0 && len(out) == limit {
-				return out, nil
-			}
+		if err := CheckScope(scope); err != nil {
+			return nil, err
 		}
 	}
-	return out, nil
+	if err := opts.Check(m.SearchOptions()); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var all []Entry
+	for _, scope := range scopes {
+		all = append(all, m.listLocked(scope)...)
+	}
+	return opts.Filter(all, query, limit), nil
 }
 
 // Journal implements Store.
@@ -181,6 +200,14 @@ func (m *MemStore) Journal(_ context.Context, after uint64) iter.Seq2[Change, er
 	}
 }
 
+// LastSeq implements [LastSeqer]: the journal's length, since the
+// in-memory journal is numbered from 1 with no gaps.
+func (m *MemStore) LastSeq(context.Context) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return uint64(len(m.journal)), nil
+}
+
 // cloneEntry copies the entry so a caller's map and the store's stay
 // separate. An empty meta becomes nil, so an entry compares equal
 // whether it was stored with an empty map or none.
@@ -193,4 +220,8 @@ func cloneEntry(e Entry) Entry {
 	return e
 }
 
-var _ Store = (*MemStore)(nil)
+var (
+	_ Store     = (*MemStore)(nil)
+	_ LastSeqer = (*MemStore)(nil)
+	_ Searcher  = (*MemStore)(nil)
+)

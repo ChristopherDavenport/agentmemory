@@ -5,6 +5,178 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Added
+
+- RFC 0001, agent memory
+  (`docs/rfcs/0001-agent-memory.md`), draft 0.1. It states the contract
+  as v0.0.10 holds it in language-neutral terms: entries, scopes and
+  names, the store and its conditional writes, the journal with its
+  sequence, chain, forks and damage, the tools, the rendered block with
+  its parts, budget and manifest, and the `agentmemory:render` and
+  `agentmemory:write` session records with the manifest delta and fold.
+  The rules #46, #47, #48 and #49 will add are marked "Changes" with
+  their issue, the Go binding is a table, and an appendix lists the
+  places the code and the documents disagree. `docs/filestore-format.md`
+  is its Annex A and stays at its path.
+- RFC 0001 draft 0.2 states the contract after this release's changes:
+  the rules of #46–#49 as current; the answers to draft 0.1's eight
+  open questions; one sequence rule; reads that refuse a non-name and
+  do not validate; white space and lowercasing defined; every tool's
+  schema, annotations with idempotence, and flow; neutralised headings
+  and trust labels on parts; the metadata hash; element presence and a
+  `base` of `null`; redaction of the session records; a journal
+  without its start; the links rule; and the JSON fixtures as the
+  conformance corpus. Appendix B says how each of the eleven
+  inconsistencies was resolved and lists agentkit's follow-ups.
+
+- `Entry.MetaHash`, `MetaHash(meta)` and `IfMetaHash(h)`: the hash of
+  an entry's metadata, which every store fills on what it returns and
+  every record it appends as the optional `meta_hash` member, and a put
+  condition on it, failing with a `ConflictError` whose `Meta` is set.
+  The content hash says nothing about the metadata. filestore's cursor
+  already kept this hash; Annex A's worked example now shows the member.
+- Language-neutral fixtures, the conformance corpus RFC 0001 names:
+  `testdata/render/<case>.input.json`, everything a render fixture is a
+  function of, beside its block, parts and manifest;
+  `testdata/lostupdates/*.json`, journals with damaged lines and what a
+  reader reports from each cursor; and `testdata/manifest/*.json`,
+  `agentmemory:render` records with the manifest in force after each,
+  or the refusal, unresolved or malformed; `testdata/neutralise.json`,
+  the heading rule's cases; `testdata/render/trust.json`, the trust each
+  part carries; `testdata/search/reference.json`, the reference match
+  with each option; and `testdata/hashes.json`, content and metadata
+  hashes. Tests read every fixture back from the file alone;
+  `go test . -update` writes them.
+- `CheckScope` and `CheckRef`, which refuse a scope or a name that is
+  not a name with `ErrInvalid`, for a store to call before a read.
+- `EntryPart(e, bound)`, the part an entry renders as whether or not a
+  render holds it, so a product records an omitted part's `size` as
+  agentsession means it, the bytes the part would have added, rather
+  than the content's size.
+
+- `WithFixedNames(scope, names...)`: a scope whose entry names the
+  product fixed, where `memory_save` refuses any other name and
+  `memory_forget` refuses those, each error naming the fixed entries,
+  and the writers' descriptions say so (#48).
+- `WithInsert(scopes...)` adds `memory_insert` (`InsertTool`), which
+  creates an entry under a name it gives, `InsertName(at, content, n)`:
+  `YYYYMMDD-HHMMSS-<8 hex of the content hash>`, then `-2`, `-3` while
+  the name is taken, each attempt a put with `IfHash("")`, so an insert
+  never overwrites. The result and its `WriteRecord` name the entry
+  (#48).
+- Search options (#47): `SearchOptions{Any, Meta, UpdatedAfter,
+  UpdatedBefore}`, the optional `Searcher` interface that names the
+  options a store supports and searches with them, `SearchSupport`,
+  and `SearchWith(ctx, s, …)`, which refuses an option the store does
+  not support with `ErrUnsupported` rather than ignore it. The
+  in-memory store, filestore and sqlite support all four; the first
+  two through `SearchOptions.Filter`, ranking `any` by how many of the
+  words an entry holds, sqlite with OR in FTS5 ranked by bm25.
+  `memory_search` gains `any`, `meta`, `updated_after` and
+  `updated_before` arguments for the options its store supports, and
+  none for the others. `storetest` checks each option a store supports
+  and that it refuses the others.
+- `LastSeqer`, an optional store interface answering the journal's
+  last sequence number without reading it, and `LastSeq(ctx, s)`,
+  which falls back to reading the journal. The in-memory store,
+  filestore and sqlite implement it, and `storetest` checks it (#49).
+- `LostUpdate.Break` and `LostUpdate.AfterDamage`: a record whose
+  `Replaced` is not the last state the window holds for its entry
+  breaks the chain, and one after a record the journal could not read
+  may be that damage (#46).
+
+### Security
+
+- **Breaking:** `filestore` follows no link. It opens every path through an
+  `os.Root` on its directory, so nothing it opens resolves outside it,
+  and checks each file and scope directory with `Lstat`, so a link
+  inside it is not followed either. A committed `project/x.md` that
+  points at `~/.ssh/id_ed25519` was read, rendered into the block and
+  copied into the journal; it is now not an entry, and a write to its
+  name replaces the link. A scope directory that is a link is refused
+  with an error by every read, write, render and `Reconcile`, rather
+  than read as empty, which would have tombstoned its entries; a
+  journal or lock that is a link is refused; a cursor that is a link is
+  rebuilt. A file with more than one hard link is treated as a link
+  where the platform reports link counts, a non-regular file is refused
+  after the open as well as before it, and files are opened without
+  blocking, so a FIFO swapped in cannot hang a writer under the lock.
+  Annex A names what the rule does not cover: the store's own
+  directory, which is followed; a scope swapped for a link inside the
+  root mid-read; Windows hard links. Annex A states it under
+  *Links*.
+- Memory content is untrusted input to the model, and the block says
+  so. Every `Part` carries `Trust`, agentsession's trust form: the
+  title, the scope headings and the summary read nothing, and an entry
+  part and an omission line carry their scope's labels,
+  `untrusted` unless the product sets them with `WithScopeTrust`.
+  **Breaking:** `Part.Trust` is a pointer, so `==` between two parts
+  now compares the pointers and is false for equal parts of two
+  renders; compare `ID` and `Text`.
+- **Breaking:** `memory_search` declares an `agenttool.Flow` whose
+  `Reads` is `untrusted` unless the product sets it with
+  `WithSearchReads`, so a harness labels its result in the session and
+  a policy that decides by flow treats it as untrusted where it said
+  nothing before.
+- **Breaking:** filestore refuses links: an entry file that is a link
+  or a hard link is not an entry, and a linked scope directory is an
+  error (see Security below for the whole rule).
+- `memory_patch` is conditional on the metadata it read as well as the
+  content, so a patch no longer undoes another session's change to the
+  entry's description made between its read and its write; on a
+  conflict it reads again, as it does for content. `memory_save` that
+  leaves `meta` out, keeping the metadata it read, is conditional on it
+  too, and reads the metadata again on a conflict (RFC 0001 open
+  question 1).
+- `memory_save` of an entry its read did not find is based on the empty
+  string and conditional on no metadata, so another session's create
+  between the read and the put is a fork `LostUpdates` reports, and one
+  with metadata is refused with `ErrConflict`; it was overwritten with
+  nothing recorded.
+- **Breaking (block bytes):** a heading of level one to three inside an
+  entry's content is written at level four, a setext underline is
+  escaped and a line that begins with `<` is escaped, on every line,
+  inside code fences, block quotes and list items too, after any run of
+  spaces, tabs, `>` and list markers, with a lone `\r` ending a line as
+  CommonMark ends one; a description's line ends are spaces; and a code
+  fence an entry leaves open has its opener escaped, so it cannot turn
+  the parts after it into code or an HTML block. An entry cannot open a
+  scope, an entry part or a summary of its own in the block. A block
+  whose entries held such text renders differently; the `headings` and
+  `forged` render fixtures and `testdata/neutralise.json` pin the rule.
+  The model reads the neutralised text, so `memory_patch`'s description
+  says to copy `old_text` holding a heading from `memory_search`.
+
+### Changed
+
+- **Breaking:** `LostUpdates` judges a record by its own `Prev` and
+  `Replaced`: a fork is reported wherever it lies, from any cursor, so
+  a fork right after the cursor is reported, which it was not (#49).
+  It no longer stops at the first error the journal yields: it reads
+  on, reports the lost updates on both sides, and returns every error
+  joined (#46). A record that breaks the chain is reported too, where
+  the window holds the entry's earlier record; `Over` is that record's
+  state, or `Replaced` when the window holds none. Read from 0, the
+  window holds every entry's start only when the journal's first record
+  it can read is 1, or follows the damaged lines before it; a journal
+  whose start was removed is read as from a cursor.
+- **Breaking:** a read of a scope or a name that is not a name is
+  refused with `ErrInvalid` by every store. `NewMemStore` listed
+  nothing for one and answered `ErrNotFound`; filestore and sqlite
+  already refused it. `storetest` pins it (RFC 0001 open question 2).
+- `Manifest` marshals `entries` as `[]` when it has none, so
+  `Manifest.Record` and `RecordSince` write `"entries":[]` for a
+  manifest a product built from a nil list, as the one of a block
+  dropped whole is, rather than `null` (RFC 0001 open question 6).
+- `Match` counts a word the query gives twice once.
+- memory_search's description and its `query` argument say a word must
+  appear in an entry's name, metadata or content: every metadata value
+  is searched, not only the description.
+- Requires agenttool v0.0.28 and openresponses v0.0.18; the tools'
+  integration test runs under agentturn v0.0.35.
+
 ## v0.0.10 - 2026-10-02
 
 ### Added

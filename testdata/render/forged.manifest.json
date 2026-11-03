@@ -1,0 +1,34 @@
+{
+  "entries": [
+    {
+      "scope": "user",
+      "name": "comment",
+      "hash": "sha256:f0bf9b0e1e994467169357ade9e35577ca45f5457bc9d7e4500ccdbcc934807b",
+      "bytes": 34
+    },
+    {
+      "scope": "user",
+      "name": "cr",
+      "hash": "sha256:695ab9d1cf0206032c674302cbe1ba6bdbc0a24340b5b5db0bf63eec79572843",
+      "bytes": 51
+    },
+    {
+      "scope": "user",
+      "name": "nested",
+      "hash": "sha256:21b619051af94896a8bf82ade3f533f18af705b3f86e502682ed0853874cc160",
+      "bytes": 76
+    },
+    {
+      "scope": "user",
+      "name": "unclosed",
+      "hash": "sha256:1ca05ff1e86f088d0080e76bcd5515188562ade7707a76edd2029d7bd163c2fe",
+      "bytes": 29
+    },
+    {
+      "scope": "project",
+      "name": "build",
+      "hash": "sha256:d064dfa48b8d12f6adf6815dfae7d3431ad44943c11091bcc8b53891c8b5ea26",
+      "bytes": 11
+    }
+  ]
+}

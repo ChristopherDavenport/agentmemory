@@ -1,0 +1,277 @@
+[
+  {
+    "note": "plain text",
+    "in": "plain\n",
+    "out": "plain\n"
+  },
+  {
+    "note": "level one",
+    "in": "# one",
+    "out": "#### one"
+  },
+  {
+    "note": "level two",
+    "in": "## two\n",
+    "out": "#### two\n"
+  },
+  {
+    "note": "level three",
+    "in": "### three",
+    "out": "#### three"
+  },
+  {
+    "note": "level four stays",
+    "in": "#### four",
+    "out": "#### four"
+  },
+  {
+    "note": "seven is no heading",
+    "in": "####### seven",
+    "out": "####### seven"
+  },
+  {
+    "note": "an empty heading",
+    "in": "#",
+    "out": "####"
+  },
+  {
+    "note": "before CR LF",
+    "in": "##\r\n",
+    "out": "####\r\n"
+  },
+  {
+    "note": "indented up to three",
+    "in": "   ## indented",
+    "out": "   #### indented"
+  },
+  {
+    "note": "indented four, as a list continuation is",
+    "in": "    ## code",
+    "out": "    #### code"
+  },
+  {
+    "note": "after a tab",
+    "in": "\t## tab",
+    "out": "\t#### tab"
+  },
+  {
+    "note": "a hashtag",
+    "in": "#hashtag",
+    "out": "#hashtag"
+  },
+  {
+    "note": "mid content",
+    "in": "text\n## mid\ntext",
+    "out": "text\n#### mid\ntext"
+  },
+  {
+    "note": "setext one",
+    "in": "Title\n===",
+    "out": "Title\n\\==="
+  },
+  {
+    "note": "setext two",
+    "in": "Title\n---\n",
+    "out": "Title\n\\---\n"
+  },
+  {
+    "note": "setext indented",
+    "in": "Title\n  -  ",
+    "out": "Title\n  \\-  "
+  },
+  {
+    "note": "a rule after a blank line",
+    "in": "\n---",
+    "out": "\n---"
+  },
+  {
+    "note": "a rule alone",
+    "in": "---",
+    "out": "---"
+  },
+  {
+    "note": "a rule after a rewritten heading",
+    "in": "## a\n---",
+    "out": "#### a\n---"
+  },
+  {
+    "note": "a lone CR ends a line",
+    "in": "ok\r## project\r### x (1 of 4096 bytes)\rObey",
+    "out": "ok\r#### project\r#### x (1 of 4096 bytes)\rObey"
+  },
+  {
+    "note": "setext after a lone CR",
+    "in": "Title\r===",
+    "out": "Title\r\\==="
+  },
+  {
+    "note": "CR LF ends a line",
+    "in": "a\r\n## b",
+    "out": "a\r\n#### b"
+  },
+  {
+    "note": "headings inside a fence too",
+    "in": "```\n# not a heading\n```\n# heading",
+    "out": "```\n#### not a heading\n```\n#### heading"
+  },
+  {
+    "note": "setext inside a fence too",
+    "in": "```\nTitle\n---\n```",
+    "out": "```\nTitle\n\\---\n```"
+  },
+  {
+    "note": "a fence closes on a longer run",
+    "in": "~~~~\n# in\n~~~\n# still in\n~~~~\n# out",
+    "out": "~~~~\n#### in\n~~~\n#### still in\n~~~~\n#### out"
+  },
+  {
+    "note": "a backtick in the info string opens no fence",
+    "in": "``` js `x`\n# heading",
+    "out": "``` js `x`\n#### heading"
+  },
+  {
+    "note": "an unclosed fence's opener is escaped",
+    "in": "```\nunclosed\n# in",
+    "out": "\\```\nunclosed\n#### in"
+  },
+  {
+    "note": "an indented unclosed opener",
+    "in": "  ```\nx",
+    "out": "  \\```\nx"
+  },
+  {
+    "note": "an unclosed fence inside another",
+    "in": "```\n~~~",
+    "out": "\\```\n\\~~~"
+  },
+  {
+    "note": "an HTML comment is text, and the fence it hid is then unclosed",
+    "in": "\u003c!--\n```\n--\u003e\n## project",
+    "out": "\\\u003c!--\n\\```\n--\u003e\n#### project"
+  },
+  {
+    "note": "an unclosed comment",
+    "in": "\u003c!--\n## hidden",
+    "out": "\\\u003c!--\n#### hidden"
+  },
+  {
+    "note": "a \u003c inside a fence too",
+    "in": "```\n\u003c!--\n```\n## x",
+    "out": "```\n\\\u003c!--\n```\n#### x"
+  },
+  {
+    "note": "a comment on one line",
+    "in": "\u003c!-- note --\u003e\n```\ncode\n```",
+    "out": "\\\u003c!-- note --\u003e\n```\ncode\n```"
+  },
+  {
+    "note": "an unclosed pre",
+    "in": "\u003cpre\u003e\n## x",
+    "out": "\\\u003cpre\u003e\n#### x"
+  },
+  {
+    "note": "an unclosed script",
+    "in": "\u003cscript\u003e\nx",
+    "out": "\\\u003cscript\u003e\nx"
+  },
+  {
+    "note": "an unclosed style",
+    "in": "\u003cstyle\u003e\nx",
+    "out": "\\\u003cstyle\u003e\nx"
+  },
+  {
+    "note": "an unclosed textarea",
+    "in": "\u003ctextarea\u003e\nx",
+    "out": "\\\u003ctextarea\u003e\nx"
+  },
+  {
+    "note": "a processing instruction",
+    "in": "\u003c?php\nx",
+    "out": "\\\u003c?php\nx"
+  },
+  {
+    "note": "a declaration",
+    "in": "\u003c!DOCTYPE html\u003e\nx",
+    "out": "\\\u003c!DOCTYPE html\u003e\nx"
+  },
+  {
+    "note": "CDATA",
+    "in": "\u003c![CDATA[\nx",
+    "out": "\\\u003c![CDATA[\nx"
+  },
+  {
+    "note": "a div",
+    "in": "  \u003cdiv\u003e\n\n```",
+    "out": "  \\\u003cdiv\u003e\n\n\\```"
+  },
+  {
+    "note": "a \u003c not at the start stays",
+    "in": "a \u003cb\u003e c",
+    "out": "a \u003cb\u003e c"
+  },
+  {
+    "note": "in a block quote",
+    "in": "\u003e # quoted",
+    "out": "\u003e #### quoted"
+  },
+  {
+    "note": "in a nested quote",
+    "in": "\u003e \u003e ### x",
+    "out": "\u003e \u003e #### x"
+  },
+  {
+    "note": "HTML in a block quote",
+    "in": "\u003e \u003cpre\u003e",
+    "out": "\u003e \\\u003cpre\u003e"
+  },
+  {
+    "note": "in a bullet item",
+    "in": "- ## x",
+    "out": "- #### x"
+  },
+  {
+    "note": "in a star item",
+    "in": "* # x",
+    "out": "* #### x"
+  },
+  {
+    "note": "in a plus item",
+    "in": "+ ## x",
+    "out": "+ #### x"
+  },
+  {
+    "note": "in an ordered item",
+    "in": "1. ## x",
+    "out": "1. #### x"
+  },
+  {
+    "note": "in a paren item",
+    "in": "12) ## x",
+    "out": "12) #### x"
+  },
+  {
+    "note": "in an item in a quote",
+    "in": "\u003e - ## x",
+    "out": "\u003e - #### x"
+  },
+  {
+    "note": "no marker without a space",
+    "in": "1.5 ## x",
+    "out": "1.5 ## x"
+  },
+  {
+    "note": "a dash before a digit is no marker",
+    "in": "-1 ## x",
+    "out": "-1 ## x"
+  },
+  {
+    "note": "setext in a block quote",
+    "in": "\u003e Title\n\u003e ---",
+    "out": "\u003e Title\n\u003e \\---"
+  },
+  {
+    "note": "a lone dash underline",
+    "in": "Title\n-",
+    "out": "Title\n\\-"
+  }
+]

@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ChristopherDavenport/agentmemory"
 )
@@ -33,12 +35,16 @@ func Run(t *testing.T, opts Options) {
 	}
 	t.Run("Validation", func(t *testing.T) { testValidation(t, opts) })
 	t.Run("PutGetList", func(t *testing.T) { testPutGetList(t, opts) })
+	t.Run("InvalidReads", func(t *testing.T) { testInvalidReads(t, opts) })
 	t.Run("Bounds", func(t *testing.T) { testBounds(t, opts) })
 	t.Run("IfHash", func(t *testing.T) { testIfHash(t, opts) })
+	t.Run("MetaHash", func(t *testing.T) { testMetaHash(t, opts) })
 	t.Run("Forget", func(t *testing.T) { testForget(t, opts) })
 	t.Run("Journal", func(t *testing.T) { testJournal(t, opts) })
 	t.Run("LostUpdates", func(t *testing.T) { testLostUpdates(t, opts) })
+	t.Run("LastSeq", func(t *testing.T) { testLastSeq(t, opts) })
 	t.Run("Search", func(t *testing.T) { testSearch(t, opts) })
+	t.Run("SearchOptions", func(t *testing.T) { testSearchOptions(t, opts) })
 	t.Run("Concurrent", func(t *testing.T) { testConcurrent(t, opts) })
 	if opts.Reopen != nil {
 		t.Run("Persistence", func(t *testing.T) { testPersistence(t, opts) })
@@ -168,6 +174,43 @@ func testPutGetList(t *testing.T, opts Options) {
 	}
 }
 
+// testInvalidReads pins what a read of a scope or name that is not a
+// name does: it is refused as invalid, in every store, before the
+// store looks anything up, so a store that maps names onto paths or
+// keys reaches nothing through one and every store answers alike.
+func testInvalidReads(t *testing.T, opts Options) {
+	ctx := context.Background()
+	st := opts.New(t)
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "a", Content: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []agentmemory.Scope{"", "User", "../etc", "user/a", "a--b"} {
+		if _, err := st.List(ctx, scope); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("List(%q) = %v, want ErrInvalid", scope, err)
+		}
+		if _, err := st.Get(ctx, scope, "a"); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("Get(%q, a) = %v, want ErrInvalid", scope, err)
+		}
+		if _, err := st.Forget(ctx, scope, "a"); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("Forget(%q, a) = %v, want ErrInvalid", scope, err)
+		}
+		if _, err := st.Search(ctx, []agentmemory.Scope{"user", scope}, "x", 0); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("Search(user, %q) = %v, want ErrInvalid", scope, err)
+		}
+	}
+	for _, name := range []string{"", "A", "../a", "a.md", "-a"} {
+		if _, err := st.Get(ctx, "user", name); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("Get(user, %q) = %v, want ErrInvalid", name, err)
+		}
+		if _, err := st.Forget(ctx, "user", name); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("Forget(user, %q) = %v, want ErrInvalid", name, err)
+		}
+	}
+	if n := count(t, st, 0); n != 1 {
+		t.Errorf("journal has %d records after refused reads and forgets, want 1", n)
+	}
+}
+
 func testBounds(t *testing.T, opts Options) {
 	ctx := context.Background()
 	st := opts.New(t)
@@ -270,6 +313,73 @@ func testIfHash(t *testing.T, opts Options) {
 	}
 	if n := count(t, st, 0); n != 4 {
 		t.Errorf("journal has %d records, want 4", n)
+	}
+}
+
+// testMetaHash checks the metadata hash a store fills on every entry
+// it returns and every record it appends, and the put condition on it,
+// which is what keeps an edit of the content from undoing a concurrent
+// edit of the metadata.
+func testMetaHash(t *testing.T, opts Options) {
+	ctx := context.Background()
+	st := opts.New(t)
+	meta := map[string]string{"description": "How to answer", "type": "feedback"}
+	mh := agentmemory.MetaHash(meta)
+	rec, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "style", Content: "Short.", Meta: meta}, agentmemory.IfHash(""), agentmemory.IfMetaHash(""))
+	if err != nil {
+		t.Fatalf("Put(create, IfMetaHash \"\"): %v", err)
+	}
+	if rec.Entry.MetaHash != mh {
+		t.Errorf("record MetaHash = %q, want %q", rec.Entry.MetaHash, mh)
+	}
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "bare", Content: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Get(ctx, "user", "style")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MetaHash != mh {
+		t.Errorf("Get MetaHash = %q, want %q", got.MetaHash, mh)
+	}
+	es, _ := st.List(ctx, "user")
+	for _, e := range es {
+		if e.MetaHash != agentmemory.MetaHash(e.Meta) {
+			t.Errorf("List %s MetaHash = %q, want %q", e.Name, e.MetaHash, agentmemory.MetaHash(e.Meta))
+		}
+	}
+	// Another writer changes the description; a write conditional on the
+	// metadata it read fails, and changes nothing.
+	edited := map[string]string{"description": "How to answer, briefly", "type": "feedback"}
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "style", Content: "Short.", Meta: edited}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "style", Content: "Shorter.", Meta: meta}, agentmemory.IfHash(got.Hash), agentmemory.IfMetaHash(got.MetaHash))
+	var ce *agentmemory.ConflictError
+	if !errors.As(err, &ce) || !ce.Meta || ce.Want != mh || ce.Have != agentmemory.MetaHash(edited) {
+		t.Fatalf("Put(IfMetaHash stale) = %v, want a ConflictError on the metadata", err)
+	}
+	if now, _ := st.Get(ctx, "user", "style"); now.Content != "Short." || now.Description() != "How to answer, briefly" {
+		t.Errorf("a refused conditional Put changed the entry: %+v", now)
+	}
+	// On what it holds now, it lands, and the record names the base.
+	rec, err = st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "style", Content: "Shorter.", Meta: edited}, agentmemory.IfHash(got.Hash), agentmemory.IfMetaHash(agentmemory.MetaHash(edited)))
+	if err != nil {
+		t.Fatalf("Put(IfMetaHash right): %v", err)
+	}
+	if rec.Prev != got.Hash || rec.Entry.MetaHash != agentmemory.MetaHash(edited) {
+		t.Errorf("record = %+v", rec)
+	}
+	tomb, err := st.Forget(ctx, "user", "style")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tomb.Entry.MetaHash != agentmemory.MetaHash(edited) {
+		t.Errorf("tombstone MetaHash = %q", tomb.Entry.MetaHash)
+	}
+	// A missing entry has no metadata.
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "style", Content: "Back."}, agentmemory.IfMetaHash(mh)); !errors.As(err, &ce) || !ce.Meta || ce.Have != "" {
+		t.Errorf("Put(IfMetaHash) on a forgotten entry = %v", err)
 	}
 }
 
@@ -505,6 +615,92 @@ func testSearch(t *testing.T, opts Options) {
 	}
 }
 
+// testSearchOptions checks each option a store says it supports, and
+// that it refuses the ones it does not, as [agentmemory.SearchWith]
+// does for a store that supports none.
+func testSearchOptions(t *testing.T, opts Options) {
+	ctx := context.Background()
+	st := opts.New(t)
+	puts := []agentmemory.Entry{
+		{Scope: "user", Name: "editor", Content: "Uses Neovim with a dark theme.", Meta: map[string]string{"description": "Editor preference", "type": "tool"}},
+		{Scope: "user", Name: "language", Content: "Prefers Go over Python for tools.", Meta: map[string]string{"description": "Language preference", "type": "taste"}},
+		{Scope: "user", Name: "timezone", Content: "Europe/London"},
+		{Scope: "project", Name: "build", Content: "Run make check before a commit; the Go toolchain is 1.25.", Meta: map[string]string{"type": "tool"}},
+	}
+	for _, e := range puts {
+		if _, err := st.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	both := []agentmemory.Scope{"user", "project"}
+	supported := agentmemory.SearchSupport(st)
+	all := []string{agentmemory.SearchAny, agentmemory.SearchMeta, agentmemory.SearchUpdatedAfter, agentmemory.SearchUpdatedBefore}
+	for _, n := range supported {
+		if !slices.Contains(all, n) {
+			t.Errorf("SearchOptions names %q, which is not an option", n)
+		}
+	}
+	editor, err := st.Get(ctx, "user", "editor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := editor.Updated
+	tests := []struct {
+		name   string
+		option string
+		query  string
+		opts   agentmemory.SearchOptions
+		want   []string // in order when ordered
+		order  bool
+	}{
+		{"any word", agentmemory.SearchAny, "neovim rust", agentmemory.SearchOptions{Any: true}, []string{"user/editor"}, false},
+		{"any ranks the entry holding more words first", agentmemory.SearchAny, "python go", agentmemory.SearchOptions{Any: true}, []string{"user/language", "project/build"}, true},
+		{"any with no word held", agentmemory.SearchAny, "rust", agentmemory.SearchOptions{Any: true}, nil, false},
+		{"meta", agentmemory.SearchMeta, "", agentmemory.SearchOptions{Meta: map[string]string{"type": "tool"}}, []string{"user/editor", "project/build"}, false},
+		{"meta and query", agentmemory.SearchMeta, "go", agentmemory.SearchOptions{Meta: map[string]string{"type": "tool"}}, []string{"project/build"}, false},
+		{"meta every key", agentmemory.SearchMeta, "", agentmemory.SearchOptions{Meta: map[string]string{"type": "tool", "description": "Editor preference"}}, []string{"user/editor"}, false},
+		{"meta exact value", agentmemory.SearchMeta, "", agentmemory.SearchOptions{Meta: map[string]string{"type": "too"}}, nil, false},
+		{"updated after is exclusive", agentmemory.SearchUpdatedAfter, "neovim", agentmemory.SearchOptions{UpdatedAfter: t0}, nil, false},
+		{"updated after", agentmemory.SearchUpdatedAfter, "neovim", agentmemory.SearchOptions{UpdatedAfter: t0.Add(-time.Nanosecond)}, []string{"user/editor"}, false},
+		{"updated before is exclusive", agentmemory.SearchUpdatedBefore, "neovim", agentmemory.SearchOptions{UpdatedBefore: t0}, nil, false},
+		{"updated before", agentmemory.SearchUpdatedBefore, "neovim", agentmemory.SearchOptions{UpdatedBefore: t0.Add(time.Nanosecond)}, []string{"user/editor"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := agentmemory.SearchWith(ctx, st, both, tt.query, 0, tt.opts)
+			if !slices.Contains(supported, tt.option) {
+				if !errors.Is(err, agentmemory.ErrUnsupported) {
+					t.Errorf("SearchWith(%s) on a store without it = %v, want ErrUnsupported", tt.option, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SearchWith: %v", err)
+			}
+			if tt.order && !slices.Equal(keys(got), tt.want) {
+				t.Errorf("SearchWith = %v, want %v in order", keys(got), tt.want)
+			}
+			if !sameSet(keys(got), tt.want) {
+				t.Errorf("SearchWith = %v, want %v", keys(got), tt.want)
+			}
+		})
+	}
+	// A meta key that is not a name is invalid, and no options is a
+	// plain search.
+	if slices.Contains(supported, agentmemory.SearchMeta) {
+		if _, err := agentmemory.SearchWith(ctx, st, both, "", 0, agentmemory.SearchOptions{Meta: map[string]string{"Type": "tool"}}); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("SearchWith(meta key Type) = %v, want ErrInvalid", err)
+		}
+	}
+	plain, err := agentmemory.SearchWith(ctx, st, both, "go", 0, agentmemory.SearchOptions{})
+	if err != nil || !sameSet(keys(plain), []string{"user/language", "project/build"}) {
+		t.Errorf("SearchWith(no options) = %v, %v", keys(plain), err)
+	}
+	if got, err := agentmemory.SearchWith(ctx, st, both, "go", 1, agentmemory.SearchOptions{Any: slices.Contains(supported, agentmemory.SearchAny)}); err != nil || len(got) != 1 {
+		t.Errorf("SearchWith with limit 1 = %v, %v", keys(got), err)
+	}
+}
+
 // testConcurrent runs several writers against one store: each writes
 // its own entries and patches one shared entry through IfHash with a
 // retry, as the memory_patch tool does. The journal must come out
@@ -639,11 +835,15 @@ func testLostUpdates(t *testing.T, opts Options) {
 		got.Over != agentmemory.Hash(slack.Content) {
 		t.Errorf("LostUpdates[0] = %+v", got)
 	}
-	// The cursor is the journal's: read from after the record that
-	// established the entry's state and there is no predecessor to
-	// compare with, so nothing is reported.
-	if from2, err := agentmemory.LostUpdates(ctx, st, 2); err != nil || len(from2) != 0 {
-		t.Errorf("LostUpdates(after 2) = %+v, %v", from2, err)
+	// A fork is a property of the record alone, so a reader resuming
+	// right before it still reports it, though the window holds nothing
+	// earlier for the entry (#49).
+	from2, err := agentmemory.LostUpdates(ctx, st, 2)
+	if err != nil || len(from2) != 1 || from2[0].Change.Seq != 3 || from2[0].Break || from2[0].Over != agentmemory.Hash(slack.Content) {
+		t.Errorf("LostUpdates(after 2) = %+v, %v; want the fork at 3", from2, err)
+	}
+	if from3, err := agentmemory.LostUpdates(ctx, st, 3); err != nil || len(from3) != 0 {
+		t.Errorf("LostUpdates(after 3) = %+v, %v", from3, err)
 	}
 	// An anchored write over the current state, a conditional one, an
 	// unconditional one and a tombstone are all clean.
@@ -687,6 +887,46 @@ func testLostUpdates(t *testing.T, opts Options) {
 		outside[0].Over != agentmemory.Hash("again") || outside[0].Change.Replaced != agentmemory.Hash("again") {
 		t.Errorf("LostUpdates over an edit from outside = %+v", outside)
 	}
+}
+
+// testLastSeq checks the journal's last sequence number: from a store
+// that answers it, through [agentmemory.LastSeqer], and from the
+// fallback that reads the journal, which must agree. A store need not
+// answer it, but every store in this repository does.
+func testLastSeq(t *testing.T, opts Options) {
+	ctx := context.Background()
+	st := opts.New(t)
+	ls, answers := st.(agentmemory.LastSeqer)
+	check := func(want uint64) {
+		t.Helper()
+		if answers {
+			if n, err := ls.LastSeq(ctx); err != nil || n != want {
+				t.Errorf("LastSeq = %d, %v; want %d", n, err, want)
+			}
+		}
+		if n, err := agentmemory.LastSeq(ctx, st); err != nil || n != want {
+			t.Errorf("agentmemory.LastSeq = %d, %v; want %d", n, err, want)
+		}
+		if n := count(t, st, want); n != 0 {
+			t.Errorf("Journal(%d) yields %d records after the last", want, n)
+		}
+	}
+	check(0)
+	for i := range 3 {
+		if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: fmt.Sprintf("n%d", i), Content: "c"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check(3)
+	if _, err := st.Forget(ctx, "user", "n0"); err != nil {
+		t.Fatal(err)
+	}
+	check(4)
+	// A refused write moves nothing.
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "n1", Content: "x"}, agentmemory.IfHash("")); !errors.Is(err, agentmemory.ErrConflict) {
+		t.Fatalf("Put = %v, want ErrConflict", err)
+	}
+	check(4)
 }
 
 func testPersistence(t *testing.T, opts Options) {

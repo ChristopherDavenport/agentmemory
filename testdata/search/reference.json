@@ -1,0 +1,203 @@
+{
+  "entries": [
+    {
+      "scope": "user",
+      "name": "editor",
+      "content": "Uses Neovim with a dark theme.",
+      "meta": {
+        "description": "Editor preference",
+        "type": "tool"
+      },
+      "updated": "2026-11-02T19:44:00Z"
+    },
+    {
+      "scope": "user",
+      "name": "language",
+      "content": "Prefers Go over Python for tools.",
+      "meta": {
+        "description": "Language preference",
+        "type": "taste"
+      },
+      "updated": "2026-11-02T19:44:01Z"
+    },
+    {
+      "scope": "user",
+      "name": "timezone",
+      "content": "Europe/London",
+      "updated": "2026-11-02T19:44:02Z"
+    },
+    {
+      "scope": "user",
+      "name": "greek",
+      "content": "ΣΊΣΥΦΟΣ and İstanbul",
+      "updated": "2026-11-02T19:44:03Z"
+    },
+    {
+      "scope": "project",
+      "name": "build",
+      "content": "Run make check before a commit; the Go toolchain is 1.25.",
+      "meta": {
+        "type": "tool"
+      },
+      "updated": "2026-11-02T19:44:04Z"
+    }
+  ],
+  "cases": [
+    {
+      "note": "one word",
+      "scopes": [
+        "user"
+      ],
+      "query": "neovim",
+      "want": [
+        "user/editor"
+      ]
+    },
+    {
+      "note": "case and white space",
+      "scopes": [
+        "user"
+      ],
+      "query": " NEOVIM　dark ",
+      "want": [
+        "user/editor"
+      ]
+    },
+    {
+      "note": "every word",
+      "scopes": [
+        "user",
+        "project"
+      ],
+      "query": "go python",
+      "want": [
+        "user/language"
+      ]
+    },
+    {
+      "note": "scope order then name",
+      "scopes": [
+        "project",
+        "user"
+      ],
+      "query": "go",
+      "want": [
+        "project/build",
+        "user/language"
+      ]
+    },
+    {
+      "note": "a metadata value",
+      "scopes": [
+        "user"
+      ],
+      "query": "preference",
+      "want": [
+        "user/editor",
+        "user/language"
+      ]
+    },
+    {
+      "note": "a metadata key is not searched",
+      "scopes": [
+        "user"
+      ],
+      "query": "description",
+      "want": []
+    },
+    {
+      "note": "the name",
+      "scopes": [
+        "user"
+      ],
+      "query": "timezone",
+      "want": [
+        "user/timezone"
+      ]
+    },
+    {
+      "note": "simple lowercase mapping: Σ to σ, İ to i",
+      "scopes": [
+        "user"
+      ],
+      "query": "σίσυφοσ istanbul",
+      "want": [
+        "user/greek"
+      ]
+    },
+    {
+      "note": "the full mapping's i and combining dot is not the simple one",
+      "scopes": [
+        "user"
+      ],
+      "query": "i̇stanbul",
+      "want": []
+    },
+    {
+      "note": "the empty query",
+      "scopes": [
+        "user"
+      ],
+      "query": "",
+      "limit": 2,
+      "want": [
+        "user/editor",
+        "user/greek"
+      ]
+    },
+    {
+      "note": "any, ranked by words held",
+      "scopes": [
+        "user",
+        "project"
+      ],
+      "query": "python go",
+      "any": true,
+      "want": [
+        "user/language",
+        "project/build"
+      ]
+    },
+    {
+      "note": "meta",
+      "scopes": [
+        "user",
+        "project"
+      ],
+      "query": "",
+      "meta": {
+        "type": "tool"
+      },
+      "want": [
+        "user/editor",
+        "project/build"
+      ]
+    },
+    {
+      "note": "updated after, exclusive",
+      "scopes": [
+        "user",
+        "project"
+      ],
+      "query": "",
+      "updated_after": "2026-11-02T19:44:02Z",
+      "want": [
+        "user/greek",
+        "project/build"
+      ]
+    },
+    {
+      "note": "updated before, exclusive",
+      "scopes": [
+        "user",
+        "project"
+      ],
+      "query": "",
+      "updated_before": "2026-11-02T19:44:02Z",
+      "want": [
+        "user/editor",
+        "user/language"
+      ]
+    }
+  ]
+}

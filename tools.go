@@ -8,7 +8,9 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ChristopherDavenport/agenttool"
 )
@@ -19,6 +21,7 @@ const (
 	PatchTool  = "memory_patch"
 	ForgetTool = "memory_forget"
 	SearchTool = "memory_search"
+	InsertTool = "memory_insert"
 )
 
 // Defaults for memory_search. A search result is appended to the
@@ -71,6 +74,12 @@ type toolOptions struct {
 	searchBytes int
 	rendered    func() Manifest
 	readScopes  []Scope
+	fixed       map[Scope][]string
+	insert      []Scope
+	now         func() time.Time
+
+	searchReads    []agenttool.Label
+	searchReadsSet bool
 }
 
 // WithSearchLimit sets the number of entries memory_search returns
@@ -127,6 +136,77 @@ func WithReadScopes(scopes ...Scope) ToolOption {
 	return func(o *toolOptions) { o.readScopes = append(o.readScopes, scopes...) }
 }
 
+// WithFixedNames fixes the entry names of scope, a writable scope: a
+// memory_save of any other name in it is refused, and so is a
+// memory_forget of one of these, each with an error naming the fixed
+// entries, which the writers' descriptions state too. memory_patch edits
+// them as any entry. It is for a scope of a few named blocks the model
+// rewrites and never adds to or removes, Letta's persona and human: a
+// model told to rewrite one otherwise saves a new name beside it. The
+// last call for a scope holds.
+//
+// The scope must be one passed to [Tools], and the names kebab-case,
+// at least one and each given once; [Tools] panics otherwise.
+func WithFixedNames(scope Scope, names ...string) ToolOption {
+	return func(o *toolOptions) {
+		if o.fixed == nil {
+			o.fixed = map[Scope][]string{}
+		}
+		o.fixed[scope] = slices.Clone(names)
+	}
+}
+
+// WithInsert adds memory_insert, which adds a passage to one of scopes
+// without the model naming it: the tool names the entry, see
+// [InsertName], creates it under the must-not-exist precondition, so an
+// insert never overwrites, and says the name in its result. It is
+// Letta's archival insert: a fact that belongs to no entry the model
+// would name, found again with memory_search.
+//
+// Each scope must be one passed to [Tools], given once, and not one
+// whose names [WithFixedNames] fixed; [Tools] panics otherwise.
+func WithInsert(scopes ...Scope) ToolOption {
+	return func(o *toolOptions) { o.insert = append(o.insert, scopes...) }
+}
+
+// WithSearchReads sets the labels memory_search's output carries, its
+// [agenttool.Flow] Reads, which a harness writes as the trust of the
+// result in the session and a policy decides on: untrusted unless the
+// product says otherwise, since memory a model wrote may carry an
+// instruction it read elsewhere, and the result is that text. With no
+// labels the output is declared to hold neither untrusted nor private
+// content, which a product says only of scopes people alone write; it
+// passes the union of the labels it gives the scopes to [WithScopeTrust].
+func WithSearchReads(labels ...agenttool.Label) ToolOption {
+	return func(o *toolOptions) {
+		o.searchReads = slices.Clone(labels)
+		o.searchReadsSet = true
+	}
+}
+
+// withClock sets the clock memory_insert names entries by, for tests.
+func withClock(now func() time.Time) ToolOption {
+	return func(o *toolOptions) { o.now = now }
+}
+
+// insertAttempts bounds the suffixes memory_insert tries for one name.
+const insertAttempts = 100
+
+// InsertName is the name memory_insert gives the n-th entry it tries
+// for content written at time at: the UTC date and time to the second,
+// "YYYYMMDD-HHMMSS", a hyphen and the first eight hexadecimal digits of
+// the content's hash, and, for n of 2 or more, a hyphen and n. Names
+// sort by time, and the block renders in name order, so under the
+// budget the oldest inserts are shown first and the newest are left
+// out. A second insert of one content in one second takes "-2".
+func InsertName(at time.Time, content string, n int) string {
+	name := at.UTC().Format("20060102-150405") + "-" + strings.TrimPrefix(Hash(content), "sha256:")[:8]
+	if n >= 2 {
+		name += "-" + strconv.Itoa(n)
+	}
+	return name
+}
+
 type saveArgs struct {
 	Scope   string            `json:"scope,omitempty" desc:"Which memory the entry belongs to"`
 	Name    string            `json:"name" desc:"Kebab-case name, unique within the scope: lowercase letters, digits and hyphens"`
@@ -141,20 +221,36 @@ type patchArgs struct {
 	NewText string `json:"new_text" desc:"What replaces it; empty removes it"`
 }
 
+type insertArgs struct {
+	Scope   string            `json:"scope,omitempty" desc:"Which memory the passage belongs to"`
+	Content string            `json:"content" desc:"The passage to keep, Markdown"`
+	Meta    map[string]string `json:"meta,omitempty" desc:"Metadata beside the content: a description is shown in the block and the index; keys are kebab-case, values one line"`
+}
+
 type forgetArgs struct {
 	Scope string `json:"scope,omitempty" desc:"Which memory the entry belongs to"`
 	Name  string `json:"name" desc:"The entry to remove"`
 }
 
 type searchArgs struct {
-	Query  string   `json:"query" desc:"Words that must all appear in an entry's name, description or content, in any case"`
-	Scopes []string `json:"scopes,omitempty" desc:"Which memories to search; all of them when omitted"`
-	Limit  int      `json:"limit,omitempty" desc:"At most this many entries; keep it low, results stay in the conversation"`
+	Query         string            `json:"query" desc:"Words that must all appear in an entry's name, metadata or content, in any case"`
+	Scopes        []string          `json:"scopes,omitempty" desc:"Which memories to search; all of them when omitted"`
+	Limit         int               `json:"limit,omitempty" desc:"At most this many entries; keep it low, results stay in the conversation"`
+	Any           bool              `json:"any,omitempty" desc:"Match entries holding any of the words rather than all of them, best matches first"`
+	Meta          map[string]string `json:"meta,omitempty" desc:"Only entries whose metadata has each of these keys with exactly this value"`
+	UpdatedAfter  string            `json:"updated_after,omitempty" desc:"Only entries last written after this time, RFC 3339"`
+	UpdatedBefore string            `json:"updated_before,omitempty" desc:"Only entries last written before this time, RFC 3339"`
 }
 
-// Tools returns the four tools through which the model reaches store,
+// searchOptionArgs are memory_search's arguments that are search
+// options, by option name: each is in the schema only when the store
+// supports it.
+var searchOptionArgs = []string{SearchAny, SearchMeta, SearchUpdatedAfter, SearchUpdatedBefore}
+
+// Tools returns the tools through which the model reaches store,
 // restricted to the scopes the product allows: memory_save,
-// memory_patch, memory_forget and memory_search. A call that names a
+// memory_patch, memory_forget and memory_search, and memory_insert last
+// when [WithInsert] names a scope. A call that names a
 // scope outside the list is an error the model sees, and the list is
 // in the schema as an enum, not only in the description; a call that
 // omits the scope is an error too, unless the product allows one scope
@@ -181,8 +277,9 @@ type searchArgs struct {
 // another session saved under the name in between.
 //
 // [WithReadScopes] adds scopes memory_search reaches and the writers
-// refuse, and [WithRendered] anchors memory_save to the block the model
-// read.
+// refuse, [WithRendered] anchors memory_save to the block the model
+// read, [WithFixedNames] fixes a scope's entry names, and [WithInsert]
+// adds memory_insert.
 //
 // The schema check is the tools' own, added with [agenttool.Wrap]; a
 // host that unwraps a tool and executes what is inside skips it.
@@ -213,6 +310,36 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 			panic(fmt.Sprintf("agentmemory.Tools: scope %q is both writable and read-only", s))
 		}
 	}
+	for scope, names := range o.fixed {
+		if !slices.Contains(scopes, scope) {
+			panic(fmt.Sprintf("agentmemory.Tools: fixed names for %q, which is not a writable scope", scope))
+		}
+		if len(names) == 0 {
+			panic(fmt.Sprintf("agentmemory.Tools: no fixed names for %q", scope))
+		}
+		for i, n := range names {
+			if !ValidName(n) {
+				panic(fmt.Sprintf("agentmemory.Tools: fixed name %q is not kebab-case", n))
+			}
+			if slices.Contains(names[:i], n) {
+				panic(fmt.Sprintf("agentmemory.Tools: fixed name %q is given twice", n))
+			}
+		}
+	}
+	for i, s := range o.insert {
+		if !slices.Contains(scopes, s) {
+			panic(fmt.Sprintf("agentmemory.Tools: insert into %q, which is not a writable scope", s))
+		}
+		if slices.Contains(o.insert[:i], s) {
+			panic(fmt.Sprintf("agentmemory.Tools: insert scope %q is given twice", s))
+		}
+		if o.fixed[s] != nil {
+			panic(fmt.Sprintf("agentmemory.Tools: insert into %q, whose names are fixed", s))
+		}
+	}
+	if o.now == nil {
+		o.now = time.Now
+	}
 	if o.searchLimit <= 0 {
 		o.searchLimit = DefaultSearchLimit
 	}
@@ -224,12 +351,19 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	// Every tool carries a title, so none of them has the zero
 	// annotations, which a host such as mcpserver reads as none at all
 	// and MCP then defaults to destructive and open-world.
-	return []agenttool.Tool{
-		tool(SaveTool, t.saveDescription(), t.save, scopes, o.readScopes, agenttool.Annotations{Title: "Save memory entry", Destructive: true}, agenttool.ReplayUnknown),
-		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, agenttool.Annotations{Title: "Edit memory entry"}, agenttool.ReplayUnknown),
-		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}, agenttool.ReplayUnknown),
-		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}, agenttool.ReplaySafe),
+	out := []agenttool.Tool{
+		tool(SaveTool, t.saveDescription(), t.save, scopes, o.readScopes, agenttool.Annotations{Title: "Save memory entry", Destructive: true}, agenttool.ReplayUnknown, nil),
+		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, agenttool.Annotations{Title: "Edit memory entry"}, agenttool.ReplayUnknown, nil),
+		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}, agenttool.ReplayUnknown, nil),
+		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}, agenttool.ReplaySafe, &agenttool.Flow{Reads: t.searchReads()}, t.unsupported()...),
 	}
+	if len(o.insert) > 0 {
+		// An insert never overwrites, so it is not destructive; run
+		// again it inserts again, so it is neither idempotent nor safe
+		// to replay.
+		out = append(out, tool(InsertTool, t.insertDescription(), t.insertEntry, o.insert, o.readScopes, agenttool.Annotations{Title: "Insert memory entry"}, agenttool.ReplayUnknown, nil))
+	}
+	return out
 }
 
 // tool builds one memory tool over a schema that names the scopes, and
@@ -252,9 +386,12 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 //
 // replay is the tool's claim for every call, forwarded through the
 // wrapper as its annotations are.
-func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes, readOnly []Scope, a agenttool.Annotations, replay agenttool.Replay) agenttool.Tool {
-	tree, schema := scopeSchema[Args](scopes)
+func tool[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), scopes, readOnly []Scope, a agenttool.Annotations, replay agenttool.Replay, flow *agenttool.Flow, drop ...string) agenttool.Tool {
+	tree, schema := scopeSchema[Args](scopes, drop...)
 	opts := []agenttool.Option{agenttool.WithParameters(schema), agenttool.WithAnnotations(a)}
+	if flow != nil {
+		opts = append(opts, agenttool.WithFlow(*flow))
+	}
 	if replay != agenttool.ReplayUnknown {
 		opts = append(opts, agenttool.WithReplay(func(context.Context, json.RawMessage) agenttool.Replay { return replay }))
 	}
@@ -305,12 +442,14 @@ func readOnlyError(s Scope) error { return fmt.Errorf("scope %s is read-only", s
 // tools check it themselves, see [checked]. The call-time check in
 // scope stays too, for a caller that reaches a tool function another
 // way.
-func scopeSchema[Args any](scopes []Scope) (*agenttool.Schema, json.RawMessage) {
+func scopeSchema[Args any](scopes []Scope, drop ...string) (*agenttool.Schema, json.RawMessage) {
 	var zero Args
 	tree, err := agenttool.Reflect(reflect.TypeOf(&zero).Elem())
 	if err != nil {
 		panic(fmt.Sprintf("agentmemory.Tools: %v", err))
 	}
+	tree.Properties = slices.DeleteFunc(tree.Properties, func(p agenttool.Property) bool { return slices.Contains(drop, p.Name) })
+	tree.Required = slices.DeleteFunc(tree.Required, func(n string) bool { return slices.Contains(drop, n) })
 	values := make([]any, 0, len(scopes))
 	for _, s := range scopes {
 		values = append(values, string(s))
@@ -368,10 +507,33 @@ func names(scopes []Scope) []string {
 // scopes it writes, and the ones it refuses with the message it gives.
 func (t *toolset) writerScopes() string {
 	list := t.scopeList()
+	for _, s := range t.scopes {
+		if names := t.opts.fixed[s]; names != nil {
+			list += fmt.Sprintf(" Scope %s holds the fixed entries %s: memory_save writes only those names there, and memory_forget does not remove them.", s, strings.Join(names, ", "))
+		}
+	}
 	for _, s := range t.opts.readScopes {
 		list += fmt.Sprintf(" Scope %s is read-only: memory_search reads it, and a write to it is refused with %q.", s, readOnlyError(s).Error())
 	}
 	return list
+}
+
+// fixedSave refuses a save of a name the scope does not fix.
+func (t *toolset) fixedSave(scope Scope, name string) error {
+	names := t.opts.fixed[scope]
+	if names == nil || slices.Contains(names, name) {
+		return nil
+	}
+	return fmt.Errorf("scope %s holds the fixed entries %s, and memory_save writes only those; %s is not one of them, so rewrite the one it belongs in", scope, strings.Join(names, ", "), name)
+}
+
+// fixedForget refuses a forget of a fixed name.
+func (t *toolset) fixedForget(scope Scope, name string) error {
+	names := t.opts.fixed[scope]
+	if !slices.Contains(names, name) {
+		return nil
+	}
+	return fmt.Errorf("%s/%s is one of the fixed entries of scope %s, %s, and is not forgotten; rewrite it with memory_save or edit it with memory_patch", scope, name, scope, strings.Join(names, ", "))
 }
 
 // searchScopes is the scope sentence of memory_search's description:
@@ -395,16 +557,66 @@ func (t *toolset) saveDescription() string {
 }
 
 func (t *toolset) patchDescription() string {
-	return "Edit a memory entry by replacing old_text with new_text. old_text must appear exactly once in the entry, copied exactly; the call fails and says so when it is absent or repeated. Prefer this to memory_save for an edit: the call is the size of the change, and the edit is anchored in the stored text, so a change another session made in the meantime is kept. " + t.writerScopes()
+	return "Edit a memory entry by replacing old_text with new_text. old_text must appear exactly once in the entry, copied exactly; the call fails and says so when it is absent or repeated. The memory block shows headings of levels one to three at level four and escapes a line that starts with <, so copy such text from memory_search, which shows the entry as stored. Prefer this to memory_save for an edit: the call is the size of the change, and the edit is anchored in the stored text, so a change another session made in the meantime is kept. " + t.writerScopes()
 }
 
 func (t *toolset) forgetDescription() string {
 	return "Remove a memory entry. The store's journal keeps its last content. " + t.writerScopes()
 }
 
+func (t *toolset) insertDescription() string {
+	list := fmt.Sprintf("Scopes: %s; name one on every call.", strings.Join(names(t.opts.insert), ", "))
+	if len(t.opts.insert) == 1 {
+		list = fmt.Sprintf("Scope: %s, the only one; the argument may be left out.", t.opts.insert[0])
+	}
+	return fmt.Sprintf("Add a passage to memory without naming it: the entry is named for the time and the content, never overwrites another, and the result says its name. Use it for a fact that belongs in no entry you would name; find it again with memory_search. Content is Markdown of at most %d bytes. %s",
+		t.store.MaxEntryBytes(), list)
+}
+
 func (t *toolset) searchDescription() string {
-	return fmt.Sprintf("Find memory entries: the ones the memory block omits, or one to read whole before editing it. Every word of the query must appear in an entry's name, description or content, in any case. Returns up to %d entries unless limit says otherwise, and at most %d bytes of content; the rest are listed by name. Results stay in the conversation, so search for what you need and no more. %s",
-		t.opts.searchLimit, t.opts.searchBytes, t.searchScopes())
+	return fmt.Sprintf("Find memory entries: the ones the memory block omits, or one to read whole before editing it. Every word of the query must appear in an entry's name, one of its metadata values, such as its description, or its content, in any case.%s Returns up to %d entries unless limit says otherwise, and at most %d bytes of content; the rest are listed by name. Results stay in the conversation, so search for what you need and no more. %s",
+		t.optionsSentence(), t.opts.searchLimit, t.opts.searchBytes, t.searchScopes())
+}
+
+// searchReads is memory_search's Reads: [WithSearchReads]'s labels, or
+// untrusted.
+func (t *toolset) searchReads() []agenttool.Label {
+	if t.opts.searchReadsSet {
+		return t.opts.searchReads
+	}
+	return []agenttool.Label{agenttool.LabelUntrusted}
+}
+
+// unsupported returns the search options the store does not support,
+// which memory_search leaves out of its schema.
+func (t *toolset) unsupported() []string {
+	have := SearchSupport(t.store)
+	return slices.DeleteFunc(slices.Clone(searchOptionArgs), func(n string) bool { return slices.Contains(have, n) })
+}
+
+// optionsSentence says which options memory_search offers.
+func (t *toolset) optionsSentence() string {
+	have := SearchSupport(t.store)
+	var parts []string
+	if slices.Contains(have, SearchAny) {
+		parts = append(parts, "any matches an entry holding any of the words, best first")
+	}
+	if slices.Contains(have, SearchMeta) {
+		parts = append(parts, "meta keeps entries whose metadata has those values")
+	}
+	if slices.Contains(have, SearchUpdatedAfter) || slices.Contains(have, SearchUpdatedBefore) {
+		var b []string
+		for _, n := range []string{SearchUpdatedAfter, SearchUpdatedBefore} {
+			if slices.Contains(have, n) {
+				b = append(b, n)
+			}
+		}
+		parts = append(parts, strings.Join(b, " and ")+" bound when an entry was last written")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " Options: " + strings.Join(parts, "; ") + "."
 }
 
 // scope resolves a call's scope argument to an allowed scope. An
@@ -465,6 +677,9 @@ func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error
 	if err != nil {
 		return agenttool.Result{}, err
 	}
+	if err := t.fixedSave(scope, a.Name); err != nil {
+		return agenttool.Result{}, err
+	}
 	stored, err := t.store.Get(ctx, scope, a.Name)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return agenttool.Result{}, err
@@ -472,19 +687,49 @@ func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error
 	if errors.Is(err, ErrNotFound) {
 		stored = nil
 	}
-	e := Entry{Scope: scope, Name: a.Name, Content: a.Content, Meta: a.Meta}
-	if stored != nil && a.Meta == nil {
-		e.Meta = stored.Meta
-	}
 	shown, fromBlock := t.shown(scope, a.Name)
-	var opts []PutOption
+	var base []PutOption
 	switch {
 	case fromBlock:
-		opts = append(opts, BasedOn(shown))
+		base = append(base, BasedOn(shown))
 	case stored != nil:
-		opts = append(opts, BasedOn(stored.Hash))
+		base = append(base, BasedOn(stored.Hash))
+	default:
+		// Built on no entry: a create another session made in between
+		// is then a fork the journal shows, not an overwrite it hides.
+		base = append(base, BasedOn(""))
 	}
-	c, err := t.store.Put(ctx, e, opts...)
+	if stored == nil {
+		// And on no metadata, so a concurrent create with metadata is
+		// refused rather than written over.
+		base = append(base, IfMetaHash(""))
+	}
+	// A save that leaves meta out keeps the metadata it read, so it is
+	// conditional on it, and reads the metadata again when another
+	// session changed it in between; the base stays the first read's,
+	// so a content change in between is still the fork the journal
+	// shows.
+	var e Entry
+	var c *Change
+	for attempt := 1; ; attempt++ {
+		e = Entry{Scope: scope, Name: a.Name, Content: a.Content, Meta: a.Meta}
+		opts := base
+		if stored != nil && a.Meta == nil {
+			e.Meta = stored.Meta
+			opts = append(slices.Clone(base), IfMetaHash(MetaHash(stored.Meta)))
+		}
+		c, err = t.store.Put(ctx, e, opts...)
+		var ce *ConflictError
+		kept := stored != nil && a.Meta == nil
+		if err == nil || !kept || !errors.As(err, &ce) || !ce.Meta || attempt == patchAttempts {
+			break
+		}
+		if stored, err = t.store.Get(ctx, scope, a.Name); errors.Is(err, ErrNotFound) {
+			stored = nil
+		} else if err != nil {
+			return agenttool.Result{}, err
+		}
+	}
 	if err != nil {
 		return agenttool.Result{}, err
 	}
@@ -583,16 +828,19 @@ func (t *toolset) patch(ctx context.Context, a patchArgs) (agenttool.Result, err
 		}
 		next := *cur
 		next.Content = strings.Replace(cur.Content, a.OldText, a.NewText, 1)
-		c, err := t.store.Put(ctx, next, IfHash(cur.Hash))
+		// Conditional on the metadata too: the patch keeps what it read,
+		// and a description another session changed since would
+		// otherwise be undone under a content hash that did not move.
+		c, err := t.store.Put(ctx, next, IfHash(cur.Hash), IfMetaHash(MetaHash(cur.Meta)))
 		if err == nil {
 			return wrote(PatchTool, c, "Patched %s/%s (%d of %d bytes) %s", scope, a.Name, len(next.Content), t.store.MaxEntryBytes(), Hash(next.Content))
 		}
 		if !errors.Is(err, ErrConflict) {
 			return agenttool.Result{}, err
 		}
-		// Another writer changed the entry between the read and the
-		// write. The edit is anchored in old_text, so apply it to the
-		// new content.
+		// Another writer changed the entry, its content or its
+		// metadata, between the read and the write. The edit is anchored
+		// in old_text, so apply it to what the entry holds now.
 		lastErr = err
 	}
 	return agenttool.Result{}, fmt.Errorf("%w after %d attempts; another session keeps changing it, try again", lastErr, patchAttempts)
@@ -603,11 +851,58 @@ func (t *toolset) forget(ctx context.Context, a forgetArgs) (agenttool.Result, e
 	if err != nil {
 		return agenttool.Result{}, err
 	}
+	if err := t.fixedForget(scope, a.Name); err != nil {
+		return agenttool.Result{}, err
+	}
 	c, err := t.store.Forget(ctx, scope, a.Name)
 	if err != nil {
 		return agenttool.Result{}, err
 	}
 	return wrote(ForgetTool, c, "Forgot %s/%s", scope, a.Name)
+}
+
+// insertEntry creates an entry under a name of its own, from the time
+// and the content's hash, taking the next suffix while the name is
+// taken: every attempt is a create that must not overwrite, so two
+// inserts never collide whatever else writes the scope.
+func (t *toolset) insertEntry(ctx context.Context, a insertArgs) (agenttool.Result, error) {
+	scope, err := t.insertScope(a.Scope)
+	if err != nil {
+		return agenttool.Result{}, err
+	}
+	at := t.opts.now()
+	var lastErr error
+	for n := 1; n <= insertAttempts; n++ {
+		name := InsertName(at, a.Content, n)
+		c, err := t.store.Put(ctx, Entry{Scope: scope, Name: name, Content: a.Content, Meta: a.Meta}, IfHash(""))
+		if err == nil {
+			return wrote(InsertTool, c, "Inserted %s/%s (%d of %d bytes) %s", scope, name, len(a.Content), t.store.MaxEntryBytes(), c.Entry.Hash)
+		}
+		if !errors.Is(err, ErrConflict) {
+			return agenttool.Result{}, err
+		}
+		lastErr = err
+	}
+	return agenttool.Result{}, fmt.Errorf("%w: %d names taken; try again", lastErr, insertAttempts)
+}
+
+// insertScope resolves an insert's scope argument among the scopes
+// [WithInsert] named.
+func (t *toolset) insertScope(s string) (Scope, error) {
+	ins := t.opts.insert
+	if s == "" {
+		if len(ins) == 1 {
+			return ins[0], nil
+		}
+		return "", fmt.Errorf("scope is required; name one of: %s", strings.Join(names(ins), ", "))
+	}
+	if slices.Contains(ins, Scope(s)) {
+		return Scope(s), nil
+	}
+	if slices.Contains(t.opts.readScopes, Scope(s)) {
+		return "", readOnlyError(Scope(s))
+	}
+	return "", fmt.Errorf("scope %q takes no insert; memory_insert writes %s", s, strings.Join(names(ins), ", "))
 }
 
 func (t *toolset) search(ctx context.Context, a searchArgs) (agenttool.Result, error) {
@@ -629,7 +924,21 @@ func (t *toolset) search(ctx context.Context, a searchArgs) (agenttool.Result, e
 	if limit <= 0 {
 		limit = t.opts.searchLimit
 	}
-	found, err := t.store.Search(ctx, scopes, a.Query, limit)
+	so := SearchOptions{Any: a.Any, Meta: a.Meta}
+	for _, b := range []struct {
+		name, value string
+		into        *time.Time
+	}{{SearchUpdatedAfter, a.UpdatedAfter, &so.UpdatedAfter}, {SearchUpdatedBefore, a.UpdatedBefore, &so.UpdatedBefore}} {
+		if b.value == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, b.value)
+		if err != nil {
+			return agenttool.Result{}, fmt.Errorf("%s %q is not an RFC 3339 time, such as 2026-11-02T19:44:00Z", b.name, b.value)
+		}
+		*b.into = at
+	}
+	found, err := SearchWith(ctx, t.store, scopes, a.Query, limit, so)
 	if err != nil {
 		return agenttool.Result{}, err
 	}

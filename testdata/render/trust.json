@@ -1,0 +1,103 @@
+{
+  "input": {
+    "scopes": [
+      "rules",
+      "user",
+      "inbox"
+    ],
+    "block_bound": 600,
+    "entry_bound": 256,
+    "entries": [
+      {
+        "scope": "rules",
+        "name": "style",
+        "content": "Use Go."
+      },
+      {
+        "scope": "user",
+        "name": "a",
+        "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+      },
+      {
+        "scope": "user",
+        "name": "b",
+        "content": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+      },
+      {
+        "scope": "inbox",
+        "name": "mail",
+        "content": "From the inbox."
+      }
+    ]
+  },
+  "trust": {
+    "inbox": [
+      "untrusted",
+      "private"
+    ],
+    "rules": []
+  },
+  "parts": [
+    {
+      "id": "memory",
+      "trust": {
+        "reads": []
+      }
+    },
+    {
+      "id": "memory/rules",
+      "trust": {
+        "reads": []
+      }
+    },
+    {
+      "id": "memory/rules/style",
+      "trust": {
+        "reads": []
+      }
+    },
+    {
+      "id": "memory/user",
+      "trust": {
+        "reads": []
+      }
+    },
+    {
+      "id": "memory/user/a",
+      "trust": {
+        "reads": [
+          "untrusted"
+        ]
+      }
+    },
+    {
+      "id": "memory/user:omitted",
+      "trust": {
+        "reads": [
+          "untrusted"
+        ]
+      }
+    },
+    {
+      "id": "memory/inbox",
+      "trust": {
+        "reads": []
+      }
+    },
+    {
+      "id": "memory/inbox/mail",
+      "trust": {
+        "reads": [
+          "untrusted",
+          "private"
+        ]
+      }
+    },
+    {
+      "id": "memory:summary",
+      "trust": {
+        "reads": []
+      }
+    }
+  ]
+}

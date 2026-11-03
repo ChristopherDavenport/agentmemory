@@ -1,0 +1,9 @@
+memory 8
+memory/user 7
+memory/user/comment 69
+memory/user/cr 80
+memory/user/nested 113
+memory/user/unclosed 62
+memory/project 10
+memory/project/build 40
+memory:summary 93

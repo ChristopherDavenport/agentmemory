@@ -1,0 +1,23 @@
+{
+  "scopes": [
+    "user",
+    "project"
+  ],
+  "block_bound": 32768,
+  "entry_bound": 4096,
+  "entries": [
+    {
+      "scope": "user",
+      "name": "editor",
+      "content": "Neovim, dark theme — süß ✓ 日本\n",
+      "meta": {
+        "description": "Editor"
+      }
+    },
+    {
+      "scope": "project",
+      "name": "build",
+      "content": "#### Build\n\nRun `make check` before a commit.\n"
+    }
+  ]
+}

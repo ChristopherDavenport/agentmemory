@@ -614,6 +614,257 @@ func TestJournalDamage(t *testing.T) {
 	}
 }
 
+// TestLostUpdatesPastDamage is #46 over the reference store: a fork
+// after a damaged line is reported, with the damage, whether the read
+// starts at 0, where the damage hides the state the fork's chain runs
+// through, or after the first record.
+func TestLostUpdatesPastDamage(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	e := agentmemory.Entry{Scope: "user", Name: "profile", Content: "one"}
+	if _, err := s.Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	read := agentmemory.Hash("one")
+	e.Content = "two"
+	if _, err := s.Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	e.Content = "three"
+	if _, err := s.Put(ctx, e, agentmemory.BasedOn(read)); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitAfter(readFile(t, s.journalPath()), "\n")
+	lines[1] = "{not json\n"
+	if err := os.WriteFile(s.journalPath(), []byte(strings.Join(lines, "")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, after := range []uint64{0, 1} {
+		lost, err := agentmemory.LostUpdates(ctx, s, after)
+		if err == nil || !strings.Contains(err.Error(), "journal line 2") {
+			t.Errorf("LostUpdates(after %d) error = %v, want the damaged line", after, err)
+		}
+		if len(lost) != 1 || lost[0].Change.Seq != 3 || lost[0].Change.Prev != read {
+			t.Errorf("LostUpdates(after %d) = %+v, want the fork at 3", after, lost)
+			continue
+		}
+		if wantBreak := after == 0; lost[0].Break != wantBreak || lost[0].AfterDamage != wantBreak {
+			t.Errorf("LostUpdates(after %d): Break %v AfterDamage %v, want %v", after, lost[0].Break, lost[0].AfterDamage, wantBreak)
+		}
+	}
+	if n, err := s.LastSeq(ctx); n != 3 || err != nil {
+		t.Errorf("LastSeq = %d, %v; want 3", n, err)
+	}
+}
+
+// TestNoLinks pins that the store reaches nothing through a link: a
+// committed project/x.md pointing at a key outside the directory is not
+// an entry, so it is never read, rendered or journaled, and a write to
+// its name replaces the link rather than writing through it. A scope
+// directory, the journal, the cursor, an index or the lock that is a
+// link is refused or replaced, and what it points at is never changed.
+func TestNoLinks(t *testing.T) {
+	ctx := context.Background()
+	const key = "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n"
+	// outside makes a directory beside the store with a key in it and
+	// returns the key's path, a.md's, and a check that neither changed.
+	outsideDir := func(t *testing.T) (string, string, func(*testing.T)) {
+		outside := t.TempDir()
+		secret := filepath.Join(outside, "id_ed25519")
+		for _, f := range []string{secret, filepath.Join(outside, "a.md")} {
+			if err := os.WriteFile(f, []byte(key), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return outside, secret, func(t *testing.T) {
+			t.Helper()
+			for _, f := range []string{secret, filepath.Join(outside, "a.md")} {
+				if got := readFile(t, f); got != key {
+					t.Errorf("%s changed to %q", f, got)
+				}
+			}
+			if es, _ := os.ReadDir(outside); len(es) != 2 {
+				t.Errorf("the directory outside holds %d files, want 2", len(es))
+			}
+		}
+	}
+	symlink := func(t *testing.T, target, link string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("no symlinks here: %v", err)
+		}
+	}
+	noSecret := func(t *testing.T, s *Store) {
+		t.Helper()
+		if data, err := os.ReadFile(s.journalPath()); err == nil && strings.Contains(string(data), "secret") {
+			t.Errorf("the journal holds the key:\n%s", data)
+		}
+		block, _, err := agentmemory.Render(ctx, s, []agentmemory.Scope{"project", "evil"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(block, "secret") {
+			t.Errorf("the block shows the key:\n%s", block)
+		}
+	}
+
+	t.Run("entry file", func(t *testing.T) {
+		_, secret, unchanged := outsideDir(t)
+		s := open(t)
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "project", Name: "build", Content: "make check"}); err != nil {
+			t.Fatal(err)
+		}
+		symlink(t, secret, filepath.Join(s.Dir(), "project", "x.md"))
+		if _, err := s.Get(ctx, "project", "x"); !errors.Is(err, agentmemory.ErrNotFound) {
+			t.Errorf("Get(project/x) = %v, want ErrNotFound", err)
+		}
+		if es, err := s.List(ctx, "project"); err != nil || len(es) != 1 {
+			t.Errorf("List(project) = %+v, %v; want build alone", es, err)
+		}
+		if found, err := s.Search(ctx, []agentmemory.Scope{"project"}, "secret", 0); err != nil || len(found) != 0 {
+			t.Errorf("Search finds %+v, %v", found, err)
+		}
+		if changes, err := s.Reconcile(ctx); err != nil || len(changes) != 0 {
+			t.Errorf("Reconcile = %+v, %v; want nothing", changes, err)
+		}
+		noSecret(t, s)
+		if _, err := s.Forget(ctx, "project", "x"); !errors.Is(err, agentmemory.ErrNotFound) {
+			t.Errorf("Forget(project/x) = %v, want ErrNotFound", err)
+		}
+		// A write to the name replaces the link with an entry file.
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "project", Name: "x", Content: "mine"}); err != nil {
+			t.Fatal(err)
+		}
+		if info, err := os.Lstat(filepath.Join(s.Dir(), "project", "x.md")); err != nil || !info.Mode().IsRegular() {
+			t.Errorf("project/x.md after the write: %v, %v", info, err)
+		}
+		noSecret(t, s)
+		unchanged(t)
+	})
+	t.Run("scope directory", func(t *testing.T) {
+		outside, _, unchanged := outsideDir(t)
+		s := open(t)
+		symlink(t, outside, filepath.Join(s.Dir(), "evil"))
+		// A linked scope directory is refused out loud, not read as empty:
+		// a dotfiles setup that links one in learns it is not followed.
+		if es, err := s.List(ctx, "evil"); err == nil || len(es) != 0 {
+			t.Errorf("List(evil) = %+v, %v; want an error", es, err)
+		}
+		if _, err := s.Get(ctx, "evil", "a"); err == nil || errors.Is(err, agentmemory.ErrNotFound) {
+			t.Errorf("Get(evil/a) = %v, want an error other than not found", err)
+		}
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "evil", Name: "b", Content: "through the link"}); err == nil {
+			t.Error("a write through a linked scope directory was taken")
+		}
+		if changes, err := s.Reconcile(ctx); err == nil || len(changes) != 0 {
+			t.Errorf("Reconcile = %+v, %v; want an error and nothing", changes, err)
+		}
+		if _, _, err := agentmemory.Render(ctx, s, []agentmemory.Scope{"evil"}); err == nil {
+			t.Error("Render over a linked scope directory succeeded")
+		}
+		unchanged(t)
+	})
+	t.Run("scope directory replaced by a link", func(t *testing.T) {
+		_, _, unchanged := outsideDir(t)
+		s := open(t)
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "dots", Name: "a", Content: "kept"}); err != nil {
+			t.Fatal(err)
+		}
+		moved := filepath.Join(t.TempDir(), "dots")
+		if err := os.Rename(filepath.Join(s.Dir(), "dots"), moved); err != nil {
+			t.Fatal(err)
+		}
+		symlink(t, moved, filepath.Join(s.Dir(), "dots"))
+		before := readFile(t, s.journalPath())
+		// The entries behind the link are not tombstoned in silence.
+		if changes, err := s.Reconcile(ctx); err == nil || len(changes) != 0 {
+			t.Errorf("Reconcile = %+v, %v; want an error and nothing", changes, err)
+		}
+		if after := readFile(t, s.journalPath()); after != before {
+			t.Errorf("Reconcile journaled:\n%s", strings.TrimPrefix(after, before))
+		}
+		unchanged(t)
+	})
+	t.Run("hard links", func(t *testing.T) {
+		_, secret, unchanged := outsideDir(t)
+		s := open(t)
+		hardlink := func(t *testing.T, target, link string) {
+			t.Helper()
+			if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(target, link); err != nil {
+				t.Skipf("no hard links here: %v", err)
+			}
+		}
+		hardlink(t, secret, filepath.Join(s.Dir(), "project", "x.md"))
+		if info, _ := os.Stat(secret); info != nil {
+			if n, ok := linkCount(info); !ok || n < 2 {
+				t.Skip("the platform does not report link counts")
+			}
+		}
+		if _, err := s.Get(ctx, "project", "x"); !errors.Is(err, agentmemory.ErrNotFound) {
+			t.Errorf("Get(project/x) through a hard link = %v, want ErrNotFound", err)
+		}
+		if es, _ := s.List(ctx, "project"); len(es) != 0 {
+			t.Errorf("List(project) reads a hard link: %+v", es)
+		}
+		if changes, err := s.Reconcile(ctx); err != nil || len(changes) != 0 {
+			t.Errorf("Reconcile = %+v, %v; want nothing", changes, err)
+		}
+		if err := os.Remove(filepath.Join(s.Dir(), "project", "x.md")); err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(s.journalPath())
+		os.Remove(filepath.Join(s.Dir(), stateName))
+		hardlink(t, secret, s.journalPath())
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "a", Content: "x"}); err == nil {
+			t.Error("a write appended to a hard-linked journal")
+		}
+		unchanged(t)
+	})
+	t.Run("journal", func(t *testing.T) {
+		_, secret, unchanged := outsideDir(t)
+		s := open(t)
+		symlink(t, secret, s.journalPath())
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "a", Content: "x"}); err == nil {
+			t.Error("a write appended to a linked journal")
+		}
+		for _, err := range s.Journal(ctx, 0) {
+			if err == nil {
+				t.Error("a linked journal was read as records")
+			}
+		}
+		if n, err := s.LastSeq(ctx); err == nil {
+			t.Errorf("LastSeq over a linked journal = %d, nil", n)
+		}
+		unchanged(t)
+	})
+	t.Run("cursor, index and lock", func(t *testing.T) {
+		outside, secret, unchanged := outsideDir(t)
+		s := open(t)
+		symlink(t, secret, filepath.Join(s.Dir(), stateName))
+		symlink(t, filepath.Join(outside, "a.md"), filepath.Join(s.Dir(), "user", indexName))
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "a", Content: "x"}); err != nil {
+			t.Fatalf("Put over a linked cursor and index: %v", err)
+		}
+		for _, f := range []string{filepath.Join(s.Dir(), stateName), filepath.Join(s.Dir(), "user", indexName)} {
+			if info, err := os.Lstat(f); err != nil || !info.Mode().IsRegular() {
+				t.Errorf("%s is not a file of the store's after the write: %v", f, err)
+			}
+		}
+		unchanged(t)
+		symlink(t, secret, s.lockPath())
+		if _, err := s.LockHolder(); err == nil {
+			t.Error("LockHolder read a linked lock")
+		}
+		unchanged(t)
+	})
+}
+
 // TestDamagedTailDoesNotBlockWrites is the second torn write: a write
 // cut off leaves a partial line, the next write terminates it and is
 // itself cut off, and the journal ends with one damaged complete line

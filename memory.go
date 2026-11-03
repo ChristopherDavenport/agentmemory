@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -50,6 +51,11 @@ type Entry struct {
 	Meta map[string]string `json:"meta,omitempty"`
 	// Hash is "sha256:" and the hex digest of Content. A store sets it.
 	Hash string `json:"hash"`
+	// MetaHash is [MetaHash] of Meta, "" for none. A store sets it on
+	// every entry it returns and every record it appends; a record
+	// written before it existed has none, and a reader computes it from
+	// Meta. [IfMetaHash] makes a write conditional on it.
+	MetaHash string `json:"meta_hash,omitempty"`
 	// Updated is when the store last wrote the entry. A store sets it.
 	Updated time.Time `json:"updated"`
 	// Deleted marks a tombstone in the journal; Content is then the
@@ -92,7 +98,8 @@ type Change struct {
 	// Replaced is the hash of the content the store held when the
 	// change landed, "" for a create. Records chain through it: the
 	// Replaced of each names the Entry.Hash of the record before it for
-	// that entry, and a record whose Prev is not its Replaced is a write
+	// that entry, or is "" when there is none or that record is a
+	// tombstone, and a record whose Prev is not its Replaced is a write
 	// built on something else. See [LostUpdates].
 	Replaced string `json:"replaced,omitempty"`
 	// Session is the session that wrote the change, from
@@ -123,10 +130,19 @@ const (
 // Store holds entries and the journal of every change to them. Every
 // implementation passes storetest.
 type Store interface {
-	// Get returns one live entry, or [ErrNotFound].
+	// Get returns one live entry, or [ErrNotFound]. A scope or name
+	// that is not a name is refused with [ErrInvalid], as it is by
+	// List, Forget and Search: see [CheckRef].
+	//
+	// A read does not validate what it returns against [CheckEntry]: a
+	// store whose entries can change outside it, as filestore's files
+	// can under a person's editor, returns an entry as it finds it,
+	// empty or over the bound, and its Hash is the hash of the content
+	// returned.
 	Get(ctx context.Context, scope Scope, name string) (*Entry, error)
-	// List returns the live entries of a scope by name. An unknown
-	// scope lists nothing.
+	// List returns the live entries of a scope by name. A valid scope
+	// the store has never seen lists nothing; one that is not a name is
+	// [ErrInvalid].
 	List(ctx context.Context, scope Scope) ([]Entry, error)
 	// Put creates or replaces the whole entry, content and meta, and
 	// appends the new state to the journal. It refuses an invalid
@@ -146,13 +162,18 @@ type Store interface {
 	Forget(ctx context.Context, scope Scope, name string) (*Change, error)
 	// Search returns the live entries of the scopes that match query,
 	// at most limit of them when limit is positive. What matches and
-	// in what order is the store's; the reference stores use [Match]
-	// and list by scope then name, and sqlite ranks by full-text
-	// relevance.
+	// in what order is the store's: the in-memory store and filestore
+	// use [Match] and list in the order the scopes were given, then by
+	// name; sqlite matches each word as a token prefix and ranks by
+	// full-text relevance, then by scope and name. A scope that is not
+	// a name is [ErrInvalid].
 	Search(ctx context.Context, scopes []Scope, query string, limit int) ([]Entry, error)
 	// Journal yields every change with Seq greater than after, in
 	// order; 0 reads from the beginning. A reader that stops early may
-	// resume with the last Seq it saw.
+	// resume with the last Seq it saw. A record the store holds and
+	// cannot read is yielded as an error in its place, with a zero
+	// Change, and the records after it still follow: a reader must not
+	// take the error for the journal's end. See [LostUpdates].
 	Journal(ctx context.Context, after uint64) iter.Seq2[Change, error]
 	// MaxEntryBytes is the content size Put refuses to exceed.
 	MaxEntryBytes() int
@@ -176,6 +197,10 @@ type PutOptions struct {
 	// too, and enforces it.
 	Base    string
 	HasBase bool
+	// IfMetaHash is the metadata hash the stored entry must have when
+	// MetaConditional is set, "" meaning none or no entry.
+	IfMetaHash      string
+	MetaConditional bool
 }
 
 // IfHash makes the Put conditional: it fails with [ErrConflict] when
@@ -206,6 +231,44 @@ func BasedOn(h string) PutOption {
 	}
 }
 
+// IfMetaHash makes the Put conditional on the metadata: it fails with
+// [ErrConflict], a [ConflictError] with Meta set, unless the live
+// entry's [MetaHash] is h, where a missing entry's is "". The content
+// hash says nothing about the metadata, so a write that keeps the
+// metadata it read, as memory_patch does, names it here, or it undoes a
+// description another session changed in between. It does not change
+// the record's Prev.
+func IfMetaHash(h string) PutOption {
+	return func(o *PutOptions) {
+		o.IfMetaHash = h
+		o.MetaConditional = true
+	}
+}
+
+// MetaHash returns the hash of an entry's metadata, the form
+// [Entry.MetaHash] carries: [Hash] of one line per key, in byte order of
+// the keys, each the key, "=", the value and a line feed; "" for no
+// metadata. A key is a name and a value one line, so the form is
+// unambiguous.
+func MetaHash(meta map[string]string) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(meta))
+	for k := range meta {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(meta[k])
+		b.WriteByte('\n')
+	}
+	return Hash(b.String())
+}
+
 // ResolvePutOptions applies the options to a zero PutOptions.
 func ResolvePutOptions(opts ...PutOption) PutOptions {
 	var o PutOptions
@@ -234,16 +297,27 @@ func (o PutOptions) BaseFor(stored *Entry) string {
 // Check reports an [ErrConflict] when the options are conditional and
 // stored, the live entry or nil for none, does not satisfy them. A
 // store calls it under its write lock, after reading the entry.
+//
+// The metadata condition is checked after the content's, against
+// [MetaHash] of stored's Meta.
 func (o PutOptions) Check(scope Scope, name string, stored *Entry) error {
-	if !o.Conditional {
-		return nil
+	if o.Conditional {
+		have := ""
+		if stored != nil {
+			have = stored.Hash
+		}
+		if have != o.IfHash {
+			return &ConflictError{Scope: scope, Name: name, Want: o.IfHash, Have: have}
+		}
 	}
-	have := ""
-	if stored != nil {
-		have = stored.Hash
-	}
-	if have != o.IfHash {
-		return &ConflictError{Scope: scope, Name: name, Want: o.IfHash, Have: have}
+	if o.MetaConditional {
+		have := ""
+		if stored != nil {
+			have = MetaHash(stored.Meta)
+		}
+		if have != o.IfMetaHash {
+			return &ConflictError{Scope: scope, Name: name, Want: o.IfMetaHash, Have: have, Meta: true}
+		}
 	}
 	return nil
 }
@@ -294,9 +368,15 @@ type ConflictError struct {
 	Scope      Scope
 	Name       string
 	Want, Have string
+	// Meta says the condition that failed is [IfMetaHash]'s, and Want
+	// and Have are metadata hashes.
+	Meta bool
 }
 
 func (e *ConflictError) Error() string {
+	if e.Meta {
+		return fmt.Sprintf("agentmemory: entry %s/%s metadata has hash %s, not %s; read it again", e.Scope, e.Name, orNone(e.Have), orNone(e.Want))
+	}
 	switch {
 	case e.Want == "":
 		return fmt.Sprintf("agentmemory: entry %s/%s already exists with hash %s", e.Scope, e.Name, e.Have)
@@ -308,6 +388,13 @@ func (e *ConflictError) Error() string {
 
 // Is reports [ErrConflict].
 func (e *ConflictError) Is(target error) bool { return target == ErrConflict }
+
+func orNone(h string) string {
+	if h == "" {
+		return "none"
+	}
+	return h
+}
 
 // Hash returns "sha256:" and the hex digest of content, the form
 // [Entry.Hash] and [Change.Prev] carry.
@@ -350,6 +437,28 @@ func ValidName(s string) bool {
 
 // ValidScope reports whether s is a well-formed scope: see [ValidName].
 func ValidScope(s Scope) bool { return ValidName(string(s)) }
+
+// CheckScope refuses a scope that is not a name with [ErrInvalid]. A
+// store calls it before it uses the scope in a read, so a scope that is
+// not a name reaches nothing and every store answers it alike.
+func CheckScope(scope Scope) error {
+	if !ValidScope(scope) {
+		return fmt.Errorf("%w: scope %q is not kebab-case (lowercase letters, digits and single hyphens, up to %d bytes)", ErrInvalid, scope, MaxNameBytes)
+	}
+	return nil
+}
+
+// CheckRef refuses a scope or a name that is not a name with
+// [ErrInvalid]: see [CheckScope].
+func CheckRef(scope Scope, name string) error {
+	if err := CheckScope(scope); err != nil {
+		return err
+	}
+	if !ValidName(name) {
+		return fmt.Errorf("%w: name %q is not kebab-case (lowercase letters, digits and single hyphens, up to %d bytes)", ErrInvalid, name, MaxNameBytes)
+	}
+	return nil
+}
 
 // reservedMetaKeys are the frontmatter fields the file store writes
 // itself, so meta may not use them.
@@ -413,25 +522,8 @@ func CheckEntry(e Entry, limit int, stored *Entry) error {
 // case, in the entry's name, one of its meta values or its content.
 // An empty query matches every entry.
 func Match(e Entry, query string) bool {
-	words := strings.Fields(strings.ToLower(query))
-	if len(words) == 0 {
-		return true
-	}
-	var b strings.Builder
-	b.WriteString(e.Name)
-	for _, v := range e.Meta {
-		b.WriteByte('\n')
-		b.WriteString(v)
-	}
-	b.WriteByte('\n')
-	b.WriteString(e.Content)
-	text := strings.ToLower(b.String())
-	for _, w := range words {
-		if !strings.Contains(text, w) {
-			return false
-		}
-	}
-	return true
+	words := queryWords(query)
+	return matchCount(e, words) == len(words)
 }
 
 type sessionKey struct{}

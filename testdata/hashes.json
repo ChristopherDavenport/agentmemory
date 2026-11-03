@@ -1,0 +1,47 @@
+{
+  "content": [
+    {
+      "content": "",
+      "hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "content": "Short answers.\n",
+      "hash": "sha256:a1d50ed8ba2e01086594dc916ab5f3bbbac1992be6cae4394859f5340bbbacf0"
+    },
+    {
+      "content": "süß ✓ 日本",
+      "hash": "sha256:42d6f58d2bb3cfd4dfd1e0fcdf999f26e2ab30edbfead5598947b2fb7c0bb9ef"
+    },
+    {
+      "content": "no final newline",
+      "hash": "sha256:6ac11c4f13237f7a51d7ade32a554f1a4652ac6c006b2f8186d419b86f63e5c6"
+    }
+  ],
+  "meta": [
+    {
+      "meta": null,
+      "meta_hash": ""
+    },
+    {
+      "meta": {
+        "description": "How to answer"
+      },
+      "meta_hash": "sha256:f1f883ad352e966a3f108b27a912a19a526ad866614a4a6ec1f2e563a2534b64"
+    },
+    {
+      "meta": {
+        "description": "How to answer",
+        "type": "feedback"
+      },
+      "meta_hash": "sha256:22d575523a9f97fdf61541518acf18395f12c6e5b8edfdff6b525bfadadd6d75"
+    },
+    {
+      "meta": {
+        "a": "",
+        "b": "süß",
+        "b-2": "x=y"
+      },
+      "meta_hash": "sha256:e2226247d693886ee382b36d60c41771bbe56b1939a68ef338f77775419fc33a"
+    }
+  ]
+}

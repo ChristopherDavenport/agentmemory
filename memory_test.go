@@ -64,6 +64,7 @@ func TestCheckEntrySize(t *testing.T) {
 
 func TestPutOptionsCheck(t *testing.T) {
 	stored := &Entry{Scope: "user", Name: "a", Hash: Hash("x")}
+	metaStored := &Entry{Scope: "user", Name: "a", Hash: Hash("x"), Meta: map[string]string{"k": "v"}}
 	tests := []struct {
 		name   string
 		opts   []PutOption
@@ -77,6 +78,10 @@ func TestPutOptionsCheck(t *testing.T) {
 		{"right hash", []PutOption{IfHash(Hash("x"))}, stored, ""},
 		{"wrong hash", []PutOption{IfHash(Hash("y"))}, stored, "has hash " + Hash("x") + ", not " + Hash("y") + "; read it again"},
 		{"expected, none", []PutOption{IfHash(Hash("x"))}, nil, "no longer exists; expected hash " + Hash("x")},
+		{"right meta", []PutOption{IfMetaHash(MetaHash(map[string]string{"k": "v"}))}, metaStored, ""},
+		{"wrong meta", []PutOption{IfHash(Hash("x")), IfMetaHash("")}, metaStored, "metadata has hash " + MetaHash(map[string]string{"k": "v"}) + ", not none"},
+		{"no meta, none", []PutOption{IfMetaHash("")}, nil, ""},
+		{"meta expected, none", []PutOption{IfMetaHash(MetaHash(map[string]string{"k": "v"}))}, nil, "metadata has hash none"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,6 +111,7 @@ func TestMatch(t *testing.T) {
 		"neovim light":    false,
 		"emacs":           false,
 		"  neovim  theme": true,
+		"neovim neovim":   true, // a word given twice is one word
 	}
 	for q, want := range tests {
 		if got := Match(e, q); got != want {
@@ -121,5 +127,18 @@ func TestSession(t *testing.T) {
 	}
 	if got := SessionFrom(WithSession(ctx, "s1")); got != "s1" {
 		t.Errorf("SessionFrom = %q", got)
+	}
+}
+
+// TestMetaHash pins the metadata hash: the hash of each key and value,
+// "key=value" and a line feed, in byte order of the keys, and "" for
+// none, so two implementations agree on it.
+func TestMetaHash(t *testing.T) {
+	if MetaHash(nil) != "" || MetaHash(map[string]string{}) != "" {
+		t.Error("the metadata hash of none is not empty")
+	}
+	m := map[string]string{"type": "feedback", "description": "How to answer", "a": ""}
+	if got, want := MetaHash(m), Hash("a=\ndescription=How to answer\ntype=feedback\n"); got != want {
+		t.Errorf("MetaHash = %s, want %s", got, want)
 	}
 }

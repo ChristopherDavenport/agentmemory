@@ -1,0 +1,9 @@
+{
+  "scopes": [
+    "user",
+    "project"
+  ],
+  "block_bound": 32768,
+  "entry_bound": 4096,
+  "entries": []
+}

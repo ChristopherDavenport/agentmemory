@@ -209,7 +209,7 @@ func releaseLock(path string, mine LockInfo) {
 }
 
 func readLock(path string) (LockInfo, error) {
-	data, err := os.ReadFile(path)
+	data, err := readNoFollow(path)
 	if err != nil {
 		return LockInfo{}, err
 	}

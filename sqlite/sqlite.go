@@ -310,6 +310,7 @@ func buildEntry(scope agentmemory.Scope, name, content, meta, hash, updated stri
 		return nil, fmt.Errorf("sqlite: updated of %s/%s: %w", scope, name, err)
 	}
 	e.Updated = t
+	e.MetaHash = agentmemory.MetaHash(e.Meta)
 	return e, nil
 }
 
@@ -392,6 +393,7 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	}
 	now := s.now()
 	e.Hash = agentmemory.Hash(e.Content)
+	e.MetaHash = agentmemory.MetaHash(e.Meta)
 	e.Updated = now
 	e.Deleted = false
 	if len(e.Meta) == 0 {
@@ -511,16 +513,38 @@ func record(ctx context.Context, tx *sql.Tx, c agentmemory.Change) (*agentmemory
 // Search implements agentmemory.Store over the FTS5 index: every word
 // of the query must match a token of the entry's name, meta or
 // content, as a prefix and ignoring case, and results come in
-// relevance order. An empty query lists the scopes' entries in scope
-// order then name.
+// relevance order, then by scope and name. An empty query lists the
+// scopes' entries in scope order then name.
 func (s *Store) Search(ctx context.Context, scopes []agentmemory.Scope, query string, limit int) ([]agentmemory.Entry, error) {
+	return s.SearchWith(ctx, scopes, query, limit, agentmemory.SearchOptions{})
+}
+
+// SearchOptions implements [agentmemory.Searcher]: every option.
+func (s *Store) SearchOptions() []string { return agentmemory.AllSearchOptions() }
+
+// SearchWith implements [agentmemory.Searcher]. Under Any a word need
+// match only one token, and the index ranks the entries by bm25, so an
+// entry matching more of the words, and rarer ones, comes first. Meta
+// and the updated bounds are applied to what the index returns, before
+// the limit.
+func (s *Store) SearchWith(ctx context.Context, scopes []agentmemory.Scope, query string, limit int, opts agentmemory.SearchOptions) ([]agentmemory.Entry, error) {
+	for _, scope := range scopes {
+		if err := agentmemory.CheckScope(scope); err != nil {
+			return nil, err
+		}
+	}
+	if err := opts.Check(s.SearchOptions()); err != nil {
+		return nil, err
+	}
 	if len(scopes) == 0 {
 		return nil, nil
 	}
-	for _, scope := range scopes {
-		if !agentmemory.ValidScope(scope) {
-			return nil, fmt.Errorf("%w: scope %q is not kebab-case", agentmemory.ErrInvalid, scope)
+	filtered := opts.Meta != nil || !opts.UpdatedAfter.IsZero() || !opts.UpdatedBefore.IsZero()
+	keep := func(out []agentmemory.Entry, e agentmemory.Entry) ([]agentmemory.Entry, bool) {
+		if opts.Keep(e) {
+			out = append(out, e)
 		}
+		return out, limit > 0 && len(out) >= limit
 	}
 	words := strings.Fields(query)
 	if len(words) == 0 {
@@ -530,9 +554,11 @@ func (s *Store) Search(ctx context.Context, scopes []agentmemory.Scope, query st
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, es...)
-			if limit > 0 && len(out) >= limit {
-				return out[:limit], nil
+			for _, e := range es {
+				var full bool
+				if out, full = keep(out, e); full {
+					return out, nil
+				}
 			}
 		}
 		return out, nil
@@ -541,7 +567,11 @@ func (s *Store) Search(ctx context.Context, scopes []agentmemory.Scope, query st
 	for _, w := range words {
 		match = append(match, `"`+strings.ReplaceAll(w, `"`, `""`)+`" *`)
 	}
-	args := []any{strings.Join(match, " AND ")}
+	join := " AND "
+	if opts.Any {
+		join = " OR "
+	}
+	args := []any{strings.Join(match, join)}
 	marks := make([]string, 0, len(scopes))
 	for _, scope := range scopes {
 		marks = append(marks, "?")
@@ -551,7 +581,7 @@ func (s *Store) Search(ctx context.Context, scopes []agentmemory.Scope, query st
 		FROM memory_entries_fts f JOIN memory_entries e ON e.scope = f.scope AND e.name = f.name
 		WHERE memory_entries_fts MATCH ? AND f.scope IN (` + strings.Join(marks, ", ") + `)
 		ORDER BY f.rank, e.scope, e.name`
-	if limit > 0 {
+	if limit > 0 && !filtered {
 		q += " LIMIT ?"
 		args = append(args, limit)
 	}
@@ -570,7 +600,10 @@ func (s *Store) Search(ctx context.Context, scopes []agentmemory.Scope, query st
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, *e)
+		var full bool
+		if out, full = keep(out, *e); full {
+			break
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite: search: %w", err)
@@ -612,7 +645,22 @@ func (s *Store) Journal(ctx context.Context, after uint64) iter.Seq2[agentmemory
 	}
 }
 
+// LastSeq implements [agentmemory.LastSeqer]: the largest seq in the
+// journal table, a row whose line does not decode included, since the
+// next record is numbered after it.
+func (s *Store) LastSeq(ctx context.Context) (uint64, error) {
+	var last sql.NullInt64
+	if err := s.r.QueryRowContext(ctx, `SELECT MAX(seq) FROM memory_journal`).Scan(&last); err != nil {
+		return 0, fmt.Errorf("sqlite: journal sequence: %w", err)
+	}
+	return uint64(last.Int64), nil
+}
+
 // stamp renders a time as the entries table stores it.
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
-var _ agentmemory.Store = (*Store)(nil)
+var (
+	_ agentmemory.Store     = (*Store)(nil)
+	_ agentmemory.LastSeqer = (*Store)(nil)
+	_ agentmemory.Searcher  = (*Store)(nil)
+)

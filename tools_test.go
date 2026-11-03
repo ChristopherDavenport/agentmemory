@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ChristopherDavenport/agenttool"
 )
@@ -816,5 +817,295 @@ func TestSaveBasedOnTheRender(t *testing.T) {
 	// state the journal no longer held.
 	if len(lost) != 1 || lost[0].Change.Entry.Name != man.Entries[len(man.Entries)-1].Name || lost[0].Over != "" {
 		t.Errorf("LostUpdates = %+v", lost)
+	}
+}
+
+// TestFixedNames is #48's first half: a scope whose names the product
+// fixed takes a save of those names alone, and none of them is
+// forgotten, each refusal naming the fixed entries.
+func TestFixedNames(t *testing.T) {
+	store := NewMemStore()
+	tools := Tools(store, []Scope{"core", "archive"}, WithFixedNames("core", "persona", "human"))
+	for _, args := range []string{
+		`{"scope":"core","name":"persona","content":"I am Sam."}`,
+		`{"scope":"core","name":"human","content":"Chris."}`,
+		`{"scope":"archive","name":"human-chris","content":"Any name in another scope."}`,
+	} {
+		if _, err := call(t, tools, SaveTool, args); err != nil {
+			t.Fatalf("save %s: %v", args, err)
+		}
+	}
+	_, err := call(t, tools, SaveTool, `{"scope":"core","name":"human-chris","content":"Chris, again."}`)
+	if err == nil || !strings.Contains(err.Error(), "persona") || !strings.Contains(err.Error(), "human") || !strings.Contains(err.Error(), "human-chris") {
+		t.Errorf("save of human-chris in core = %v, want a refusal naming persona and human", err)
+	}
+	if _, err := store.Get(context.Background(), "core", "human-chris"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the refused save was stored: %v", err)
+	}
+	_, err = call(t, tools, ForgetTool, `{"scope":"core","name":"human"}`)
+	if err == nil || !strings.Contains(err.Error(), "persona") || !strings.Contains(err.Error(), "human") {
+		t.Errorf("forget of core/human = %v, want a refusal naming persona and human", err)
+	}
+	if _, err := store.Get(context.Background(), "core", "human"); err != nil {
+		t.Errorf("the refused forget removed the entry: %v", err)
+	}
+	// Patch edits a fixed entry, and another scope is untouched.
+	if _, err := call(t, tools, PatchTool, `{"scope":"core","name":"human","old_text":"Chris.","new_text":"Chris, in Bristol."}`); err != nil {
+		t.Errorf("patch of a fixed entry: %v", err)
+	}
+	if _, err := call(t, tools, ForgetTool, `{"scope":"archive","name":"human-chris"}`); err != nil {
+		t.Errorf("forget in another scope: %v", err)
+	}
+	// The descriptions say so.
+	for _, tool := range tools[:3] {
+		if !strings.Contains(tool.Description(), "persona, human") {
+			t.Errorf("%s description does not name the fixed entries: %s", tool.Name(), tool.Description())
+		}
+	}
+}
+
+// TestInsert is #48's second half: memory_insert names the entry
+// itself, from the time and the content's hash, never overwrites, and
+// gives a second insert of one content in one second a name of its own.
+func TestInsert(t *testing.T) {
+	store := NewMemStore()
+	at := time.Date(2026, 11, 2, 19, 44, 0, 123, time.UTC)
+	tools := Tools(store, []Scope{"core", "archive"}, WithInsert("archive"), withClock(func() time.Time { return at }))
+	if len(tools) != 5 || tools[4].Name() != InsertTool {
+		t.Fatalf("tools = %d, want memory_insert last", len(tools))
+	}
+	if err := agenttool.Set(tools).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	stem := "20261102-194400-" + Hash("A passage.")[len("sha256:"):][:8]
+	var names []string
+	for i := range 3 {
+		res, err := tools[4].Execute(ctx, agenttool.Call{ID: "call_1", Args: json.RawMessage(`{"content":"A passage.","meta":{"description":"Kept"}}`)})
+		if err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+		rec, ok := res.Details.(WriteRecord)
+		if !ok || rec.Tool != InsertTool || rec.Change.Replaced != "" || rec.Change.Prev != "" {
+			t.Fatalf("insert %d record = %+v", i, res.Details)
+		}
+		names = append(names, rec.Change.Entry.Name)
+		if !strings.Contains(res.Output.String(), "archive/"+rec.Change.Entry.Name) {
+			t.Errorf("insert %d result does not name the entry: %s", i, res.Output.String())
+		}
+	}
+	if want := []string{stem, stem + "-2", stem + "-3"}; !slices.Equal(names, want) {
+		t.Errorf("inserted names = %v, want %v", names, want)
+	}
+	for _, n := range names {
+		e, err := store.Get(ctx, "archive", n)
+		if err != nil || e.Content != "A passage." || e.Description() != "Kept" {
+			t.Errorf("Get(archive/%s) = %+v, %v", n, e, err)
+		}
+	}
+	// Only the scopes given take an insert, and with one the scope may
+	// be left out.
+	if _, err := call(t, tools, InsertTool, `{"scope":"core","content":"x"}`); err == nil {
+		t.Error("an insert into a scope without insert was taken")
+	}
+	if a := agenttool.AnnotationsOf(tools[4]); a != (agenttool.Annotations{Title: "Insert memory entry"}) {
+		t.Errorf("memory_insert annotations = %+v", a)
+	}
+}
+
+func TestFixedNamesAndInsertPanic(t *testing.T) {
+	for name, opts := range map[string][]ToolOption{
+		"fixed on an unknown scope": {WithFixedNames("other", "a")},
+		"fixed on a read scope":     {WithReadScopes("rules"), WithFixedNames("rules", "a")},
+		"fixed bad name":            {WithFixedNames("user", "A")},
+		"fixed twice":               {WithFixedNames("user", "a", "a")},
+		"fixed none":                {WithFixedNames("user")},
+		"insert unknown scope":      {WithInsert("other")},
+		"insert into fixed scope":   {WithFixedNames("user", "a"), WithInsert("user")},
+		"insert twice":              {WithInsert("user", "user")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Error("Tools did not panic")
+				}
+			}()
+			Tools(NewMemStore(), []Scope{"user"}, opts...)
+		})
+	}
+}
+
+// TestSearchToolOptions is #47 in the tool: memory_search offers an
+// argument for each option its store supports and none for a store that
+// supports none, and passes them to the store.
+func TestSearchToolOptions(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	for _, e := range []Entry{
+		{Scope: "user", Name: "editor", Content: "Uses Neovim.", Meta: map[string]string{"type": "tool"}},
+		{Scope: "user", Name: "language", Content: "Prefers Go.", Meta: map[string]string{"type": "taste"}},
+	} {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	props := func(tools []agenttool.Tool) []string {
+		var schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(tools[3].Parameters(), &schema); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for k := range schema.Properties {
+			out = append(out, k)
+		}
+		slices.Sort(out)
+		return out
+	}
+	with := Tools(store, []Scope{"user"})
+	if got := props(with); fmt.Sprint(got) != "[any limit meta query scopes updated_after updated_before]" {
+		t.Errorf("memory_search properties over a store with every option = %v", got)
+	}
+	without := Tools(hidden{store}, []Scope{"user"})
+	if got := props(without); fmt.Sprint(got) != "[limit query scopes]" {
+		t.Errorf("memory_search properties over a store with none = %v", got)
+	}
+	if strings.Contains(without[3].Description(), "updated_after") || !strings.Contains(with[3].Description(), "updated_after") {
+		t.Errorf("memory_search over a store with no options describes them: %s", without[3].Description())
+	}
+	out, err := call(t, with, SearchTool, `{"query":"neovim rust","any":true}`)
+	if err != nil || !strings.Contains(out, "user/editor") {
+		t.Errorf("search any = %q, %v", out, err)
+	}
+	out, err = call(t, with, SearchTool, `{"query":"prefers uses","any":true,"meta":{"type":"taste"}}`)
+	if err != nil || !strings.Contains(out, "user/language") || strings.Contains(out, "user/editor") {
+		t.Errorf("search any with meta = %q, %v", out, err)
+	}
+	if _, err := call(t, with, SearchTool, `{"query":"go","updated_after":"yesterday"}`); err == nil || !strings.Contains(err.Error(), "updated_after") {
+		t.Errorf("search with a bad time = %v", err)
+	}
+	if out, err := call(t, with, SearchTool, `{"query":"go","updated_before":"2000-01-01T00:00:00Z"}`); err != nil || !strings.Contains(out, "No entries") {
+		t.Errorf("search before 2000 = %q, %v", out, err)
+	}
+	// An option given to a store without it is an error, not ignored.
+	if _, err := call(t, without, SearchTool, `{"query":"go","any":true}`); err == nil {
+		t.Error("an option the store lacks was taken")
+	}
+}
+
+// TestSearchFlow pins that memory_search says its output reads untrusted
+// content, memory a model wrote, unless the product narrows it, so a
+// harness labels the result in the session and a policy can act on it.
+func TestSearchFlow(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		opts []ToolOption
+		want []agenttool.Label
+	}{
+		{"default", nil, []agenttool.Label{agenttool.LabelUntrusted}},
+		{"narrowed", []ToolOption{WithSearchReads()}, nil},
+		{"private too", []ToolOption{WithSearchReads(agenttool.LabelUntrusted, agenttool.LabelPrivate)}, []agenttool.Label{agenttool.LabelUntrusted, agenttool.LabelPrivate}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tools := Tools(NewMemStore(), []Scope{"user"}, tt.opts...)
+			f, ok := agenttool.FlowOf(tools[3])
+			if !ok || f.Sends || !slices.Equal(f.Reads, tt.want) {
+				t.Errorf("memory_search flow = %+v, %v; want reads %v", f, ok, tt.want)
+			}
+		})
+	}
+}
+
+// metaRacer is a store whose first conditional Put of an entry finds
+// that another session changed the entry's description since the tool
+// read it: it makes that change first, then puts.
+type metaRacer struct {
+	*MemStore
+	raced bool
+}
+
+func (m *metaRacer) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error) {
+	if !m.raced && e.Name == "style" {
+		m.raced = true
+		cur, err := m.MemStore.Get(ctx, e.Scope, e.Name)
+		if err != nil {
+			return nil, err
+		}
+		cur.Meta = map[string]string{"description": "Edited elsewhere"}
+		if _, err := m.MemStore.Put(WithSession(ctx, "other"), *cur); err != nil {
+			return nil, err
+		}
+	}
+	return m.MemStore.Put(ctx, e, opts...)
+}
+
+// TestWritersKeepAConcurrentMetaEdit pins that a patch, and a save that
+// keeps the metadata, do not undo another session's change to the
+// metadata made between their read and their write: the write is
+// conditional on the metadata it read, and on a conflict the tool reads
+// again.
+func TestWritersKeepAConcurrentMetaEdit(t *testing.T) {
+	for _, tt := range []struct {
+		name, tool, args, content string
+	}{
+		{"patch", PatchTool, `{"name":"style","old_text":"Short","new_text":"Brief"}`, "Brief answers."},
+		{"save keeping meta", SaveTool, `{"name":"style","content":"Long answers."}`, "Long answers."},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &metaRacer{MemStore: NewMemStore()}
+			if _, err := store.MemStore.Put(ctx, Entry{Scope: "user", Name: "style", Content: "Short answers.", Meta: map[string]string{"description": "How to answer"}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := call(t, Tools(store, []Scope{"user"}), tt.tool, tt.args); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := store.Get(ctx, "user", "style")
+			if got.Content != tt.content || got.Description() != "Edited elsewhere" {
+				t.Errorf("entry = %q, description %q; want %q and the concurrent description", got.Content, got.Description(), tt.content)
+			}
+		})
+	}
+}
+
+// createRacer is a store where another session creates the entry
+// between memory_save's read, which finds nothing, and its put.
+type createRacer struct {
+	*MemStore
+	meta  map[string]string
+	raced bool
+}
+
+func (c *createRacer) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error) {
+	if !c.raced {
+		c.raced = true
+		if _, err := c.MemStore.Put(WithSession(ctx, "other"), Entry{Scope: e.Scope, Name: e.Name, Content: "Theirs.", Meta: c.meta}); err != nil {
+			return nil, err
+		}
+	}
+	return c.MemStore.Put(ctx, e, opts...)
+}
+
+// TestSaveCreateRace pins that a save that read no entry names that
+// as its base and its metadata: a concurrent create with metadata is
+// refused rather than overwritten, and one without is a fork the journal
+// shows.
+func TestSaveCreateRace(t *testing.T) {
+	ctx := context.Background()
+	withMeta := &createRacer{MemStore: NewMemStore(), meta: map[string]string{"description": "Theirs"}}
+	if _, err := call(t, Tools(withMeta, []Scope{"user"}), SaveTool, `{"name":"note","content":"Mine."}`); !errors.Is(err, ErrConflict) {
+		t.Errorf("save over a concurrent create with metadata = %v, want ErrConflict", err)
+	}
+	if got, _ := withMeta.Get(ctx, "user", "note"); got == nil || got.Content != "Theirs." {
+		t.Errorf("the concurrent create was overwritten: %+v", got)
+	}
+	bare := &createRacer{MemStore: NewMemStore()}
+	if _, err := call(t, Tools(bare, []Scope{"user"}), SaveTool, `{"name":"note","content":"Mine."}`); err != nil {
+		t.Fatal(err)
+	}
+	lost, err := LostUpdates(ctx, bare, 0)
+	if err != nil || len(lost) != 1 || lost[0].Change.Prev != "" || lost[0].Change.Replaced != Hash("Theirs.") {
+		t.Errorf("LostUpdates after a save over a concurrent create = %+v, %v; want the fork", lost, err)
 	}
 }
