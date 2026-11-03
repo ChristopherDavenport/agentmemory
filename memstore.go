@@ -195,6 +195,14 @@ func (m *MemStore) Journal(_ context.Context, after uint64) iter.Seq2[Change, er
 	}
 }
 
+// LastSeq implements [LastSeqer]: the journal's length, since the
+// in-memory journal is numbered from 1 with no gaps.
+func (m *MemStore) LastSeq(context.Context) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return uint64(len(m.journal)), nil
+}
+
 // cloneEntry copies the entry so a caller's map and the store's stay
 // separate. An empty meta becomes nil, so an entry compares equal
 // whether it was stored with an empty map or none.
@@ -207,4 +215,7 @@ func cloneEntry(e Entry) Entry {
 	return e
 }
 
-var _ Store = (*MemStore)(nil)
+var (
+	_ Store     = (*MemStore)(nil)
+	_ LastSeqer = (*MemStore)(nil)
+)

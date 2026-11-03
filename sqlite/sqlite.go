@@ -612,7 +612,21 @@ func (s *Store) Journal(ctx context.Context, after uint64) iter.Seq2[agentmemory
 	}
 }
 
+// LastSeq implements [agentmemory.LastSeqer]: the largest seq in the
+// journal table, a row whose line does not decode included, since the
+// next record is numbered after it.
+func (s *Store) LastSeq(ctx context.Context) (uint64, error) {
+	var last sql.NullInt64
+	if err := s.r.QueryRowContext(ctx, `SELECT MAX(seq) FROM memory_journal`).Scan(&last); err != nil {
+		return 0, fmt.Errorf("sqlite: journal sequence: %w", err)
+	}
+	return uint64(last.Int64), nil
+}
+
 // stamp renders a time as the entries table stores it.
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
-var _ agentmemory.Store = (*Store)(nil)
+var (
+	_ agentmemory.Store     = (*Store)(nil)
+	_ agentmemory.LastSeqer = (*Store)(nil)
+)

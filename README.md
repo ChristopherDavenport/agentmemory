@@ -69,8 +69,11 @@ landed on, which chains the records, and `Prev`, the state it was built
 on, which the caller names with `IfHash` or, without making it a
 precondition, with `BasedOn`. A record whose `Prev` is not its
 `Replaced` is a write composed from a state another writer had already
-replaced, and `LostUpdates(ctx, store, after)` lists them, so an
-auditor can say what a session discarded. Content over the bound is
+replaced, and `LostUpdates(ctx, store, after)` lists them from any
+cursor, past a damaged record, with the records that break the chain,
+so an auditor can say what a session discarded. `LastSeq(ctx, store)`
+is the journal's last sequence number, from a store that answers it
+(`LastSeqer`, which every store here is) without reading the journal. Content over the bound is
 refused with a `SizeError` naming the attempted size, the limit and
 what the entry holds now.
 

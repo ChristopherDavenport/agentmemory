@@ -400,6 +400,11 @@ func (s *Store) Journal(_ context.Context, after uint64) iter.Seq2[agentmemory.C
 	}
 }
 
+// LastSeq implements [agentmemory.LastSeqer]: the seq of the journal's
+// last line that is a record, read from the file's tail without the
+// lock, walking back past a torn or damaged tail as a write does.
+func (s *Store) LastSeq(context.Context) (uint64, error) { return s.lastSeq() }
+
 // Reconcile journals what changed outside the store: a person's edit
 // to an entry file, a file they added, a file they removed. It reads
 // the journal from the cursor it keeps beside it rather than whole, so
@@ -584,4 +589,7 @@ func writeAtomic(path string, data []byte) error {
 	return nil
 }
 
-var _ agentmemory.Store = (*Store)(nil)
+var (
+	_ agentmemory.Store     = (*Store)(nil)
+	_ agentmemory.LastSeqer = (*Store)(nil)
+)

@@ -614,6 +614,49 @@ func TestJournalDamage(t *testing.T) {
 	}
 }
 
+// TestLostUpdatesPastDamage is #46 over the reference store: a fork
+// after a damaged line is reported, with the damage, whether the read
+// starts at 0, where the damage hides the state the fork's chain runs
+// through, or after the first record.
+func TestLostUpdatesPastDamage(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	e := agentmemory.Entry{Scope: "user", Name: "profile", Content: "one"}
+	if _, err := s.Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	read := agentmemory.Hash("one")
+	e.Content = "two"
+	if _, err := s.Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	e.Content = "three"
+	if _, err := s.Put(ctx, e, agentmemory.BasedOn(read)); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitAfter(readFile(t, s.journalPath()), "\n")
+	lines[1] = "{not json\n"
+	if err := os.WriteFile(s.journalPath(), []byte(strings.Join(lines, "")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, after := range []uint64{0, 1} {
+		lost, err := agentmemory.LostUpdates(ctx, s, after)
+		if err == nil || !strings.Contains(err.Error(), "journal line 2") {
+			t.Errorf("LostUpdates(after %d) error = %v, want the damaged line", after, err)
+		}
+		if len(lost) != 1 || lost[0].Change.Seq != 3 || lost[0].Change.Prev != read {
+			t.Errorf("LostUpdates(after %d) = %+v, want the fork at 3", after, lost)
+			continue
+		}
+		if wantBreak := after == 0; lost[0].Break != wantBreak || lost[0].AfterDamage != wantBreak {
+			t.Errorf("LostUpdates(after %d): Break %v AfterDamage %v, want %v", after, lost[0].Break, lost[0].AfterDamage, wantBreak)
+		}
+	}
+	if n, err := s.LastSeq(ctx); n != 3 || err != nil {
+		t.Errorf("LastSeq = %d, %v; want 3", n, err)
+	}
+}
+
 // TestDamagedTailDoesNotBlockWrites is the second torn write: a write
 // cut off leaves a partial line, the next write terminates it and is
 // itself cut off, and the journal ends with one damaged complete line

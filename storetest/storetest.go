@@ -39,6 +39,7 @@ func Run(t *testing.T, opts Options) {
 	t.Run("Forget", func(t *testing.T) { testForget(t, opts) })
 	t.Run("Journal", func(t *testing.T) { testJournal(t, opts) })
 	t.Run("LostUpdates", func(t *testing.T) { testLostUpdates(t, opts) })
+	t.Run("LastSeq", func(t *testing.T) { testLastSeq(t, opts) })
 	t.Run("Search", func(t *testing.T) { testSearch(t, opts) })
 	t.Run("Concurrent", func(t *testing.T) { testConcurrent(t, opts) })
 	if opts.Reopen != nil {
@@ -677,11 +678,15 @@ func testLostUpdates(t *testing.T, opts Options) {
 		got.Over != agentmemory.Hash(slack.Content) {
 		t.Errorf("LostUpdates[0] = %+v", got)
 	}
-	// The cursor is the journal's: read from after the record that
-	// established the entry's state and there is no predecessor to
-	// compare with, so nothing is reported.
-	if from2, err := agentmemory.LostUpdates(ctx, st, 2); err != nil || len(from2) != 0 {
-		t.Errorf("LostUpdates(after 2) = %+v, %v", from2, err)
+	// A fork is a property of the record alone, so a reader resuming
+	// right before it still reports it, though the window holds nothing
+	// earlier for the entry (#49).
+	from2, err := agentmemory.LostUpdates(ctx, st, 2)
+	if err != nil || len(from2) != 1 || from2[0].Change.Seq != 3 || from2[0].Break || from2[0].Over != agentmemory.Hash(slack.Content) {
+		t.Errorf("LostUpdates(after 2) = %+v, %v; want the fork at 3", from2, err)
+	}
+	if from3, err := agentmemory.LostUpdates(ctx, st, 3); err != nil || len(from3) != 0 {
+		t.Errorf("LostUpdates(after 3) = %+v, %v", from3, err)
 	}
 	// An anchored write over the current state, a conditional one, an
 	// unconditional one and a tombstone are all clean.
@@ -725,6 +730,46 @@ func testLostUpdates(t *testing.T, opts Options) {
 		outside[0].Over != agentmemory.Hash("again") || outside[0].Change.Replaced != agentmemory.Hash("again") {
 		t.Errorf("LostUpdates over an edit from outside = %+v", outside)
 	}
+}
+
+// testLastSeq checks the journal's last sequence number: from a store
+// that answers it, through [agentmemory.LastSeqer], and from the
+// fallback that reads the journal, which must agree. A store need not
+// answer it, but every store in this repository does.
+func testLastSeq(t *testing.T, opts Options) {
+	ctx := context.Background()
+	st := opts.New(t)
+	ls, answers := st.(agentmemory.LastSeqer)
+	check := func(want uint64) {
+		t.Helper()
+		if answers {
+			if n, err := ls.LastSeq(ctx); err != nil || n != want {
+				t.Errorf("LastSeq = %d, %v; want %d", n, err, want)
+			}
+		}
+		if n, err := agentmemory.LastSeq(ctx, st); err != nil || n != want {
+			t.Errorf("agentmemory.LastSeq = %d, %v; want %d", n, err, want)
+		}
+		if n := count(t, st, want); n != 0 {
+			t.Errorf("Journal(%d) yields %d records after the last", want, n)
+		}
+	}
+	check(0)
+	for i := range 3 {
+		if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: fmt.Sprintf("n%d", i), Content: "c"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check(3)
+	if _, err := st.Forget(ctx, "user", "n0"); err != nil {
+		t.Fatal(err)
+	}
+	check(4)
+	// A refused write moves nothing.
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "n1", Content: "x"}, agentmemory.IfHash("")); !errors.Is(err, agentmemory.ErrConflict) {
+		t.Fatalf("Put = %v, want ErrConflict", err)
+	}
+	check(4)
 }
 
 func testPersistence(t *testing.T, opts Options) {

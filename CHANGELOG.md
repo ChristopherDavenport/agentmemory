@@ -28,8 +28,25 @@ versions may break the API.
   agentsession means it, the bytes the part would have added, rather
   than the content's size.
 
+- `LastSeqer`, an optional store interface answering the journal's
+  last sequence number without reading it, and `LastSeq(ctx, s)`,
+  which falls back to reading the journal. The in-memory store,
+  filestore and sqlite implement it, and `storetest` checks it (#49).
+- `LostUpdate.Break` and `LostUpdate.AfterDamage`: a record whose
+  `Replaced` is not the last state the window holds for its entry
+  breaks the chain, and one after a record the journal could not read
+  may be that damage (#46).
+
 ### Changed
 
+- **Breaking:** `LostUpdates` judges a record by its own `Prev` and
+  `Replaced`: a fork is reported wherever it lies, from any cursor, so
+  a fork right after the cursor is reported, which it was not (#49).
+  It no longer stops at the first error the journal yields: it reads
+  on, reports the lost updates on both sides, and returns every error
+  joined (#46). A record that breaks the chain is reported too, where
+  the window holds the entry's earlier record; `Over` is that record's
+  state, or `Replaced` when the window holds none.
 - **Breaking:** a read of a scope or a name that is not a name is
   refused with `ErrInvalid` by every store. `NewMemStore` listed
   nothing for one and answered `ErrNotFound`; filestore and sqlite

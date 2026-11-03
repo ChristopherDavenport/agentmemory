@@ -319,11 +319,14 @@ when the caller claimed nothing, the hash the store held, which is
 Record 4 of the worked example is a fork: two sessions read the entry
 at record 2's hash, each wrote whole, record 3 landed first, and record
 4 has `prev` naming record 2 where its `replaced` names record 3.
-`LostUpdates` reads the journal through `Journal` and stops at the
-first damaged line it yields, so over a journal with damage it reports
-the forks before the damage. RFC 0001 section 4.7 states the rule #46
-and #49 replace this with: a fork is judged by its own `prev` and
-`replaced`, and a reader goes on past damage.
+A fork is judged by the record's own `prev` and `replaced`, so a reader
+reports it wherever it lies: past a damaged line, and in a window that
+starts after a cursor and holds nothing earlier for the entry.
+`LostUpdates` reads the journal through `Journal`, goes on past a
+damaged line and returns its error beside what it found, and also
+reports a *break*, a record whose `replaced` is not the last state the
+window holds for its entry, marking one after damage as possibly the
+damage (RFC 0001 section 4.7).
 
 ### Tombstones
 
