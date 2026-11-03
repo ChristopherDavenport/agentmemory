@@ -950,6 +950,49 @@ func TestRenderScopeMaxBytes(t *testing.T) {
 // which hashes apart from the same entries omitted for budget and from
 // the empty manifest, records and folds as any manifest does, and is
 // told apart by its reason rather than by an empty one.
+// TestRecordWritesEntries pins that a record always carries entries as
+// an array: a manifest a product built with no entries, as the one of
+// a block dropped whole is, writes [] and not null, so a reader in a
+// language that expects an array reads it.
+func TestRecordWritesEntries(t *testing.T) {
+	dropped := Manifest{Omitted: []ManifestEntry{{Scope: "user", Name: "a", Hash: Hash("a"), Bytes: 1, Reason: OmitBlock}}}
+	for _, tt := range []struct {
+		name string
+		data []byte
+	}{
+		{"Record", func() []byte { _, d := dropped.Record(); return d }()},
+		{"RecordSince", func() []byte { _, d := dropped.RecordSince(Manifest{}); return d }()},
+		{"Record of the empty manifest", func() []byte { _, d := (Manifest{}).Record(); return d }()},
+		{"Marshal", func() []byte { d, _ := json.Marshal(dropped); return d }()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if !bytes.Contains(tt.data, []byte(`"entries":[]`)) {
+				t.Errorf("record %s does not write entries as []", tt.data)
+			}
+		})
+	}
+}
+
+// TestEntryPart pins that the part an entry would render as is the
+// part a render holds for it, so the size a product records for an
+// omitted part is what the part would have added.
+func TestEntryPart(t *testing.T) {
+	ctx := context.Background()
+	st := NewMemStore(WithMaxEntryBytes(256))
+	e := Entry{Scope: "user", Name: "style", Content: "Short answers.\n", Meta: map[string]string{"description": "How to answer"}}
+	if _, err := st.Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	parts, _, err := RenderParts(ctx, st, []Scope{"user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := EntryPart(e, st.MaxEntryBytes())
+	if !slices.Contains(parts, got) {
+		t.Errorf("EntryPart = %+v, not among the rendered parts %+v", got, parts)
+	}
+}
+
 func TestOmitBlock(t *testing.T) {
 	shown := manifestFixture(5, 3)
 	dropped := Manifest{}

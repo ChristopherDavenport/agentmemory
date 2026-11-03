@@ -42,8 +42,9 @@ func WithMaxTotalBytes(n int) RenderOption {
 // scope the scope rendered last gets what the others did not take, and
 // a full scope early in the order starves it. Capping the early scope,
 // or each, keeps room for the later ones; a cap of zero shows none of
-// the scope's entries and names them, room permitting. A cap under
-// zero is refused with [ErrBudget]. A cap on a scope the render does
+// the scope's entries and, since the line naming the omissions counts
+// inside the cap, names none of them either; the manifest still lists
+// every one. A cap under zero is refused with [ErrBudget]. A cap on a scope the render does
 // not list does nothing, and the last cap given for a scope is the one
 // that holds.
 func WithScopeMaxBytes(scope Scope, n int) RenderOption {
@@ -93,6 +94,17 @@ type Manifest struct {
 	// Omitted are the entries the block's bound left out, in the order
 	// they would have appeared, each with the reason.
 	Omitted []ManifestEntry `json:"omitted,omitempty"`
+}
+
+// MarshalJSON writes the manifest as a whole record: entries always as
+// an array, [] when there are none, which is what a reader in any
+// language expects, and omitted left out when empty.
+func (m Manifest) MarshalJSON() ([]byte, error) {
+	type plain Manifest
+	if m.Entries == nil {
+		m.Entries = []ManifestEntry{}
+	}
+	return json.Marshal(plain(m))
 }
 
 // ManifestEntry names one entry by scope and name, with the hash and
@@ -548,6 +560,18 @@ const (
 // the [Manifest] when it records what the block left out beside the
 // parts it holds.
 func PartID(scope Scope, name string) string { return "memory/" + string(scope) + "/" + name }
+
+// EntryPart returns the part e renders as in a block over a store
+// whose entry bound is bound, whether or not a render holds it: ID
+// [PartID], Text the entry's heading and content as [RenderParts]
+// writes them. A product that records what the block left out as
+// agentsession instructions_omitted elements gives each the size
+// len(Text)+len([PartSeparator]), the bytes the part would have added
+// to the block, which is the meaning agentsession gives size; the
+// manifest's Bytes is the content's size, which is less.
+func EntryPart(e Entry, bound int) Part {
+	return Part{ID: PartID(e.Scope, e.Name), Text: entryText(e, bound)}
+}
 
 func scopePartID(scope Scope) string   { return "memory/" + string(scope) }
 func omittedPartID(scope Scope) string { return "memory/" + string(scope) + ":omitted" }

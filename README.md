@@ -196,7 +196,9 @@ last line `memory:summary`. A product that records its instructions as
 parts, through agentturn/session's `WithInstructionsParts`, gives
 agentsession the memory parts beside its own, and a write to one entry
 is recorded as that entry's part and the last line, the rest by hash;
-the manifest's omissions, named with `PartID`, are its omitted parts.
+the manifest's omissions, named with `PartID`, are its omitted parts,
+each with the `size` agentsession means, the bytes the part would have
+added: `len(EntryPart(e, bound).Text) + len(PartSeparator)`.
 
 ## The tools
 

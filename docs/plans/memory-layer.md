@@ -117,7 +117,8 @@ that write is paid three times (the call arguments, the transcript
 that keeps them, the config delta that re-renders the block) and it
 silently loses a concurrent edit, because the new value is built from
 a read that may be stale. Editing is the `memory_patch` tool's job,
-below; the store applies the patch and `Put` remains the unit.
+below; the tool applies the patch to what it read and puts the whole
+entry, conditional on that read, so `Put` remains the unit.
 
 `IfHash` is optional. A create and a deliberate overwrite are both
 legitimate; the precondition is for callers that anchor a write in
@@ -222,8 +223,8 @@ type Manifest struct {
 ```
 
 The block is Markdown: a title, one `##` section per scope, one `###`
-heading per entry carrying the entry's size and the limit, the
-description under it, then the content verbatim, and a last line with
+heading per entry carrying the entry's size, the limit and the
+description on the heading line, then the content verbatim, and a last line with
 the counts and the budget, last because every write changes it and the
 block is a cached prefix. `RenderParts` returns the same block as
 parts, one per heading, entry and omission line, joined with a blank
@@ -268,8 +269,8 @@ one sequence orders every write to the store whatever the scope.
 Writes are atomic (write, fsync, rename) and serialised with one lock
 file at the root, so two sessions writing the store do not tear a file
 or a sequence number; a `Put` without `IfHash` is last write wins on
-the entry, and the journal keeps both with `Prev` naming what each
-replaced. A tombstone removes the file and records the last content in
+the entry, and the journal keeps both, with `Replaced` naming what
+each replaced and `Prev` the state each was built on. A tombstone removes the file and records the last content in
 the journal. `Seq` is the last journal record's plus one, read under
 the lock.
 
@@ -350,7 +351,9 @@ that imports the loop as a test dependency only.
 
 1. `Entry`, `Store`, `Change`, an in-memory store, `storetest`.
 2. `filestore` with the journal, the lock and the atomic write.
-3. The three tools and `Tools`.
+3. The tools and `Tools`: `memory_save`, `memory_patch`,
+   `memory_forget` and `memory_search`, and since RFC 0001 draft 0.2
+   `memory_insert`.
 4. `Render` and `Manifest` with golden fixtures.
 5. `sqlite` with full-text `Search`, passing `storetest`.
 6. dexclaw uses user scope across two channels; dax uses project

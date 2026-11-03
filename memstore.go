@@ -56,6 +56,9 @@ func (m *MemStore) MaxEntryBytes() int { return m.max }
 
 // Get implements Store.
 func (m *MemStore) Get(_ context.Context, scope Scope, name string) (*Entry, error) {
+	if err := CheckRef(scope, name); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e, ok := m.live[scope][name]
@@ -68,6 +71,9 @@ func (m *MemStore) Get(_ context.Context, scope Scope, name string) (*Entry, err
 
 // List implements Store.
 func (m *MemStore) List(_ context.Context, scope Scope) ([]Entry, error) {
+	if err := CheckScope(scope); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.listLocked(scope), nil
@@ -115,6 +121,9 @@ func (m *MemStore) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change
 
 // Forget implements Store.
 func (m *MemStore) Forget(ctx context.Context, scope Scope, name string) (*Change, error) {
+	if err := CheckRef(scope, name); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e, ok := m.live[scope][name]
@@ -146,6 +155,11 @@ func (m *MemStore) appendLocked(ctx context.Context, e Entry, prev, replaced str
 // Search implements Store with [Match], listing by scope order then
 // name.
 func (m *MemStore) Search(_ context.Context, scopes []Scope, query string, limit int) ([]Entry, error) {
+	for _, scope := range scopes {
+		if err := CheckScope(scope); err != nil {
+			return nil, err
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []Entry

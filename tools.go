@@ -147,7 +147,7 @@ type forgetArgs struct {
 }
 
 type searchArgs struct {
-	Query  string   `json:"query" desc:"Words that must all appear in an entry's name, description or content, in any case"`
+	Query  string   `json:"query" desc:"Words that must all appear in an entry's name, metadata or content, in any case"`
 	Scopes []string `json:"scopes,omitempty" desc:"Which memories to search; all of them when omitted"`
 	Limit  int      `json:"limit,omitempty" desc:"At most this many entries; keep it low, results stay in the conversation"`
 }
@@ -403,7 +403,7 @@ func (t *toolset) forgetDescription() string {
 }
 
 func (t *toolset) searchDescription() string {
-	return fmt.Sprintf("Find memory entries: the ones the memory block omits, or one to read whole before editing it. Every word of the query must appear in an entry's name, description or content, in any case. Returns up to %d entries unless limit says otherwise, and at most %d bytes of content; the rest are listed by name. Results stay in the conversation, so search for what you need and no more. %s",
+	return fmt.Sprintf("Find memory entries: the ones the memory block omits, or one to read whole before editing it. Every word of the query must appear in an entry's name, one of its metadata values, such as its description, or its content, in any case. Returns up to %d entries unless limit says otherwise, and at most %d bytes of content; the rest are listed by name. Results stay in the conversation, so search for what you need and no more. %s",
 		t.opts.searchLimit, t.opts.searchBytes, t.searchScopes())
 }
 

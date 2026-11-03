@@ -28,7 +28,10 @@ manifest for the session's provenance. The design is in
 - `../agentturn`: the loop. A product wires the rendered block and the
   tools into its `Config`; the loop never imports this module.
 - `../agentsession`: the session format. The rendered block lands in
-  config deltas; the manifest lands in an `env` or `custom` entry.
+  config deltas; the manifest lands in a `custom` entry under
+  `agentmemory:render`, and each write's record in one under
+  `agentmemory:write`. RFC 0001 (`docs/rfcs/0001-agent-memory.md`) is
+  the contract.
   `storetest` mirrors its `storetest`.
 - `../agentskill`: read-only sources people write. Same manifest
   shape; different lifecycle, hence a separate module.

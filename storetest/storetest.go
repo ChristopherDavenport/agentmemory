@@ -33,6 +33,7 @@ func Run(t *testing.T, opts Options) {
 	}
 	t.Run("Validation", func(t *testing.T) { testValidation(t, opts) })
 	t.Run("PutGetList", func(t *testing.T) { testPutGetList(t, opts) })
+	t.Run("InvalidReads", func(t *testing.T) { testInvalidReads(t, opts) })
 	t.Run("Bounds", func(t *testing.T) { testBounds(t, opts) })
 	t.Run("IfHash", func(t *testing.T) { testIfHash(t, opts) })
 	t.Run("Forget", func(t *testing.T) { testForget(t, opts) })
@@ -165,6 +166,43 @@ func testPutGetList(t *testing.T, opts Options) {
 	}
 	if bare, _ := st.Get(ctx, "user", "bare"); bare.Meta != nil {
 		t.Errorf("empty meta stored as %v, want nil", bare.Meta)
+	}
+}
+
+// testInvalidReads pins what a read of a scope or name that is not a
+// name does: it is refused as invalid, in every store, before the
+// store looks anything up, so a store that maps names onto paths or
+// keys reaches nothing through one and every store answers alike.
+func testInvalidReads(t *testing.T, opts Options) {
+	ctx := context.Background()
+	st := opts.New(t)
+	if _, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: "a", Content: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []agentmemory.Scope{"", "User", "../etc", "user/a", "a--b"} {
+		if _, err := st.List(ctx, scope); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("List(%q) = %v, want ErrInvalid", scope, err)
+		}
+		if _, err := st.Get(ctx, scope, "a"); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("Get(%q, a) = %v, want ErrInvalid", scope, err)
+		}
+		if _, err := st.Forget(ctx, scope, "a"); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("Forget(%q, a) = %v, want ErrInvalid", scope, err)
+		}
+		if _, err := st.Search(ctx, []agentmemory.Scope{"user", scope}, "x", 0); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("Search(user, %q) = %v, want ErrInvalid", scope, err)
+		}
+	}
+	for _, name := range []string{"", "A", "../a", "a.md", "-a"} {
+		if _, err := st.Get(ctx, "user", name); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("Get(user, %q) = %v, want ErrInvalid", name, err)
+		}
+		if _, err := st.Forget(ctx, "user", name); !errors.Is(err, agentmemory.ErrInvalid) {
+			t.Errorf("Forget(user, %q) = %v, want ErrInvalid", name, err)
+		}
+	}
+	if n := count(t, st, 0); n != 1 {
+		t.Errorf("journal has %d records after refused reads and forgets, want 1", n)
 	}
 }
 

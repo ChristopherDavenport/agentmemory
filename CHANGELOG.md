@@ -21,8 +21,26 @@ versions may break the API.
   places the code and the documents disagree. `docs/filestore-format.md`
   is its Annex A and stays at its path.
 
+- `CheckScope` and `CheckRef`, which refuse a scope or a name that is
+  not a name with `ErrInvalid`, for a store to call before a read.
+- `EntryPart(e, bound)`, the part an entry renders as whether or not a
+  render holds it, so a product records an omitted part's `size` as
+  agentsession means it, the bytes the part would have added, rather
+  than the content's size.
+
 ### Changed
 
+- **Breaking:** a read of a scope or a name that is not a name is
+  refused with `ErrInvalid` by every store. `NewMemStore` listed
+  nothing for one and answered `ErrNotFound`; filestore and sqlite
+  already refused it. `storetest` pins it (RFC 0001 open question 2).
+- `Manifest` marshals `entries` as `[]` when it has none, so
+  `Manifest.Record` and `RecordSince` write `"entries":[]` for a
+  manifest a product built from a nil list, as the one of a block
+  dropped whole is, rather than `null` (RFC 0001 open question 6).
+- memory_search's description and its `query` argument say a word must
+  appear in an entry's name, metadata or content: every metadata value
+  is searched, not only the description.
 - Requires agenttool v0.0.28 and openresponses v0.0.18; the tools'
   integration test runs under agentturn v0.0.35.
 

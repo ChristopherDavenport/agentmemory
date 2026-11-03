@@ -92,7 +92,8 @@ type Change struct {
 	// Replaced is the hash of the content the store held when the
 	// change landed, "" for a create. Records chain through it: the
 	// Replaced of each names the Entry.Hash of the record before it for
-	// that entry, and a record whose Prev is not its Replaced is a write
+	// that entry, or is "" when there is none or that record is a
+	// tombstone, and a record whose Prev is not its Replaced is a write
 	// built on something else. See [LostUpdates].
 	Replaced string `json:"replaced,omitempty"`
 	// Session is the session that wrote the change, from
@@ -123,10 +124,19 @@ const (
 // Store holds entries and the journal of every change to them. Every
 // implementation passes storetest.
 type Store interface {
-	// Get returns one live entry, or [ErrNotFound].
+	// Get returns one live entry, or [ErrNotFound]. A scope or name
+	// that is not a name is refused with [ErrInvalid], as it is by
+	// List, Forget and Search: see [CheckRef].
+	//
+	// A read does not validate what it returns against [CheckEntry]: a
+	// store whose entries can change outside it, as filestore's files
+	// can under a person's editor, returns an entry as it finds it,
+	// empty or over the bound, and its Hash is the hash of the content
+	// returned.
 	Get(ctx context.Context, scope Scope, name string) (*Entry, error)
-	// List returns the live entries of a scope by name. An unknown
-	// scope lists nothing.
+	// List returns the live entries of a scope by name. A valid scope
+	// the store has never seen lists nothing; one that is not a name is
+	// [ErrInvalid].
 	List(ctx context.Context, scope Scope) ([]Entry, error)
 	// Put creates or replaces the whole entry, content and meta, and
 	// appends the new state to the journal. It refuses an invalid
@@ -146,13 +156,18 @@ type Store interface {
 	Forget(ctx context.Context, scope Scope, name string) (*Change, error)
 	// Search returns the live entries of the scopes that match query,
 	// at most limit of them when limit is positive. What matches and
-	// in what order is the store's; the reference stores use [Match]
-	// and list by scope then name, and sqlite ranks by full-text
-	// relevance.
+	// in what order is the store's: the in-memory store and filestore
+	// use [Match] and list in the order the scopes were given, then by
+	// name; sqlite matches each word as a token prefix and ranks by
+	// full-text relevance, then by scope and name. A scope that is not
+	// a name is [ErrInvalid].
 	Search(ctx context.Context, scopes []Scope, query string, limit int) ([]Entry, error)
 	// Journal yields every change with Seq greater than after, in
 	// order; 0 reads from the beginning. A reader that stops early may
-	// resume with the last Seq it saw.
+	// resume with the last Seq it saw. A record the store holds and
+	// cannot read is yielded as an error in its place, with a zero
+	// Change, and the records after it still follow: a reader must not
+	// take the error for the journal's end. See [LostUpdates].
 	Journal(ctx context.Context, after uint64) iter.Seq2[Change, error]
 	// MaxEntryBytes is the content size Put refuses to exceed.
 	MaxEntryBytes() int
@@ -350,6 +365,28 @@ func ValidName(s string) bool {
 
 // ValidScope reports whether s is a well-formed scope: see [ValidName].
 func ValidScope(s Scope) bool { return ValidName(string(s)) }
+
+// CheckScope refuses a scope that is not a name with [ErrInvalid]. A
+// store calls it before it uses the scope in a read, so a scope that is
+// not a name reaches nothing and every store answers it alike.
+func CheckScope(scope Scope) error {
+	if !ValidScope(scope) {
+		return fmt.Errorf("%w: scope %q is not kebab-case (lowercase letters, digits and single hyphens, up to %d bytes)", ErrInvalid, scope, MaxNameBytes)
+	}
+	return nil
+}
+
+// CheckRef refuses a scope or a name that is not a name with
+// [ErrInvalid]: see [CheckScope].
+func CheckRef(scope Scope, name string) error {
+	if err := CheckScope(scope); err != nil {
+		return err
+	}
+	if !ValidName(name) {
+		return fmt.Errorf("%w: name %q is not kebab-case (lowercase letters, digits and single hyphens, up to %d bytes)", ErrInvalid, name, MaxNameBytes)
+	}
+	return nil
+}
 
 // reservedMetaKeys are the frontmatter fields the file store writes
 // itself, so meta may not use them.
