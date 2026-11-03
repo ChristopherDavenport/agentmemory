@@ -27,6 +27,14 @@ versions may break the API.
   condition on it, failing with a `ConflictError` whose `Meta` is set.
   The content hash says nothing about the metadata. filestore's cursor
   already kept this hash; Annex A's worked example now shows the member.
+- Language-neutral fixtures, the conformance corpus RFC 0001 names:
+  `testdata/render/<case>.input.json`, everything a render fixture is a
+  function of, beside its block, parts and manifest;
+  `testdata/lostupdates/*.json`, journals with damaged lines and what a
+  reader reports from each cursor; and `testdata/manifest/*.json`,
+  `agentmemory:render` records with the manifest in force after each,
+  or the refusal, unresolved or malformed. Tests read every fixture
+  back from the file alone; `go test . -update` writes them.
 - `CheckScope` and `CheckRef`, which refuse a scope or a name that is
   not a name with `ErrInvalid`, for a store to call before a read.
 - `EntryPart(e, bound)`, the part an entry renders as whether or not a

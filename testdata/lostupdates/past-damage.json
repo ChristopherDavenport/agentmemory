@@ -1,0 +1,56 @@
+{
+  "journal": [
+    "{\"seq\":1,\"entry\":{\"scope\":\"user\",\"name\":\"a\",\"content\":\"one\",\"hash\":\"sha256:7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed\",\"updated\":\"0001-01-01T00:00:00Z\"},\"at\":\"0001-01-01T00:00:00Z\"}",
+    "{\"seq\":",
+    "{\"seq\":3,\"entry\":{\"scope\":\"user\",\"name\":\"a\",\"content\":\"three\",\"hash\":\"sha256:8b5b9db0c13db24256c829aa364aa90c6d2eba318b9232a4ab9313b954d3555f\",\"updated\":\"0001-01-01T00:00:00Z\"},\"prev\":\"sha256:7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed\",\"replaced\":\"sha256:3fc4ccfe745870e2c0d99f71f30ff0656c8dedd41cc1d7d3d376b0dbe685e2f3\",\"at\":\"0001-01-01T00:00:00Z\"}",
+    "{\"seq\":4,\"entry\":{\"scope\":\"user\",\"name\":\"b\",\"content\":\"bee\",\"hash\":\"sha256:62cb81b5904a262ffaeed02abef36bfc540b09f964b8b0b636662f77ffce6714\",\"updated\":\"0001-01-01T00:00:00Z\"},\"at\":\"0001-01-01T00:00:00Z\"}",
+    "{\"seq\":5,\"entry\":{\"scope\":\"user\",\"name\":\"b\",\"content\":\"bee2\",\"hash\":\"sha256:4af58116a2cd480da9d533be8766fbc4744b3c6a33ea3897469d3d1972bfebe8\",\"updated\":\"0001-01-01T00:00:00Z\"},\"prev\":\"sha256:a03f2386ae06b21109577020844df367857b72c2fcce384c1896fed98a89c82b\",\"replaced\":\"sha256:62cb81b5904a262ffaeed02abef36bfc540b09f964b8b0b636662f77ffce6714\",\"at\":\"0001-01-01T00:00:00Z\"}"
+  ],
+  "reads": [
+    {
+      "after": 0,
+      "lost": [
+        {
+          "seq": 3,
+          "over": "sha256:7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed",
+          "fork": true,
+          "break": true,
+          "after_damage": true
+        },
+        {
+          "seq": 5,
+          "over": "sha256:62cb81b5904a262ffaeed02abef36bfc540b09f964b8b0b636662f77ffce6714",
+          "fork": true
+        }
+      ],
+      "damaged": 1
+    },
+    {
+      "after": 1,
+      "lost": [
+        {
+          "seq": 3,
+          "over": "sha256:3fc4ccfe745870e2c0d99f71f30ff0656c8dedd41cc1d7d3d376b0dbe685e2f3",
+          "fork": true
+        },
+        {
+          "seq": 5,
+          "over": "sha256:62cb81b5904a262ffaeed02abef36bfc540b09f964b8b0b636662f77ffce6714",
+          "fork": true
+        }
+      ],
+      "damaged": 1
+    },
+    {
+      "after": 3,
+      "lost": [
+        {
+          "seq": 5,
+          "over": "sha256:62cb81b5904a262ffaeed02abef36bfc540b09f964b8b0b636662f77ffce6714",
+          "fork": true
+        }
+      ],
+      "damaged": 1
+    }
+  ]
+}

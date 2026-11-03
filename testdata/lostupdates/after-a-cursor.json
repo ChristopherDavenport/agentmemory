@@ -1,0 +1,74 @@
+{
+  "journal": [
+    "{\"seq\":1,\"entry\":{\"scope\":\"user\",\"name\":\"a\",\"content\":\"one\",\"hash\":\"sha256:7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed\",\"updated\":\"0001-01-01T00:00:00Z\"},\"at\":\"0001-01-01T00:00:00Z\"}",
+    "{\"seq\":2,\"entry\":{\"scope\":\"user\",\"name\":\"a\",\"content\":\"two\",\"hash\":\"sha256:3fc4ccfe745870e2c0d99f71f30ff0656c8dedd41cc1d7d3d376b0dbe685e2f3\",\"updated\":\"0001-01-01T00:00:00Z\"},\"prev\":\"sha256:7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed\",\"replaced\":\"sha256:7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed\",\"at\":\"0001-01-01T00:00:00Z\"}",
+    "{\"seq\":3,\"entry\":{\"scope\":\"user\",\"name\":\"a\",\"content\":\"three\",\"hash\":\"sha256:8b5b9db0c13db24256c829aa364aa90c6d2eba318b9232a4ab9313b954d3555f\",\"updated\":\"0001-01-01T00:00:00Z\"},\"prev\":\"sha256:7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed\",\"replaced\":\"sha256:3fc4ccfe745870e2c0d99f71f30ff0656c8dedd41cc1d7d3d376b0dbe685e2f3\",\"at\":\"0001-01-01T00:00:00Z\"}",
+    "{\"seq\":4,\"entry\":{\"scope\":\"user\",\"name\":\"a\",\"content\":\"four\",\"hash\":\"sha256:04efaf080f5a3e74e1c29d1ca6a48569382cbbcd324e8d59d2b83ef21c039f00\",\"updated\":\"0001-01-01T00:00:00Z\"},\"prev\":\"sha256:54d5dbf0124e59afba31626db737667cba02fa73560691be0cdb0e7cab9b1fc7\",\"replaced\":\"sha256:54d5dbf0124e59afba31626db737667cba02fa73560691be0cdb0e7cab9b1fc7\",\"at\":\"0001-01-01T00:00:00Z\"}",
+    "{\"seq\":5,\"entry\":{\"scope\":\"user\",\"name\":\"c\",\"content\":\"see\",\"hash\":\"sha256:aa9e9b5c907d50feb410f2a84e81ab72c5ae6724d57ccc53650f9361d33dc734\",\"updated\":\"0001-01-01T00:00:00Z\"},\"prev\":\"sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881\",\"replaced\":\"sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881\",\"at\":\"0001-01-01T00:00:00Z\"}"
+  ],
+  "reads": [
+    {
+      "after": 0,
+      "lost": [
+        {
+          "seq": 3,
+          "over": "sha256:3fc4ccfe745870e2c0d99f71f30ff0656c8dedd41cc1d7d3d376b0dbe685e2f3",
+          "fork": true
+        },
+        {
+          "seq": 4,
+          "over": "sha256:8b5b9db0c13db24256c829aa364aa90c6d2eba318b9232a4ab9313b954d3555f",
+          "break": true
+        },
+        {
+          "seq": 5,
+          "over": "",
+          "break": true
+        }
+      ],
+      "damaged": 0
+    },
+    {
+      "after": 1,
+      "lost": [
+        {
+          "seq": 3,
+          "over": "sha256:3fc4ccfe745870e2c0d99f71f30ff0656c8dedd41cc1d7d3d376b0dbe685e2f3",
+          "fork": true
+        },
+        {
+          "seq": 4,
+          "over": "sha256:8b5b9db0c13db24256c829aa364aa90c6d2eba318b9232a4ab9313b954d3555f",
+          "break": true
+        }
+      ],
+      "damaged": 0
+    },
+    {
+      "after": 2,
+      "lost": [
+        {
+          "seq": 3,
+          "over": "sha256:3fc4ccfe745870e2c0d99f71f30ff0656c8dedd41cc1d7d3d376b0dbe685e2f3",
+          "fork": true
+        },
+        {
+          "seq": 4,
+          "over": "sha256:8b5b9db0c13db24256c829aa364aa90c6d2eba318b9232a4ab9313b954d3555f",
+          "break": true
+        }
+      ],
+      "damaged": 0
+    },
+    {
+      "after": 3,
+      "lost": [],
+      "damaged": 0
+    },
+    {
+      "after": 4,
+      "lost": [],
+      "damaged": 0
+    }
+  ]
+}

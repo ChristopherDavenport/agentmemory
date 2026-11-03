@@ -1,0 +1,63 @@
+{
+  "scopes": [
+    "environment",
+    "user"
+  ],
+  "block_bound": 1000,
+  "entry_bound": 256,
+  "caps": {
+    "environment": 400
+  },
+  "entries": [
+    {
+      "scope": "environment",
+      "name": "environment-00",
+      "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+    },
+    {
+      "scope": "environment",
+      "name": "environment-01",
+      "content": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+    },
+    {
+      "scope": "environment",
+      "name": "environment-02",
+      "content": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n"
+    },
+    {
+      "scope": "environment",
+      "name": "environment-03",
+      "content": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n"
+    },
+    {
+      "scope": "environment",
+      "name": "environment-04",
+      "content": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n"
+    },
+    {
+      "scope": "environment",
+      "name": "environment-05",
+      "content": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\n"
+    },
+    {
+      "scope": "environment",
+      "name": "environment-06",
+      "content": "ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg\n"
+    },
+    {
+      "scope": "environment",
+      "name": "environment-07",
+      "content": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\n"
+    },
+    {
+      "scope": "user",
+      "name": "user-00",
+      "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+    },
+    {
+      "scope": "user",
+      "name": "user-01",
+      "content": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+    }
+  ]
+}

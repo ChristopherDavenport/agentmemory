@@ -1,0 +1,28 @@
+{
+  "scopes": [
+    "user"
+  ],
+  "block_bound": 32768,
+  "entry_bound": 4096,
+  "entries": [
+    {
+      "scope": "user",
+      "name": "style",
+      "content": "Short answers.\n\nCode in Go.\n",
+      "meta": {
+        "description": "How the user likes answers",
+        "type": "feedback"
+      }
+    },
+    {
+      "scope": "user",
+      "name": "timezone",
+      "content": "Europe/London"
+    },
+    {
+      "scope": "project",
+      "name": "unlisted",
+      "content": "not in the scopes"
+    }
+  ]
+}
