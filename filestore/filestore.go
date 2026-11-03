@@ -181,10 +181,10 @@ func readEntry(r *os.Root, scope agentmemory.Scope, name string) (*agentmemory.E
 	}
 	d := decode(data)
 	e := &agentmemory.Entry{
-		Scope:   scope,
-		Name:    name,
-		Content: d.content,
-		Meta:    d.meta,
+		Scope:    scope,
+		Name:     name,
+		Content:  d.content,
+		Meta:     d.meta,
 		Hash:     agentmemory.Hash(d.content),
 		MetaHash: agentmemory.MetaHash(d.meta),
 		Updated:  d.updated,
