@@ -151,10 +151,11 @@ func WithSearchBytes(n int) ToolOption {
 // it must be safe to call while the product renders the next turn. A
 // nil fn is the same as no option. The manifest must be the one the
 // model is reading now, as a product that re-renders before every model
-// call, in BeforeModelCall, keeps it. Until the manifest moves, what it
-// showed a session of an entry follows that session's own writes, the
-// session being [SessionFrom] the call's context: the model knows what
-// it wrote, so a second save of an entry in one turn is built on the
+// call, in BeforeModelCall, keeps it. Until the session's next render,
+// what the block showed it of an entry follows that session's own
+// writes, the session being [SessionFrom] the call's context, and the
+// render the manifest [Render] returned, even one that hashes as an
+// earlier render did: the model knows what it wrote, so a second save of an entry in one turn is built on the
 // model's first, and a save then a forget is not refused. Another
 // session's write never stands in for what a session was shown. A call
 // without a session is held to the manifest's hashes alone.
@@ -627,10 +628,22 @@ type ownWrites struct {
 	sessions map[string]*sessionWrites
 }
 
-// sessionWrites is one session's own writes under one manifest.
+// sessionWrites is one session's own writes under one render of its
+// block: the render's number, or, for a manifest without one, its hash.
 type sessionWrites struct {
+	render   uint64
 	manifest string
 	entries  map[ownKey]ownState
+}
+
+// under reports whether sw was recorded under the render m is: the same
+// render, or, for a manifest with no render number, one of the same
+// hash h.
+func (sw *sessionWrites) under(m Manifest, h string) bool {
+	if m.render != 0 || sw.render != 0 {
+		return sw.render == m.render
+	}
+	return sw.manifest == h
 }
 
 type ownKey struct {
@@ -658,23 +671,30 @@ func (t *toolset) noteWrite(ctx context.Context, c *Change) {
 		t.own.sessions = map[string]*sessionWrites{}
 	}
 	sw := t.own.sessions[session]
-	if sw == nil || sw.manifest != h {
-		sw = &sessionWrites{manifest: h, entries: map[ownKey]ownState{}}
+	if sw == nil || !sw.under(m, h) {
+		sw = &sessionWrites{render: m.render, manifest: h, entries: map[ownKey]ownState{}}
 		t.own.sessions[session] = sw
 	}
 	sw.entries[ownKey{c.Entry.Scope, c.Entry.Name}] = ownState{hash: c.Entry.Hash, gone: c.Entry.Deleted}
 }
 
 // ownWrite returns what the session's own write left the entry as under
-// manifest hash h, and whether it wrote it since that render.
-func (t *toolset) ownWrite(session, h string, scope Scope, name string) (ownState, bool) {
+// the render m, of hash h, and whether it wrote it since that render. A
+// session's record made under another render is dropped: the record
+// lives until the session's next render, so a later render that comes
+// back to an earlier hash does not revive it.
+func (t *toolset) ownWrite(session string, m Manifest, h string, scope Scope, name string) (ownState, bool) {
 	if session == "" {
 		return ownState{}, false
 	}
 	t.own.mu.Lock()
 	defer t.own.mu.Unlock()
 	sw := t.own.sessions[session]
-	if sw == nil || sw.manifest != h {
+	if sw == nil {
+		return ownState{}, false
+	}
+	if !sw.under(m, h) {
+		delete(t.own.sessions, session)
 		return ownState{}, false
 	}
 	st, ok := sw.entries[ownKey{scope, name}]
@@ -1012,7 +1032,7 @@ func (t *toolset) shown(ctx context.Context, scope Scope, name string, index boo
 	if !ok {
 		return "", false
 	}
-	if st, ok := t.ownWrite(SessionFrom(ctx), m.Hash(), scope, name); ok {
+	if st, ok := t.ownWrite(SessionFrom(ctx), m, m.Hash(), scope, name); ok {
 		return st.hash, !st.gone
 	}
 	for _, me := range m.Entries {

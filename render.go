@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/ChristopherDavenport/agenttool"
@@ -137,7 +138,19 @@ type Manifest struct {
 	// so the model was shown no memory, whatever the store held: the
 	// record's dropped member. [Manifest.LeaveOut] sets it.
 	LeftOut bool `json:"dropped,omitempty"`
+
+	// render tells one render from another of the same store state,
+	// whose lists and hash are the same: [RenderParts] numbers each,
+	// and a manifest built any other way, decoded or folded, has 0. It
+	// is not part of the manifest: it is neither recorded nor hashed,
+	// and two renders of one state are the same manifest (RFC 0001
+	// §7.4). The tools use it to end a session's record of its own
+	// writes at that session's next render (see [WithRendered]).
+	render uint64
 }
+
+// renders numbers the renders of this process, from 1.
+var renders atomic.Uint64
 
 // LeaveOut returns the manifest of a request the product left the block
 // m describes out of: no entry under Entries, every entry m held and
@@ -877,7 +890,7 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 		return nil, Manifest{}, fmt.Errorf("%w: the title, the summary and %d scope headings take %d bytes, the bound is %d", ErrBudget, len(scopes), fixed, o.maxTotal)
 	}
 
-	man := Manifest{Entries: []ManifestEntry{}}
+	man := Manifest{Entries: []ManifestEntry{}, render: renders.Add(1)}
 	parts := []Part{{ID: TitlePartID, Text: title, Trust: ownTrust()}}
 	spent := 0 // the entries and the omission lines placed so far
 	for i, scope := range scopes {

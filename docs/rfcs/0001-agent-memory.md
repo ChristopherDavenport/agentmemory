@@ -839,8 +839,7 @@ and reported as lost. `memory_forget` likewise forgets an entry the
 manifest holds only while it holds the hash the manifest names (6.4).
 
 **The model's own writes.** The model knows what it wrote. Until a
-session's block is rendered again, which a manifest whose hash moved
-says, a tool set MAY take what that session's own last write of an
+session's block is rendered again, a tool set MAY take what that session's own last write of an
 entry left as what the block showed the session of it: the hash that
 write stored, or, after its own forget, no entry shown. So a save and
 then a forget of one entry in one turn, or a second save, is built on
@@ -851,6 +850,16 @@ still is.
 > A tool set that follows a session's own writes MUST keep them per
 > session (3.6) and MUST NOT take one session's write for what another
 > session was shown. A call that names no session follows no writes.
+> A session's record ends at its next render, even one whose manifest
+> hashes as an earlier one did.
+
+Two renders of one store state give one manifest and one hash, so a
+hash alone cannot end the record: a render that comes back to an
+earlier hash, after another session put an entry back, would revive a
+write the block no longer shows. The reference numbers its renders
+outside the manifest, which neither records nor hashes the number, and
+falls back on the hash for a manifest that has none, decoded from a
+record or folded.
 
 A tool set that served several sessions with one record would let one
 session forget, on the strength of another's write, an entry it never

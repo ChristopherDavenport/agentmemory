@@ -1495,3 +1495,61 @@ func TestOwnWritesAreTheSessions(t *testing.T) {
 		t.Errorf("forget without a session after a patch = %v, want a conflict on the block's hash", err)
 	}
 }
+
+// TestOwnWritesEndAtTheNextRender: a session's own writes stand in for
+// what its block showed until that session's block is rendered again,
+// not for as long as the manifest has some hash: a render that comes
+// back to an earlier hash does not revive the record of a write made
+// under it (#53).
+func TestOwnWritesEndAtTheNextRender(t *testing.T) {
+	ctx := context.Background()
+	sess := WithSession(ctx, "sess-1")
+	store := NewMemStore()
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "x", Content: "h0"}); err != nil {
+		t.Fatal(err)
+	}
+	render := func() Manifest {
+		_, m, err := Render(ctx, store, []Scope{"user"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	man := render()
+	m0 := man.Hash()
+	tools := Tools(store, []Scope{"user"}, WithRendered(func() Manifest { return man }))
+	if _, err := callIn(t, sess, tools, SaveTool, `{"name":"x","content":"h1"}`); err != nil {
+		t.Fatal(err)
+	}
+	man = render() // the session's next render shows its own write
+	// Another session puts x back as it was, and the session renders
+	// again: the block shows h0, under the first render's hash.
+	if _, err := store.Put(WithSession(ctx, "other"), Entry{Scope: "user", Name: "x", Content: "h0"}); err != nil {
+		t.Fatal(err)
+	}
+	man = render()
+	if man.Hash() != m0 {
+		t.Fatalf("the fixture does not come back to the first hash")
+	}
+	if _, err := callIn(t, sess, tools, ForgetTool, `{"name":"x"}`); err != nil {
+		t.Errorf("forget of what the latest block shows = %v; a record from an earlier render came back", err)
+	}
+	// A manifest with no render of its own, decoded from a record,
+	// falls back on its hash: a write under it is followed while the
+	// hash holds.
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "y", Content: "y0"}); err != nil {
+		t.Fatal(err)
+	}
+	_, data := render().Record()
+	var decoded Manifest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	man = decoded
+	if _, err := callIn(t, sess, tools, SaveTool, `{"name":"y","content":"y1"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callIn(t, sess, tools, ForgetTool, `{"name":"y"}`); err != nil {
+		t.Errorf("forget after the session's own save under a decoded manifest = %v", err)
+	}
+}
