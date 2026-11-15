@@ -284,9 +284,12 @@ and the result tells the model the entry had changed. Under the same
 option `memory_forget` forgets an entry the block showed only while it
 holds the hash the block showed (`Forget` with `IfHash`), an index
 entry included, and fails, saying the entry changed, when it no longer
-does. What the block showed follows the tool set's own writes until
-the next render, so the model's own save is not taken for a change
-since; give each session its own tool set.
+does. What the block showed a session follows that session's own
+writes (`WithSession` on the call's context) until its next render, so
+the model's own save is not taken for a change since, and another
+session's write never is; a call without a session is held to the
+block's hashes alone. One tool set may serve several sessions, as long
+as `WithRendered`'s function returns each one's own manifest.
 
 A product that leaves the block out of a request, when its share of an
 instruction budget runs out, withholds the writers (`WriteTools()`)

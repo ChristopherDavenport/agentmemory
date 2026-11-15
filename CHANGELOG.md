@@ -72,11 +72,14 @@ versions may break the API.
   to the `ConflictError`. An entry the block did not show, and a tool
   set without `WithRendered`, forget as before. The tool's description
   says so under the option.
-- Under `WithRendered`, what the block showed of an entry follows the
-  tool set's own writes until the manifest moves (#53): a second save
-  of an entry in one turn is built on the model's first, not reported
-  as a lost update, and a save then a forget is not refused. A tool set
-  records its own writes, so a product gives each session its own.
+- Under `WithRendered`, what the block showed a session of an entry
+  follows that session's own writes until the manifest moves (#53): a
+  second save of an entry in one turn is built on the model's first,
+  not reported as a lost update, and a save then a forget is not
+  refused. The record is per session, `SessionFrom` the call's
+  context, so one tool set serving several sessions never takes one
+  session's write for what another was shown; a call without a session
+  records nothing and is held to the block's hashes alone.
 - `Usage` takes the tool options, `Usage(opts ...ToolOption)`, and names
   `memory_read` when they offer it (#55). `Usage()` is the paragraph it
   was; a caller that held `Usage` as a `func() string` value adapts.

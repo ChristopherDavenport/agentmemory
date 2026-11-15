@@ -19,11 +19,17 @@ import (
 // the model would see, or the error.
 func call(t *testing.T, tools []agenttool.Tool, name, args string) (string, error) {
 	t.Helper()
+	return callIn(t, context.Background(), tools, name, args)
+}
+
+// callIn is call under ctx, which may carry a session.
+func callIn(t *testing.T, ctx context.Context, tools []agenttool.Tool, name, args string) (string, error) {
+	t.Helper()
 	for _, tool := range tools {
 		if tool.Name() != name {
 			continue
 		}
-		res, err := tool.Execute(context.Background(), agenttool.Call{ID: "call_1", Args: json.RawMessage(args)})
+		res, err := tool.Execute(ctx, agenttool.Call{ID: "call_1", Args: json.RawMessage(args)})
 		if err != nil {
 			return "", err
 		}
@@ -1013,6 +1019,11 @@ func TestOwnWritesFollowTheBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools := Tools(store, []Scope{"user"}, WithRendered(func() Manifest { return man }))
+	// The calls run in one session, whose own writes the tool set keeps.
+	call := func(t *testing.T, tools []agenttool.Tool, name, args string) (string, error) {
+		t.Helper()
+		return callIn(t, WithSession(ctx, "sess-1"), tools, name, args)
+	}
 	if _, err := call(t, tools, SaveTool, `{"name":"tz","content":"CET"}`); err != nil {
 		t.Fatal(err)
 	}
@@ -1427,5 +1438,60 @@ func TestWritersReadTheManifestOnce(t *testing.T) {
 		if n := reads.Load(); n != 1 {
 			t.Errorf("%s read the manifest %d times, want 1", c.tool, n)
 		}
+	}
+}
+
+// TestOwnWritesAreTheSessions: one tool set serving two sessions keeps
+// each session's own writes apart, so a write of one session is not
+// taken for what the other was shown (#53): A patches an entry both
+// were shown, and B's forget, built on the block, conflicts. Without a
+// session on the context the tool set records nothing of its own.
+func TestOwnWritesAreTheSessions(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "x", Content: "one fact"}); err != nil {
+		t.Fatal(err)
+	}
+	_, man, err := Render(ctx, store, []Scope{"user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(store, []Scope{"user"}, WithRendered(func() Manifest { return man }))
+	run := func(session, name, args string) error {
+		for _, tool := range tools {
+			if tool.Name() == name {
+				_, err := tool.Execute(WithSession(ctx, session), agenttool.Call{ID: "call_1", Args: json.RawMessage(args)})
+				return err
+			}
+		}
+		t.Fatalf("no tool %q", name)
+		return nil
+	}
+	if err := run("a", PatchTool, `{"name":"x","old_text":"one","new_text":"two"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := run("b", ForgetTool, `{"name":"x"}`); !errors.Is(err, ErrConflict) {
+		t.Errorf("B's forget of an entry A changed after B's render = %v, want a conflict", err)
+	}
+	if got, err := store.Get(ctx, "user", "x"); err != nil || got.Content != "two fact" {
+		t.Errorf("A's patch was forgotten by B: %+v, %v", got, err)
+	}
+	// A's own forget follows A's own patch.
+	if err := run("a", ForgetTool, `{"name":"x"}`); err != nil {
+		t.Errorf("A's forget after its own patch = %v", err)
+	}
+	// Without a session, nothing of the tool set's own is recorded: a
+	// write is not taken for what the block showed.
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "y", Content: "y fact"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, man, err = Render(ctx, store, []Scope{"user"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call(t, tools, PatchTool, `{"name":"y","old_text":"y","new_text":"z"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call(t, tools, ForgetTool, `{"name":"y"}`); !errors.Is(err, ErrConflict) {
+		t.Errorf("forget without a session after a patch = %v, want a conflict on the block's hash", err)
 	}
 }

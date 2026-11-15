@@ -838,16 +838,23 @@ read as built on the block rather than on the model's own first save,
 and reported as lost. `memory_forget` likewise forgets an entry the
 manifest holds only while it holds the hash the manifest names (6.4).
 
-**The model's own writes.** The model knows what it wrote. Until the
-block is rendered again, which a manifest whose hash moved says, a
-tool set takes what its own last write of an entry left as what the
-block showed of it: the hash that write stored, or, after its own
-forget, no entry shown. So a save and then a forget of one entry in
-one turn, or a second save, is built on the model's own write and is
-not refused or reported as a change made after the render; a write
-another session made after the model's own still is. A tool set that
-serves several sessions over one manifest shares what it records, so
-a product gives each session its own tool set.
+**The model's own writes.** The model knows what it wrote. Until a
+session's block is rendered again, which a manifest whose hash moved
+says, a tool set MAY take what that session's own last write of an
+entry left as what the block showed the session of it: the hash that
+write stored, or, after its own forget, no entry shown. So a save and
+then a forget of one entry in one turn, or a second save, is built on
+the model's own write and is not refused or reported as a change made
+after the render; a write another session made after the model's own
+still is.
+
+> A tool set that follows a session's own writes MUST keep them per
+> session (3.6) and MUST NOT take one session's write for what another
+> session was shown. A call that names no session follows no writes.
+
+A tool set that served several sessions with one record would let one
+session forget, on the strength of another's write, an entry it never
+saw changed, which is the race 6.4 closes.
 
 **A block left out.** A manifest records a block **left out whole**
 when its `dropped` is true (7.6), or, for a record written before

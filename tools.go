@@ -152,11 +152,12 @@ func WithSearchBytes(n int) ToolOption {
 // nil fn is the same as no option. The manifest must be the one the
 // model is reading now, as a product that re-renders before every model
 // call, in BeforeModelCall, keeps it. Until the manifest moves, what it
-// showed of an entry follows the tool set's own writes: the model knows
-// what it wrote, so a second save of an entry in one turn is built on
-// the model's first, and a save then a forget is not refused. A tool
-// set records those writes for itself, so a product gives each session
-// its own.
+// showed a session of an entry follows that session's own writes, the
+// session being [SessionFrom] the call's context: the model knows what
+// it wrote, so a second save of an entry in one turn is built on the
+// model's first, and a save then a forget is not refused. Another
+// session's write never stands in for what a session was shown. A call
+// without a session is held to the manifest's hashes alone.
 //
 // memory_forget of an entry the manifest holds, shown whole or as an
 // index entry, is conditional on the hash the block showed, through
@@ -366,6 +367,18 @@ var searchOptionArgs = []string{SearchAny, SearchMeta, SearchUpdatedAfter, Searc
 // refuse, [WithRendered] anchors memory_save to the block the model
 // read, [WithFixedNames] fixes a scope's entry names, and [WithInsert]
 // adds memory_insert.
+//
+// The tools are safe for concurrent use, and one tool set may serve
+// several sessions at once: each call's session is [SessionFrom] its
+// context, journaled on its writes, and under [WithRendered] the record
+// of a session's own writes is kept per session. What a caller shares
+// by sharing a tool set is what its options say: the store, the
+// scopes, and the one manifest function of [WithRendered], which must
+// then return the manifest of the block the calling session reads,
+// from the context's session if the sessions' blocks differ. A product
+// that cannot tell its sessions' manifests apart in that function
+// gives each session its own tool set. Calls without a session share
+// nothing but the manifest.
 //
 // The schema check is the tools' own, added with [agenttool.Wrap]; a
 // host that unwraps a tool and executes what is inside skips it.
@@ -593,20 +606,29 @@ type toolset struct {
 	scopes []Scope
 	opts   toolOptions
 
-	// own is what the tool set's own writes left each entry as, since
-	// the block in force was rendered; see [toolset.noteWrite].
+	// own is what each session's own writes left each entry as, since
+	// the block in force for it was rendered; see [toolset.noteWrite].
 	own ownWrites
 }
 
-// ownWrites is the state each entry the tool set wrote was left in,
-// under the manifest it was written against. What the block showed
-// follows the model's own writes until the block is rendered again:
-// the model knows what it wrote, so a save then a forget of one entry
-// in one turn is not refused as a change made after the render, nor a
-// second save reported as lost. A manifest whose hash moved is a new
-// render, and starts clean.
+// ownWrites is, per session, the state each entry the session wrote
+// through the tool set was left in, under the manifest it was written
+// against. What the block showed a session follows that session's own
+// writes until its block is rendered again: the model knows what it
+// wrote, so a save then a forget of one entry in one turn is not
+// refused as a change made after the render, nor a second save reported
+// as lost. Another session's write is never taken for what a session
+// was shown, so one tool set serves several sessions. A manifest whose
+// hash moved is a new render, and starts clean. A call without a
+// session on its context, [SessionFrom] empty, records and reads
+// nothing here: it is held to the block's hashes alone.
 type ownWrites struct {
 	mu       sync.Mutex
+	sessions map[string]*sessionWrites
+}
+
+// sessionWrites is one session's own writes under one manifest.
+type sessionWrites struct {
 	manifest string
 	entries  map[ownKey]ownState
 }
@@ -624,28 +646,38 @@ type ownState struct {
 // noteWrite records what a write of the tool set's own left the entry
 // as, under the manifest the call read; see [ownWrites].
 func (t *toolset) noteWrite(ctx context.Context, c *Change) {
+	session := SessionFrom(ctx)
 	m, ok := t.rendered(ctx)
-	if !ok || c == nil {
+	if !ok || c == nil || session == "" {
 		return
 	}
 	h := m.Hash()
 	t.own.mu.Lock()
 	defer t.own.mu.Unlock()
-	if t.own.manifest != h || t.own.entries == nil {
-		t.own.manifest, t.own.entries = h, map[ownKey]ownState{}
+	if t.own.sessions == nil {
+		t.own.sessions = map[string]*sessionWrites{}
 	}
-	t.own.entries[ownKey{c.Entry.Scope, c.Entry.Name}] = ownState{hash: c.Entry.Hash, gone: c.Entry.Deleted}
+	sw := t.own.sessions[session]
+	if sw == nil || sw.manifest != h {
+		sw = &sessionWrites{manifest: h, entries: map[ownKey]ownState{}}
+		t.own.sessions[session] = sw
+	}
+	sw.entries[ownKey{c.Entry.Scope, c.Entry.Name}] = ownState{hash: c.Entry.Hash, gone: c.Entry.Deleted}
 }
 
-// ownWrite returns what the tool set's own write left the entry as
-// under manifest hash h, and whether it wrote it since that render.
-func (t *toolset) ownWrite(h string, scope Scope, name string) (ownState, bool) {
-	t.own.mu.Lock()
-	defer t.own.mu.Unlock()
-	if t.own.manifest != h {
+// ownWrite returns what the session's own write left the entry as under
+// manifest hash h, and whether it wrote it since that render.
+func (t *toolset) ownWrite(session, h string, scope Scope, name string) (ownState, bool) {
+	if session == "" {
 		return ownState{}, false
 	}
-	st, ok := t.own.entries[ownKey{scope, name}]
+	t.own.mu.Lock()
+	defer t.own.mu.Unlock()
+	sw := t.own.sessions[session]
+	if sw == nil || sw.manifest != h {
+		return ownState{}, false
+	}
+	st, ok := sw.entries[ownKey{scope, name}]
 	return st, ok
 }
 
@@ -980,7 +1012,7 @@ func (t *toolset) shown(ctx context.Context, scope Scope, name string, index boo
 	if !ok {
 		return "", false
 	}
-	if st, ok := t.ownWrite(m.Hash(), scope, name); ok {
+	if st, ok := t.ownWrite(SessionFrom(ctx), m.Hash(), scope, name); ok {
 		return st.hash, !st.gone
 	}
 	for _, me := range m.Entries {
