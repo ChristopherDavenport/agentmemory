@@ -5,6 +5,13 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Dependencies
+
+- openresponses v0.0.18 to v0.0.20, in the root module and in
+  `sqlite`. No API of this module changes with it.
+
 ## v0.0.12 - 2026-11-03
 
 ### Added
