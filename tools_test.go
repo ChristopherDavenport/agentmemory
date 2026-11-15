@@ -1553,3 +1553,43 @@ func TestOwnWritesEndAtTheNextRender(t *testing.T) {
 		t.Errorf("forget after the session's own save under a decoded manifest = %v", err)
 	}
 }
+
+// TestReadFollowsTheIndex: the block names memory_read exactly when the
+// tool set built from the same render options offers it, and the usage
+// paragraph with it, so a product that derives the tool options from its
+// render options never shows the model a tool it does not have (#55).
+func TestReadFollowsTheIndex(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore(WithMaxEntryBytes(256))
+	for _, e := range []Entry{
+		{Scope: "user", Name: "a", Content: filler(200, 'a')},
+		{Scope: "user", Name: "b", Content: filler(200, 'b')},
+		{Scope: "project", Name: "c", Content: "c\nmore\n"},
+	} {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scopes := []Scope{"user", "project"}
+	for _, ropts := range [][]RenderOption{
+		{WithScopeMaxBytes("user", 300)},
+		{WithScopeMaxBytes("user", 300), WithScopeIndex("project")},
+		{WithScopeIndex("user"), WithScopeIndex("project")},
+	} {
+		block, _, err := Render(ctx, store, scopes, ropts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		topts := []ToolOption{WithIndexScopesOf(ropts...)}
+		offered := false
+		for _, tool := range Tools(store, scopes, topts...) {
+			offered = offered || tool.Name() == ReadTool
+		}
+		if named := strings.Contains(block, ReadTool); named != offered {
+			t.Errorf("the block names memory_read %v, the tools offer it %v:\n%s", named, offered, block)
+		}
+		if named := strings.Contains(Usage(topts...), ReadTool); named != offered {
+			t.Errorf("Usage names memory_read %v, the tools offer it %v", named, offered)
+		}
+	}
+}

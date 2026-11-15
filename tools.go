@@ -251,6 +251,27 @@ func WithIndexScopes(scopes ...Scope) ToolOption {
 	return func(o *toolOptions) { o.indexScopes = append(o.indexScopes, scopes...) }
 }
 
+// WithIndexScopesOf is [WithIndexScopes] of the scopes the render
+// options opts render as an index, [WithScopeIndex]: a product passes
+// it the options it passes [Render], so the tools offer memory_read
+// exactly when the block names it, and passes the same tool options to
+// [Usage]. A block that renders a scope as an index names memory_read in
+// its index note and its omission lines, since RFC 0001 §6.11 requires
+// a product that renders an index to offer it; deriving the tool
+// options from the render's keeps the two from drifting apart.
+func WithIndexScopesOf(opts ...RenderOption) ToolOption {
+	var ro renderOptions
+	for _, opt := range opts {
+		opt(&ro)
+	}
+	scopes := make([]Scope, 0, len(ro.index))
+	for s := range ro.index {
+		scopes = append(scopes, s)
+	}
+	slices.Sort(scopes)
+	return WithIndexScopes(scopes...)
+}
+
 // WithRead offers memory_read whether or not a scope renders as an
 // index: a host that leaves the block out, and so the entries it would
 // have shown, gives the model a read by name beside memory_search.

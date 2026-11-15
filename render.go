@@ -33,9 +33,11 @@ type renderOptions struct {
 // description or, for an entry without one, the first non-blank line of
 // its content, neutralised and cut to [indexLineBytes] bytes with "…"
 // after it when cut. The content is not shown. The scope's heading says
-// so and names memory_read, which reads an entry whole by name. A
-// product that renders a scope as an index passes [WithIndexScopes]
-// with it to [Tools], which then offers memory_read, and to [Usage].
+// so and names memory_read, which reads an entry whole by name, and so
+// do the block's omission lines. A product that renders a scope as an
+// index MUST offer memory_read (RFC 0001 §6.11): it passes
+// [WithIndexScopesOf] its render options, or [WithIndexScopes] the same
+// scopes, to [Tools], which then offers memory_read, and to [Usage].
 //
 // An index entry is packed against the bound and the scope's cap as any
 // entry part is, by the bytes of its heading line, and one that does

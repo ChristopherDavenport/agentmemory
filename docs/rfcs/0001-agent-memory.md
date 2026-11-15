@@ -997,8 +997,12 @@ store's (3.5), so no query is promised to find an entry by its name.
 A product MAY offer it without an index too, as a host that leaves the
 block out may, beside `memory_search`. It is not offered otherwise, so
 a tool set without an index costs a request no more than before; the
-usage paragraph (6.9) names it only when it is offered. The reference
-offers it when told the index scopes, or when asked to.
+usage paragraph (6.9) names it only when it is offered. The block names
+it, in its index note and omission lines, whenever it renders a scope
+as an index, on the strength of the MUST above; a product keeps the two
+together by deriving the tool set's index scopes from its render
+options. The reference offers it when told the index scopes, or derives
+them from the render options, or when asked to.
 
 ## 7. The rendered block
 
@@ -1608,7 +1612,7 @@ The root module is the reference binding.
 | last sequence number | `LastSeqer`, `LastSeq(ctx, s)` |
 | tools | `Tools(store, scopes, opts...)`; `SaveTool`, `PatchTool`, `ForgetTool`, `SearchTool`, `ReadTool`, `InsertTool`, `InsertName`; the writers `WriteTools()` |
 | a block left out (6.8) | `Manifest.Dropped`; `CheckWrite(manifest, tool)` where a call is decided; `ErrBlockDropped`, the message; the writers refuse at execution under `WithRendered` |
-| tool options | `WithReadScopes`, `WithIndexScopes` and `WithRead` (6.11), `WithRendered` (6.8), `WithFixedNames`, `WithInsert`, `WithSearchLimit`, `WithSearchBytes`, `WithSearchReads`, `DefaultSearchLimit`, `DefaultSearchBytes` |
+| tool options | `WithReadScopes`, `WithIndexScopes`, `WithIndexScopesOf` (from the render options) and `WithRead` (6.11), `WithRendered` (6.8), `WithFixedNames`, `WithInsert`, `WithSearchLimit`, `WithSearchBytes`, `WithSearchReads`, `DefaultSearchLimit`, `DefaultSearchBytes` |
 | write record | `WriteRecord{Tool, Change}`, `WriteNS`, as an `agenttool.Recordable` |
 | usage paragraph | `Usage(opts...)`, naming `memory_read` when the options offer it |
 | render | `Render`, `RenderParts`, `JoinParts`, `Part{ID, Text, Trust}`, `Trust{Reads}`, `EntryPart`, `EntryPartFor` (the part under a render's options, index or not, for 8.1's size), `PartSeparator`, `TitlePartID`, `SummaryPartID`, `PartID` |

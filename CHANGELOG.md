@@ -37,7 +37,9 @@ versions may break the API.
   bound, and is not one of `WriteTools()`. `Tools` offers it, after
   `memory_search`, only under the new `WithIndexScopes(scopes...)`,
   which names the scopes the product renders as an index, or
-  `WithRead()`, which offers it anyway (a host that leaves the block
+  `WithIndexScopesOf(renderOpts...)`, which takes them from the render
+  options so the block names `memory_read` exactly when the tools offer
+  it, or `WithRead()`, which offers it anyway (a host that leaves the block
   out, as it keeps `memory_search`). A tool set with neither is the
   four tools it was.
 - RFC 0001 draft 0.4: §7.2 gains index entry parts and the index note,

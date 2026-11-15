@@ -179,8 +179,11 @@ cannot push the user's preferences out of the block.
 `WithScopeIndex(scope)` renders a scope as an index: each entry is its
 heading line alone, with its description or its first non-blank line,
 and the model reads one whole with `memory_read`, which `Tools` offers
-when given `WithIndexScopes` with the same scopes (or `WithRead`, to
-offer it anyway); pass the same options to `Usage`. The manifest lists
+when given `WithIndexScopesOf(renderOpts...)`, the render's own
+options, or `WithIndexScopes` with the same scopes (or `WithRead`, to
+offer it anyway); pass the same options to `Usage`. The block names
+`memory_read` whenever it renders an index, so derive the tool options
+from the render's. The manifest lists
 those entries as omitted with the reason `index`. The output is determined by the store's
 state and the bounds alone, so an unchanged store renders the same
 bytes, and the `Manifest` lists what the block held and omitted, by
