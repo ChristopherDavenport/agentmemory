@@ -30,10 +30,14 @@ versions may break the API.
   the store's. It is read-only, safe to replay, reads what
   `memory_search` reads (`WithSearchReads`), stays when the block is
   left out, writes nothing, refuses an entry over the search result
-  bound, and is not one of `WriteTools()`. `Tools` now returns it after
-  `memory_search` in every tool set, so a tool set is five tools, six
-  with `WithInsert`, and `memory_insert` moves to index 5. `Usage()`
-  names it.
+  bound, and is not one of `WriteTools()`. `Tools` offers it, after
+  `memory_search`, only under the new `WithIndexScopes(scopes...)`,
+  which names the scopes the product renders as an index, or
+  `WithRead()`, which offers it anyway (a host that leaves the block
+  out, as it keeps `memory_search`); a tool set with neither is the four
+  tools it was. `Usage` takes the same options, `Usage(opts...)`, and
+  names `memory_read` only when they offer it; `Usage()` is the
+  paragraph it was.
 - RFC 0001 draft 0.4: §7.2 gains index entry parts and the index note,
   with the rule (a renderer MAY render a scope as an index; the
   manifest MUST list each index entry under `omitted` with reason

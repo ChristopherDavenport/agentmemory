@@ -636,8 +636,8 @@ of **writable scopes**, one or more, and optionally **read scopes**.
 ### 6.1 Common rules
 
 - The tools are named `memory_save`, `memory_patch`, `memory_forget`,
-  `memory_search`, `memory_read` (6.11), and, when the product offers
-  an insert (6.5), `memory_insert`.
+  `memory_search`, and, when offered (6.11), `memory_read`, and, when
+  the product offers an insert (6.5), `memory_insert`.
 - Writable scopes MUST be distinct names, and there MUST be at least
   one. Read scopes MUST be distinct names and none of them writable.
   A tool set built otherwise is a programming error, not a call error.
@@ -963,7 +963,11 @@ its whole content.
 
 `memory_search` cannot stand in for it: how a search matches is the
 store's (3.5), so no query is promised to find an entry by its name.
-The reference offers `memory_read` in every tool set.
+A product MAY offer it without an index too, as a host that leaves the
+block out may, beside `memory_search`. It is not offered otherwise, so
+a tool set without an index costs a request no more than before; the
+usage paragraph (6.9) names it only when it is offered. The reference
+offers it when told the index scopes, or when asked to.
 
 ## 7. The rendered block
 
@@ -1561,9 +1565,9 @@ The root module is the reference binding.
 | last sequence number | `LastSeqer`, `LastSeq(ctx, s)` |
 | tools | `Tools(store, scopes, opts...)`; `SaveTool`, `PatchTool`, `ForgetTool`, `SearchTool`, `ReadTool`, `InsertTool`, `InsertName`; the writers `WriteTools()` |
 | a block left out (6.8) | `Manifest.Dropped`; `CheckWrite(manifest, tool)` where a call is decided; `ErrBlockDropped`, the message; the writers refuse at execution under `WithRendered` |
-| tool options | `WithReadScopes`, `WithRendered` (6.8), `WithFixedNames`, `WithInsert`, `WithSearchLimit`, `WithSearchBytes`, `WithSearchReads`, `DefaultSearchLimit`, `DefaultSearchBytes` |
+| tool options | `WithReadScopes`, `WithIndexScopes` and `WithRead` (6.11), `WithRendered` (6.8), `WithFixedNames`, `WithInsert`, `WithSearchLimit`, `WithSearchBytes`, `WithSearchReads`, `DefaultSearchLimit`, `DefaultSearchBytes` |
 | write record | `WriteRecord{Tool, Change}`, `WriteNS`, as an `agenttool.Recordable` |
-| usage paragraph | `Usage()` |
+| usage paragraph | `Usage(opts...)`, naming `memory_read` when the options offer it |
 | render | `Render`, `RenderParts`, `JoinParts`, `Part{ID, Text, Trust}`, `Trust{Reads}`, `EntryPart`, `PartSeparator`, `TitlePartID`, `SummaryPartID`, `PartID` |
 | render options | `WithMaxTotalBytes`, `WithScopeMaxBytes`, `WithScopeTrust`, `WithScopeIndex` (index scopes), `DefaultMaxTotalBytes`, `ErrBudget` |
 | manifest | `Manifest{Entries, Omitted, LeftOut}` (`LeftOut` is `dropped`), `ManifestEntry{Scope, Name, Hash, Bytes, Reason}`, `OmitBudget`, `OmitIndex`, `OmitBlock`, `Manifest.Hash`, `Manifest.LeaveOut` for a block left out |
@@ -1681,7 +1685,7 @@ not a new meaning under the old one.
 |---|---|---|
 | #53 | 3.3, 3.4, 3.7, 6.4, 6.8, 11, 12 | Forget takes if-hash and if-meta-hash, as a put does, and fails with *conflict* and writes nothing when the condition does not hold, check and tombstone one step; based-on does nothing on a forget. `memory_forget` forgets an entry the block showed conditionally on the hash the block showed, and fails saying the entry changed since the render. Draft 0.3's forget had no condition, so a writer that read an entry, compared its hash and forgot it forgot a save that landed in between, and the tool forgot whatever the store held. Breaking: a store's forget signature changes in the binding. |
 | #54 | 3.7, Annex A | A read of an entry live before and after a concurrent write returns it, old or new, and never reports it absent; get, list, search and the render alike. The reference directory store read an entry as absent when a write's rename landed between its open and its check of the name, so a render racing a write could leave the entry out of the block and its manifest. Annex A says a reader that compares the file it opened with the name opens again when a rename landed, and the reference does so a bounded number of times, then fails the read with an error rather than report the entry absent. |
-| #55 | 6.1, 6.10, 6.11, 7.1, 7.2, 7.4, 7.5, 7.6, 8.1, 10, 11, 12 | A renderer MAY render a scope as an index: each entry part is its heading line alone, with the description or the content's first non-blank line, neutralised and cut to 120 bytes, under a scope heading that names `memory_read`; the manifest lists each such entry under `omitted` with the new reason `index`, and the summary counts it as omitted. A product that renders an index MUST offer `memory_read` (scope, name), which returns one entry as stored with its hash, read-only and safe to replay; the reference offers it in every tool set. Draft 0.3 rendered every scope whole, about 2.4k tokens a request for three project notes a task never touched, and `memory_search` cannot promise to find an entry by its name. The fixture `testdata/render/index.*` renders one. |
+| #55 | 6.1, 6.10, 6.11, 7.1, 7.2, 7.4, 7.5, 7.6, 8.1, 10, 11, 12 | A renderer MAY render a scope as an index: each entry part is its heading line alone, with the description or the content's first non-blank line, neutralised and cut to 120 bytes, under a scope heading that names `memory_read`; the manifest lists each such entry under `omitted` with the new reason `index`, and the summary counts it as omitted. A product that renders an index MUST offer `memory_read` (scope, name), which returns one entry as stored with its hash, read-only and safe to replay, and MAY offer it otherwise; a tool set without it is as before. Draft 0.3 rendered every scope whole, about 2.4k tokens a request for three project notes a task never touched, and `memory_search` cannot promise to find an entry by its name. The fixture `testdata/render/index.*` renders one. |
 
 ## 16. Changes since 0.2
 

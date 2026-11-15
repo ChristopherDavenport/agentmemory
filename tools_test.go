@@ -39,7 +39,10 @@ func TestToolsShape(t *testing.T) {
 	if err := agenttool.Set(tools).Validate(); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{SaveTool, PatchTool, ForgetTool, SearchTool, ReadTool}
+	want := []string{SaveTool, PatchTool, ForgetTool, SearchTool}
+	if len(tools) != len(want) {
+		t.Fatalf("Tools offers %d tools, want %d: memory_read only with an index scope or WithRead", len(tools), len(want))
+	}
 	for i, tool := range tools {
 		if tool.Name() != want[i] {
 			t.Errorf("tool %d = %s, want %s", i, tool.Name(), want[i])
@@ -918,7 +921,7 @@ func TestReadTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tools := Tools(store, []Scope{"user"}, WithReadScopes("rules"), WithRendered(func() Manifest { return man.LeaveOut() }))
+	tools := Tools(store, []Scope{"user"}, WithReadScopes("rules"), WithIndexScopes("rules"), WithRendered(func() Manifest { return man.LeaveOut() }))
 	out, err := call(t, tools, ReadTool, `{"scope":"user","name":"style"}`)
 	if err != nil {
 		t.Fatal(err)
@@ -959,6 +962,57 @@ func TestReadTool(t *testing.T) {
 	}
 	if slices.Contains(WriteTools(), ReadTool) {
 		t.Error("memory_read is listed as a writer")
+	}
+}
+
+// TestReadOffered: memory_read is offered when the product says a scope
+// renders as an index, or asks for it with WithRead, and not otherwise,
+// so a tool set without an index is the four tools it was (#55).
+func TestReadOffered(t *testing.T) {
+	store := NewMemStore()
+	has := func(tools []agenttool.Tool) bool {
+		for _, tool := range tools {
+			if tool.Name() == ReadTool {
+				return true
+			}
+		}
+		return false
+	}
+	for _, c := range []struct {
+		name string
+		opts []ToolOption
+		want bool
+	}{
+		{"plain", nil, false},
+		{"read scopes", []ToolOption{WithReadScopes("rules")}, false},
+		{"index", []ToolOption{WithIndexScopes("user")}, true},
+		{"index of a read scope", []ToolOption{WithReadScopes("rules"), WithIndexScopes("rules")}, true},
+		{"explicit", []ToolOption{WithRead()}, true},
+	} {
+		tools := Tools(store, []Scope{"user"}, c.opts...)
+		if has(tools) != c.want {
+			t.Errorf("%s: memory_read offered %v, want %v", c.name, has(tools), c.want)
+		}
+		if err := agenttool.Set(tools).Validate(); err != nil {
+			t.Errorf("%s: %v", c.name, err)
+		}
+		if u := Usage(c.opts...); strings.Contains(u, ReadTool) != c.want {
+			t.Errorf("%s: Usage names memory_read %v, want %v", c.name, strings.Contains(u, ReadTool), c.want)
+		}
+	}
+	for name, opts := range map[string][]ToolOption{
+		"unlisted": {WithIndexScopes("other")},
+		"bad":      {WithIndexScopes("User")},
+		"twice":    {WithIndexScopes("user", "user")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Error("Tools did not panic")
+				}
+			}()
+			Tools(store, []Scope{"user"}, opts...)
+		})
 	}
 }
 
@@ -1013,7 +1067,7 @@ func TestInsert(t *testing.T) {
 	store := NewMemStore()
 	at := time.Date(2026, 11, 2, 19, 44, 0, 123, time.UTC)
 	tools := Tools(store, []Scope{"core", "archive"}, WithInsert("archive"), withClock(func() time.Time { return at }))
-	if len(tools) != 6 || tools[5].Name() != InsertTool {
+	if len(tools) != 5 || tools[4].Name() != InsertTool {
 		t.Fatalf("tools = %d, want memory_insert last", len(tools))
 	}
 	if err := agenttool.Set(tools).Validate(); err != nil {
@@ -1023,7 +1077,7 @@ func TestInsert(t *testing.T) {
 	stem := "20261102-194400-" + Hash("A passage.")[len("sha256:"):][:8]
 	var names []string
 	for i := range 3 {
-		res, err := tools[5].Execute(ctx, agenttool.Call{ID: "call_1", Args: json.RawMessage(`{"content":"A passage.","meta":{"description":"Kept"}}`)})
+		res, err := tools[4].Execute(ctx, agenttool.Call{ID: "call_1", Args: json.RawMessage(`{"content":"A passage.","meta":{"description":"Kept"}}`)})
 		if err != nil {
 			t.Fatalf("insert %d: %v", i, err)
 		}
@@ -1050,7 +1104,7 @@ func TestInsert(t *testing.T) {
 	if _, err := call(t, tools, InsertTool, `{"scope":"core","content":"x"}`); err == nil {
 		t.Error("an insert into a scope without insert was taken")
 	}
-	if a := agenttool.AnnotationsOf(tools[5]); a != (agenttool.Annotations{Title: "Insert memory entry"}) {
+	if a := agenttool.AnnotationsOf(tools[4]); a != (agenttool.Annotations{Title: "Insert memory entry"}) {
 		t.Errorf("memory_insert annotations = %+v", a)
 	}
 }

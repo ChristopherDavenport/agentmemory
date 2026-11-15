@@ -178,7 +178,9 @@ inside the bound, so a growing scope of facts about the environment
 cannot push the user's preferences out of the block.
 `WithScopeIndex(scope)` renders a scope as an index: each entry is its
 heading line alone, with its description or its first non-blank line,
-and the model reads one whole with `memory_read`; the manifest lists
+and the model reads one whole with `memory_read`, which `Tools` offers
+when given `WithIndexScopes` with the same scopes (or `WithRead`, to
+offer it anyway); pass the same options to `Usage`. The manifest lists
 those entries as omitted with the reason `index`. The output is determined by the store's
 state and the bounds alone, so an unchanged store renders the same
 bytes, and the `Manifest` lists what the block held and omitted, by
@@ -218,7 +220,8 @@ added: `len(EntryPart(e, bound).Text) + len(PartSeparator)`.
 
 ## The tools
 
-`Tools(store, scopes)` returns five tools, six with `WithInsert`,
+`Tools(store, scopes)` returns four tools, a fifth, `memory_read`, with
+`WithIndexScopes` or `WithRead`, and `memory_insert` with `WithInsert`,
 restricted to the scopes the
 product allows. The list is in each tool's schema as an enum on
 `scope`, not only in its description, and with more than one scope

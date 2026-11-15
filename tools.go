@@ -114,6 +114,9 @@ type toolOptions struct {
 
 	searchReads    []agenttool.Label
 	searchReadsSet bool
+
+	indexScopes []Scope
+	read        bool
 }
 
 // WithSearchLimit sets the number of entries memory_search returns
@@ -231,6 +234,27 @@ func WithSearchReads(labels ...agenttool.Label) ToolOption {
 	}
 }
 
+// WithIndexScopes tells the tools which scopes the product renders as
+// an index, with [WithScopeIndex]: the block shows those entries by
+// their heading line alone, so the model needs memory_read to read one
+// by name, and [Tools] offers it, as RFC 0001 §6.11 requires. Each scope
+// must be one passed to [Tools] or to [WithReadScopes], given once;
+// [Tools] panics otherwise. Pass the same options to [Usage].
+func WithIndexScopes(scopes ...Scope) ToolOption {
+	return func(o *toolOptions) { o.indexScopes = append(o.indexScopes, scopes...) }
+}
+
+// WithRead offers memory_read whether or not a scope renders as an
+// index: a host that leaves the block out, and so the entries it would
+// have shown, gives the model a read by name beside memory_search.
+// Pass the same options to [Usage].
+func WithRead() ToolOption {
+	return func(o *toolOptions) { o.read = true }
+}
+
+// offersRead reports whether a tool set built with o offers memory_read.
+func (o toolOptions) offersRead() bool { return o.read || len(o.indexScopes) > 0 }
+
 // withClock sets the clock memory_insert names entries by, for tests.
 func withClock(now func() time.Time) ToolOption {
 	return func(o *toolOptions) { o.now = now }
@@ -301,7 +325,8 @@ var searchOptionArgs = []string{SearchAny, SearchMeta, SearchUpdatedAfter, Searc
 
 // Tools returns the tools through which the model reaches store,
 // restricted to the scopes the product allows: memory_save,
-// memory_patch, memory_forget, memory_search and memory_read, and
+// memory_patch, memory_forget and memory_search; memory_read after them
+// when [WithIndexScopes] names a scope or [WithRead] is given; and
 // memory_insert last when [WithInsert] names a scope. memory_read reads
 // one entry whole by scope and name, from the writable and the read
 // scopes, for an entry the block shows as an index entry
@@ -393,6 +418,17 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 			panic(fmt.Sprintf("agentmemory.Tools: insert into %q, whose names are fixed", s))
 		}
 	}
+	for i, s := range o.indexScopes {
+		if !ValidScope(s) {
+			panic(fmt.Sprintf("agentmemory.Tools: index scope %q is not kebab-case", s))
+		}
+		if slices.Contains(o.indexScopes[:i], s) {
+			panic(fmt.Sprintf("agentmemory.Tools: index scope %q is given twice", s))
+		}
+		if !slices.Contains(scopes, s) && !slices.Contains(o.readScopes, s) {
+			panic(fmt.Sprintf("agentmemory.Tools: index scope %q is neither a writable nor a read scope", s))
+		}
+	}
 	if o.now == nil {
 		o.now = time.Now
 	}
@@ -412,9 +448,11 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, t.read, agenttool.Annotations{Title: "Edit memory entry"}, agenttool.ReplayUnknown, nil),
 		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, t.read, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}, agenttool.ReplayUnknown, nil),
 		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}, agenttool.ReplaySafe, &agenttool.Flow{Reads: t.searchReads()}, t.unsupported()...),
+	}
+	if o.offersRead() {
 		// memory_read returns what memory_search does, one entry by
 		// name, so it reads what the search reads.
-		tool(ReadTool, t.readDescription(), t.readEntry, searchable, nil, nil, agenttool.Annotations{Title: "Read memory entry", ReadOnly: true}, agenttool.ReplaySafe, &agenttool.Flow{Reads: t.searchReads()}),
+		out = append(out, tool(ReadTool, t.readDescription(), t.readEntry, searchable, nil, nil, agenttool.Annotations{Title: "Read memory entry", ReadOnly: true}, agenttool.ReplaySafe, &agenttool.Flow{Reads: t.searchReads()}))
 	}
 	if len(o.insert) > 0 {
 		// An insert never overwrites, so it is not destructive; run

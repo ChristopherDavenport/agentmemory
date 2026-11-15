@@ -609,7 +609,7 @@ func (failing) MaxEntryBytes() int                           { return DefaultMax
 
 func TestUsage(t *testing.T) {
 	u := Usage()
-	for _, name := range []string{SaveTool, PatchTool, ForgetTool, SearchTool, ReadTool} {
+	for _, name := range []string{SaveTool, PatchTool, ForgetTool, SearchTool} {
 		if !strings.Contains(u, name) {
 			t.Errorf("Usage does not name %s", name)
 		}

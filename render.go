@@ -32,9 +32,9 @@ type renderOptions struct {
 // description or, for an entry without one, the first non-blank line of
 // its content, neutralised and cut to [indexLineBytes] bytes with "…"
 // after it when cut. The content is not shown. The scope's heading says
-// so and names memory_read, which reads an entry whole by name, and
-// which [Tools] always offers. A product that renders a scope as an
-// index offers the tools with it.
+// so and names memory_read, which reads an entry whole by name. A
+// product that renders a scope as an index passes [WithIndexScopes]
+// with it to [Tools], which then offers memory_read, and to [Usage].
 //
 // An index entry is packed against the bound and the scope's cap as any
 // entry part is, by the bytes of its heading line, and one that does
@@ -1274,7 +1274,17 @@ func isUnderline(s string) bool {
 
 // Usage is one paragraph telling the model how to use the memory tools
 // over the block [Render] produced. A product appends it to its
-// instructions when it offers [Tools].
-func Usage() string {
-	return "The Memory block is what you remember between sessions, rendered from the memory store at the start of each turn; it is not part of the conversation. Save a new fact with memory_save, giving a kebab-case name and a description in meta. Edit an existing entry with memory_patch, giving the exact old_text once and its replacement; prefer it to memory_save, which rewrites the entry whole. Remove an entry with memory_forget. Read an entry whole by name with memory_read, for one the block lists without its content or leaves out; find entries by their words with memory_search. Both results stay in the conversation, so read what you need. Each entry's heading shows its size and the limit, and the block's last line shows the budget; a write over the limit is refused with both numbers, so split or trim before you save. Use headings of level four or none inside an entry."
+// instructions when it offers [Tools], passing the options it passed
+// Tools: with [WithIndexScopes] or [WithRead] the paragraph names
+// memory_read, and without them it is the paragraph it always was.
+func Usage(opts ...ToolOption) string {
+	var o toolOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	reach := "Entries the block omits, and any entry you want to read whole, are reachable with memory_search; its results stay in the conversation, so search for what you need."
+	if o.offersRead() {
+		reach = "Read an entry whole by name with memory_read, for one the block lists without its content or leaves out; find entries by their words with memory_search. Both results stay in the conversation, so read what you need."
+	}
+	return "The Memory block is what you remember between sessions, rendered from the memory store at the start of each turn; it is not part of the conversation. Save a new fact with memory_save, giving a kebab-case name and a description in meta. Edit an existing entry with memory_patch, giving the exact old_text once and its replacement; prefer it to memory_save, which rewrites the entry whole. Remove an entry with memory_forget. " + reach + " Each entry's heading shows its size and the limit, and the block's last line shows the budget; a write over the limit is refused with both numbers, so split or trim before you save. Use headings of level four or none inside an entry."
 }
