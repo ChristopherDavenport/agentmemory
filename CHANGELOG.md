@@ -22,7 +22,13 @@ versions may break the API.
   unaffected, the manifest hash moves between an index and a full
   render, and the summary counts it as omitted.
   `testdata/render/index.*` is its fixture, and a render input's
-  `index` lists the index scopes.
+  `index` lists the index scopes. `EntryPartFor(e, bound, opts...)`
+  gives the part an entry renders as under a render's options, its
+  index entry part in an index scope, so a product sizes an index
+  scope's entry left out over the budget by the part it would have
+  added (§8.1). A product that records the manifest's omissions as
+  instructions omitted elements skips the `OmitIndex` ones: they are
+  in the block, as parts under the same ID.
 - `memory_read` (`ReadTool`) reads one entry whole by scope and name,
   from the writable and the read scopes: its content as stored, its
   size against the bound, its hash and its description (#55).

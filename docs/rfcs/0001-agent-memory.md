@@ -1568,7 +1568,7 @@ The root module is the reference binding.
 | tool options | `WithReadScopes`, `WithIndexScopes` and `WithRead` (6.11), `WithRendered` (6.8), `WithFixedNames`, `WithInsert`, `WithSearchLimit`, `WithSearchBytes`, `WithSearchReads`, `DefaultSearchLimit`, `DefaultSearchBytes` |
 | write record | `WriteRecord{Tool, Change}`, `WriteNS`, as an `agenttool.Recordable` |
 | usage paragraph | `Usage(opts...)`, naming `memory_read` when the options offer it |
-| render | `Render`, `RenderParts`, `JoinParts`, `Part{ID, Text, Trust}`, `Trust{Reads}`, `EntryPart`, `PartSeparator`, `TitlePartID`, `SummaryPartID`, `PartID` |
+| render | `Render`, `RenderParts`, `JoinParts`, `Part{ID, Text, Trust}`, `Trust{Reads}`, `EntryPart`, `EntryPartFor` (the part under a render's options, index or not, for 8.1's size), `PartSeparator`, `TitlePartID`, `SummaryPartID`, `PartID` |
 | render options | `WithMaxTotalBytes`, `WithScopeMaxBytes`, `WithScopeTrust`, `WithScopeIndex` (index scopes), `DefaultMaxTotalBytes`, `ErrBudget` |
 | manifest | `Manifest{Entries, Omitted, LeftOut}` (`LeftOut` is `dropped`), `ManifestEntry{Scope, Name, Hash, Bytes, Reason}`, `OmitBudget`, `OmitIndex`, `OmitBlock`, `Manifest.Hash`, `Manifest.LeaveOut` for a block left out |
 | render record | `ManifestNS`; `Manifest.Record` (whole), `Manifest.RecordSince` (delta on a base) |

@@ -1562,3 +1562,45 @@ func TestRenderIndex(t *testing.T) {
 		t.Error("an index render reads as a block left out")
 	}
 }
+
+// TestEntryPartFor is the part an entry renders as under a render's
+// options, whether or not the render holds it, so a product sizes an
+// omitted entry of an index scope by its index entry part (RFC 0001
+// §8.1): the index entry part there, the entry part elsewhere, with the
+// scope's trust either way.
+func TestEntryPartFor(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore(WithMaxEntryBytes(512))
+	es := []Entry{
+		{Scope: "user", Name: "style", Content: "Short answers.\n"},
+		{Scope: "project", Name: "build", Content: "Run make check.\nIt lints.\n", Meta: map[string]string{"description": "How to build"}},
+	}
+	for _, e := range es {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := []RenderOption{WithScopeIndex("project"), WithScopeTrust("project")}
+	parts, _, err := RenderParts(ctx, store, []Scope{"user", "project"}, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Part{}
+	for _, p := range parts {
+		byID[p.ID] = p
+	}
+	for _, e := range es {
+		stored, err := store.Get(ctx, e.Scope, e.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := EntryPartFor(*stored, store.MaxEntryBytes(), opts...)
+		want := byID[got.ID]
+		if got.ID != PartID(e.Scope, e.Name) || got.Text != want.Text || fmt.Sprint(got.Trust) != fmt.Sprint(want.Trust) {
+			t.Errorf("EntryPartFor(%s/%s) = %+v, want the rendered %+v", e.Scope, e.Name, got, want)
+		}
+	}
+	if p := EntryPartFor(es[1], 512); p.Text != EntryPart(es[1], 512).Text {
+		t.Errorf("without options EntryPartFor = %q, want EntryPart's", p.Text)
+	}
+}

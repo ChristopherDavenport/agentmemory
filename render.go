@@ -725,6 +725,31 @@ func EntryPart(e Entry, bound int) Part {
 	return Part{ID: PartID(e.Scope, e.Name), Text: entryText(e, bound), Trust: renderOptions{}.scopeTrust(e.Scope)}
 }
 
+// EntryPartFor returns the part e renders as under opts, the options a
+// product passes [RenderParts], whether or not a render holds it: in a
+// scope opts render as an index ([WithScopeIndex]) its index entry part,
+// the heading line alone, and elsewhere its entry part as [EntryPart]
+// gives it; with the trust opts give its scope. A product that records
+// what the block left out as agentsession instructions_omitted elements
+// sizes each with it, len(Text)+len([PartSeparator]), so an entry of an
+// index scope left out over the budget is sized by the part it would
+// have added (RFC 0001 §8.1).
+//
+// An entry the manifest lists with [OmitIndex] is in the block, as its
+// index entry part under [PartID]; it is recorded as a part, and not
+// also as an omitted element.
+func EntryPartFor(e Entry, bound int, opts ...RenderOption) Part {
+	var o renderOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	text := entryText(e, bound)
+	if o.index[e.Scope] {
+		text = indexText(e, bound)
+	}
+	return Part{ID: PartID(e.Scope, e.Name), Text: text, Trust: o.scopeTrust(e.Scope)}
+}
+
 func scopePartID(scope Scope) string   { return "memory/" + string(scope) }
 func omittedPartID(scope Scope) string { return "memory/" + string(scope) + ":omitted" }
 
