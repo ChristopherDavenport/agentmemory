@@ -1342,3 +1342,80 @@ func TestFrontmatterRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestReadRacingAWrite holds reads to RFC 0001 §3.7: an entry live
+// before and after a concurrent write is read in its old or its new
+// state and never as absent. A writer saves one entry over and over
+// while readers Get and List it; the rename that replaces the file can
+// land between a reader's open and its check of the name, which the
+// read must not take for a link swapped in (#54).
+func TestReadRacingAWrite(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "hot", Content: "v0"}); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	type miss struct {
+		op  string
+		err error
+	}
+	misses := make(chan miss, 1024)
+	report := func(m miss) {
+		select {
+		case misses <- m:
+		default:
+		}
+	}
+	done := make(chan struct{}, 2)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := s.Get(ctx, "user", "hot"); err != nil {
+				report(miss{"Get", err})
+			}
+		}
+	}()
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			es, err := s.List(ctx, "user")
+			if err != nil {
+				report(miss{"List", err})
+			} else if len(es) != 1 {
+				report(miss{"List", fmt.Errorf("listed %d entries, want 1", len(es))})
+			}
+		}
+	}()
+	const writes = 200
+	for i := 1; i <= writes; i++ {
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "hot", Content: fmt.Sprintf("v%d", i)}); err != nil {
+			t.Error(err)
+			break
+		}
+	}
+	close(stop)
+	<-done
+	<-done
+	close(misses)
+	var n int
+	for m := range misses {
+		if n < 5 {
+			t.Errorf("%s during a write: %v", m.op, m.err)
+		}
+		n++
+	}
+	if n > 0 {
+		t.Errorf("%d reads missed a live entry during %d writes", n, writes)
+	}
+}

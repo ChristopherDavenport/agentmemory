@@ -7,6 +7,25 @@ versions may break the API.
 
 ## Unreleased
 
+### Fixed
+
+- `filestore` no longer reports a live entry as not found when a write
+  replaces its file during the read (#54). The write's rename could
+  land between a reader's open and its check of the name, which the
+  read took for a link swapped in, so `Get` answered not found, and
+  `List`, `Search` and `Render`, which read through the same path,
+  left the entry out, a render leaving it out of the block and its
+  manifest. The read now opens the name again, up to eight times, when
+  the file opened and the file named are both regular files with one
+  name that differ; a link, a hard link or anything irregular is still
+  refused. Reads still take no lock.
+- RFC 0001 is draft 0.4. §3.7 gains the rule: a read of an entry live
+  before and after a concurrent write returns it, old or new, and never
+  reports it absent. Annex A says a reader opens again when a rename
+  lands between its open and its check. A new section 15, "Changes
+  since 0.3", lists it; the sections after it are renumbered (Changes
+  since 0.2 is 16, Changes from draft 0.1 is 17, Decisions 18).
+
 ### Dependencies
 
 - openresponses v0.0.18 to v0.0.20, in the root module and in

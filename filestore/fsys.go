@@ -79,21 +79,48 @@ func isDir(r *os.Root, name string) (bool, error) {
 // be one, so a second name for a file outside the store, which shares
 // its identity, is not read or appended to. The open does not block, so
 // a FIFO swapped in cannot hang a writer holding the lock.
+//
+// A write replaces a file by a rename, which can land between the open
+// and the name's Lstat. Then the file opened and the file named are
+// both regular files with one name, or none for the one replaced, and
+// differ; that is a write, not a link swapped in, so the open is tried
+// again, up to [openAttempts] times in all, rather than refused. A
+// reader of an entry live before and after the write then reads it in
+// one state or the other and never as absent (RFC 0001 §3.7). Reads
+// take no lock, so they never wait behind a writer in another process.
 func openRegular(r *os.Root, name string, flag int, perm fs.FileMode) (*os.File, error) {
-	if info, err := r.Lstat(name); err == nil && !regularAlone(info) {
-		return nil, fmt.Errorf("filestore: %s: %w", name, errNotRegular)
+	for attempt := 1; ; attempt++ {
+		f, replaced, err := openRegularOnce(r, name, flag, perm)
+		if !replaced || attempt == openAttempts {
+			return f, err
+		}
 	}
-	f, err := r.OpenFile(name, flag|openNonblock, perm)
+}
+
+// openAttempts bounds the opens [openRegular] makes of a name a rename
+// keeps replacing. A writer renames once per write, after a write and
+// a sync, so a second attempt almost always finds the name still.
+const openAttempts = 8
+
+// openRegularOnce is one attempt of [openRegular]. When it refuses the
+// name because a rename replaced the file between the open and the
+// check, it says so with replaced.
+func openRegularOnce(r *os.Root, name string, flag int, perm fs.FileMode) (f *os.File, replaced bool, err error) {
+	if info, err := r.Lstat(name); err == nil && !regularAlone(info) {
+		return nil, false, fmt.Errorf("filestore: %s: %w", name, errNotRegular)
+	}
+	f, err = r.OpenFile(name, flag|openNonblock, perm)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	opened, ferr := f.Stat()
 	named, lerr := r.Lstat(name)
 	if ferr != nil || lerr != nil || !regularAlone(opened) || !named.Mode().IsRegular() || !os.SameFile(opened, named) {
 		f.Close()
-		return nil, fmt.Errorf("filestore: %s: %w", name, errNotRegular)
+		replaced = ferr == nil && lerr == nil && regularAlone(opened) && regularAlone(named)
+		return nil, replaced, fmt.Errorf("filestore: %s: %w", name, errNotRegular)
 	}
-	return f, nil
+	return f, false, nil
 }
 
 // regularAlone reports whether info is a regular file with no other

@@ -1,6 +1,6 @@
 # RFC 0001: Agent Memory
 
-Status: draft 0.3
+Status: draft 0.4
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; `filestore` is the reference store,
@@ -38,11 +38,12 @@ The on-disk format of the reference store is Annex A, kept in
 Draft 0.2 states the contract as the code holds it after the fixes for
 #46, #47, #48 and #49, the security fixes of the same batch, and the
 answers to draft 0.1's open questions. [Changes from draft
-0.1](#16-changes-from-draft-01) lists what moved;
+0.1](#17-changes-from-draft-01) lists what moved;
 [Appendix B](#appendix-b-inconsistencies-draft-01-found) says how each
 inconsistency draft 0.1 found was resolved. Draft 0.3 adds the refusal
 of a write in a turn whose block was left out; [Changes since
-0.2](#15-changes-since-02) lists it.
+0.2](#16-changes-since-02) lists it. Draft 0.4's changes are listed in
+[Changes since 0.3](#15-changes-since-03).
 
 ## Motivation
 
@@ -60,7 +61,7 @@ call with a record beside it. What it lacked was a document saying
 what those records hold and how a reader folds them. agentsession's
 RFC names `agentmemory` as an instruction part's source; this document
 is what that name points at, and stays in this repository
-([section 17](#17-decisions)).
+([section 18](#18-decisions)).
 
 ## Goals
 
@@ -396,6 +397,17 @@ holds, whatever number of writers in however many processes share the
 store. A conditional put's check and its write MUST be one step with
 respect to other writers. Reads MAY run beside writes and see a state
 before or after each write, never a part of one.
+
+> A read of an entry that is live both before and after a concurrent
+> write MUST return the entry, in its old or its new state, and MUST
+> NOT report it absent.
+
+This holds for get and for every read built on the same path, list,
+search and so the render: a read that drops the entry would leave it
+out of the block and out of the block's manifest, a state the store
+held neither before nor after the write. A store whose writes replace
+a file by a rename meets it by reading again when the rename lands
+during its read (Annex A), not by making reads wait for the write lock.
 
 ## 4. The journal
 
@@ -1135,7 +1147,7 @@ hash moves records the drop. It records it whole (8.4). The empty manifest's has
 empty string. Two renders that showed the model the same memories hash
 the same, so a product records the manifest only when its hash moves.
 The manifest names content, not metadata: a change to an entry's
-description changes its part and not the manifest (section 17).
+description changes its part and not the manifest (section 18).
 
 ## 8. Session records
 
@@ -1545,14 +1557,20 @@ not a new meaning under the old one.
   journal is that per entry, with the base recorded so the loss is
   visible without a three-way diff.
 
-## 15. Changes since 0.2
+## 15. Changes since 0.3
+
+| what | sections | the change |
+|---|---|---|
+| #54 | 3.7, Annex A | A read of an entry live before and after a concurrent write returns it, old or new, and never reports it absent; get, list, search and the render alike. The reference directory store read an entry as absent when a write's rename landed between its open and its check of the name, so a render racing a write could leave the entry out of the block and its manifest. Annex A says a reader that compares the file it opened with the name opens again when a rename landed, and the reference does so a bounded number of times. |
+
+## 16. Changes since 0.2
 
 | what | sections | the change |
 |---|---|---|
 | agentkit#95 | 6.8, 11, 12 | A write in a turn whose block was left out is refused where the call is decided, before any person or reviewer is asked, and again by the writing tool when it runs, with one message; `memory_insert` is a writer as `memory_save`, `memory_patch` and `memory_forget` are. Draft 0.2 said nothing of a dropped block's writes, so a product refused them only when they ran, after asking a person about a call no answer could let through. The fixture `testdata/dropped.json` gives the cases. |
 | agentkit#95 | 7.6, 8.4, 6.8 | A manifest has `dropped`, true for a block the product left out whole, in the whole record and in a delta, which carries its own and never its base's, left out when false; the manifest hash ends with `x block\n` when it is set; and a writer records a manifest whole when it or its base has the flag, so a reader before this draft never meets it in a delta. Draft 0.2 told a block left out only by every element under `omitted` with the reason `block`, so one left out over an empty store was the empty manifest, hashed as a block shown empty, was never recorded, and let a write through. A record without `dropped` is read as before, and every manifest without it hashes as before. The fixture `testdata/manifest/left-out.json` folds it. |
 
-## 16. Changes from draft 0.1
+## 17. Changes from draft 0.1
 
 | what | sections | the change |
 |---|---|---|
@@ -1571,7 +1589,7 @@ not a new meaning under the old one.
 | security | 3.1, 7.2, 8.1, 10, Annex A | Stores follow no link; parts carry trust labels and content headings are neutralised; `memory_search` reads untrusted. |
 | review | 1, 3.1, 3.2, 3.5, 4.3, 6.1, 6.10, 7.6, 8.4, 8.6 | White space and lowercase defined; reads do not validate; the unjournalable file deferred to Annex A; one sequence rule; full schemas, `meta: null`, idempotence; element presence; `base: null`; redaction; fixtures. |
 
-## 17. Decisions
+## 18. Decisions
 
 Draft 0.1's open questions, as answered for draft 0.2:
 
