@@ -48,7 +48,7 @@ type Store interface {
 	Get(ctx context.Context, scope Scope, name string) (*Entry, error)
 	List(ctx context.Context, scope Scope) ([]Entry, error)
 	Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error)
-	Forget(ctx context.Context, scope Scope, name string) (*Change, error)
+	Forget(ctx context.Context, scope Scope, name string, opts ...PutOption) (*Change, error)
 	Search(ctx context.Context, scopes []Scope, query string, limit int) ([]Entry, error)
 	Journal(ctx context.Context, after uint64) iter.Seq2[Change, error]
 	MaxEntryBytes() int
@@ -62,7 +62,9 @@ beside the call that made it.
 `IfHash(h)` makes a `Put` conditional on the stored hash, `""` meaning
 the entry must not exist, so a write built on a stale read fails with
 `ErrConflict` instead of clobbering. `Forget` writes a tombstone that
-keeps the last content. Every `Change` carries a `Seq` that orders the
+keeps the last content, and takes `IfHash` and `IfMetaHash` the same
+way, so a caller that read an entry and decided to forget it forgets
+that state and not a save that landed in between. Every `Change` carries a `Seq` that orders the
 journal within the store, the `Session` that wrote it, from
 `WithSession(ctx, id)`, and two hashes: `Replaced`, the state the write
 landed on, which chains the records, and `Prev`, the state it was built
@@ -269,7 +271,10 @@ the content from the block, not from the tool's read, so a product
 passes `WithRendered` with the manifest of the block it last sent: the
 save is then based on the hash the block showed, a write another
 session made after the render is a lost update the journal reports,
-and the result tells the model the entry had changed.
+and the result tells the model the entry had changed. Under the same
+option `memory_forget` forgets an entry the block showed only while it
+holds the hash the block showed (`Forget` with `IfHash`), and fails,
+saying the entry changed, when another session saved it since.
 
 A product that leaves the block out of a request, when its share of an
 instruction budget runs out, withholds the writers (`WriteTools()`)

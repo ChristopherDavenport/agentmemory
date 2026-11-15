@@ -121,7 +121,7 @@ func (m *MemStore) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change
 }
 
 // Forget implements Store.
-func (m *MemStore) Forget(ctx context.Context, scope Scope, name string) (*Change, error) {
+func (m *MemStore) Forget(ctx context.Context, scope Scope, name string, opts ...PutOption) (*Change, error) {
 	if err := CheckRef(scope, name); err != nil {
 		return nil, err
 	}
@@ -130,6 +130,9 @@ func (m *MemStore) Forget(ctx context.Context, scope Scope, name string) (*Chang
 	e, ok := m.live[scope][name]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s/%s", ErrNotFound, scope, name)
+	}
+	if err := ResolvePutOptions(opts...).Check(scope, name, &e); err != nil {
+		return nil, err
 	}
 	delete(m.live[scope], name)
 	now := m.now()

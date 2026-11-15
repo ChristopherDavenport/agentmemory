@@ -316,7 +316,7 @@ but MUST let a caller tell the kinds apart:
 | *not found* | get or forget of an entry that is not live | the scope and name |
 | *invalid* | an entry, scope, name or metadata key that breaks section 2 | which rule, in words |
 | *too large* | put content over the bound | the scope and name, the attempted size, the bound, and the size of the live entry or "none" |
-| *conflict* | a conditional put whose condition fails | the scope and name, which condition, content or metadata, and the hash expected and the hash held, empty for none on either side |
+| *conflict* | a conditional put or forget whose condition fails | the scope and name, which condition, content or metadata, and the hash expected and the hash held, empty for none on either side |
 | *unsupported* | a search with an option the store does not support (section 3.5) | the option |
 
 The *too large* error carries the three numbers because its reader is
@@ -326,11 +326,25 @@ those are not part of the contract.
 
 ### 3.4 Forget
 
-**Forget** (scope, name) removes a live entry and appends a tombstone:
-the entry's last state with `deleted` set, `updated` the time of the
-removal, and `prev` and `replaced` both the hash it held. It returns
-the tombstone. Forgetting an entry that is not live fails with *not
-found* and writes nothing. The next put of the name is a create.
+**Forget** (scope, name, options) removes a live entry and appends a
+tombstone: the entry's last state with `deleted` set, `updated` the
+time of the removal, and `prev` and `replaced` both the hash it held.
+It returns the tombstone. Forgetting an entry that is not live fails
+with *not found* and writes nothing, whatever the options. The next
+put of the name is a create.
+
+> A store's forget MUST accept if-hash, and if-meta-hash where its
+> puts do. When the condition does not hold it MUST fail with
+> *conflict* and write nothing. The check and the tombstone are one
+> step with respect to other writers (section 3.7).
+
+The conditions read as they do for a put (3.2): if-hash h holds when
+the live entry's hash is h, so the empty string never holds for a live
+entry; if-meta-hash m when its metadata hash is m. A writer that read
+an entry and decided to forget it SHOULD name the hash it read, or a
+save that lands between its read and its forget is forgotten unseen.
+Based-on names no condition and does nothing on a forget: a
+tombstone's `prev` is the hash it removed (4.5).
 
 ### 3.5 Search
 
@@ -394,8 +408,8 @@ string. Nothing authenticates it (section 10).
 A store MUST serialise writes so that each record is appended whole,
 each takes its own sequence number, and the chain of section 4.4
 holds, whatever number of writers in however many processes share the
-store. A conditional put's check and its write MUST be one step with
-respect to other writers. Reads MAY run beside writes and see a state
+store. A conditional put's or forget's check and its write MUST be one
+step with respect to other writers. Reads MAY run beside writes and see a state
 before or after each write, never a part of one.
 
 > A read of an entry that is live both before and after a concurrent
@@ -657,7 +671,8 @@ Annotations, flow and replay, as agenttool defines them:
 No writer is idempotent or safe to run again: a save run again is a
 second write and, anchored in the block, reports the session's own
 first run as lost; a patch run again fails or edits twice; a forget run
-again removes what another session saved in between; an insert run
+again removes what another session saved in between, unless it is
+conditional on the block (6.4); an insert run
 again inserts again. `memory_search`'s flow declares that its output
 reads `untrusted` content, since it returns memory a model wrote
 (section 10), and sends nothing; a product whose searchable scopes only
@@ -719,6 +734,18 @@ It replaces one exact occurrence of `old_text` in the live content with
 
 Arguments: `scope`, `name`. It forgets the entry (3.4). When the
 product fixed the scope's names, a fixed name fails (6.5).
+
+> When the product says what the block showed (6.8) and the block held
+> the entry, `memory_forget` SHOULD forget conditionally on the hash
+> the block showed. On *conflict* it fails, saying the entry changed
+> since the block was rendered.
+
+The tool reads nothing before it forgets, so it has no hash of its own
+to name; the block's is the state the model chose to remove. A forget
+of an entry the block did not show, or by a tool the product told
+nothing, is unconditional. The failure names the hash the block showed
+and the hash the entry holds, and points to `memory_search`; the next
+render shows the new state, so the model can forget it again on that.
 
 ### 6.5 Fixed names and insert
 
@@ -799,7 +826,8 @@ made after the render, which this save discards, becomes a fork the
 journal shows. The manifest MUST be the one of the block the model is
 reading; one from earlier in the turn makes a second save of an entry
 read as built on the block rather than on the model's own first save,
-and reported as lost.
+and reported as lost. `memory_forget` likewise forgets an entry the
+manifest holds only while it holds the hash the manifest names (6.4).
 
 **A block left out.** A manifest records a block **left out whole**
 when its `dropped` is true (7.6), or, for a record written before
@@ -1438,7 +1466,7 @@ The root module is the reference binding.
 | entry, entry value | `Entry{Scope, Name, Content, Meta, Hash, MetaHash, Updated, Deleted}`, `Scope`, `MetaDescription`, `Entry.Description`, `Entry.Size` |
 | entry rules | `CheckEntry`, `MaxMetaBytes`, `DefaultMaxEntryBytes` |
 | hash, metadata hash | `Hash`, `MetaHash` |
-| store | `Store`: `Get`, `List`, `Put`, `Forget`, `Search`, `Journal`, `MaxEntryBytes` |
+| store | `Store`: `Get`, `List`, `Put`, `Forget` (with the put options, 3.4), `Search`, `Journal`, `MaxEntryBytes` |
 | put options | `IfHash(h)`, `IfMetaHash(m)`, `BasedOn(h)`; `PutOption`, `PutOptions`, `ResolvePutOptions`, `PutOptions.BaseFor`, `PutOptions.Check` for a store's own use |
 | error kinds | `ErrNotFound`, `ErrInvalid`, `ErrTooLarge` with `SizeError`, `ErrConflict` with `ConflictError{…, Meta}`, `ErrUnsupported` |
 | reference match | `Match`, `SearchOptions.Filter` |
@@ -1471,7 +1499,8 @@ and a recorder that reads `agenttool.Recordable` writes the
 refuses a non-name in every read, refuses with the error kinds of
 section 3.3, writes whole entries atomically, appends one record per
 write and returns it, fills both hashes, honours if-hash, if-meta-hash
-and based-on, keeps the chain, numbers records by section 4.3, yields
+and based-on in a put and if-hash and if-meta-hash in a forget, keeps
+the chain, numbers records by section 4.3, yields
 its journal in order and reports a record it cannot read in place,
 serialises writers, declares every optional capability it offers and
 refuses an option it does not, and, over a file system, follows no
@@ -1480,7 +1509,8 @@ it, and a store elsewhere can run it.
 
 **A conforming tool set** names and schemas its tools as section 6
 says, enforces its own schema, refuses read scopes and unlisted scopes,
-anchors every save and patch as sections 6.2 and 6.3 say, keeps fixed
+anchors every save and patch as sections 6.2 and 6.3 say, forgets an
+entry the block showed on its hash as 6.4 says, keeps fixed
 names and names inserts as 6.5 says, offers only the search options its
 store supports, declares `memory_search`'s flow, refuses every write in
 a turn whose block was left out as 6.8 says, reproducing
@@ -1561,6 +1591,7 @@ not a new meaning under the old one.
 
 | what | sections | the change |
 |---|---|---|
+| #53 | 3.3, 3.4, 3.7, 6.4, 6.8, 11, 12 | Forget takes if-hash and if-meta-hash, as a put does, and fails with *conflict* and writes nothing when the condition does not hold, check and tombstone one step; based-on does nothing on a forget. `memory_forget` forgets an entry the block showed conditionally on the hash the block showed, and fails saying the entry changed since the render. Draft 0.3's forget had no condition, so a writer that read an entry, compared its hash and forgot it forgot a save that landed in between, and the tool forgot whatever the store held. Breaking: a store's forget signature changes in the binding. |
 | #54 | 3.7, Annex A | A read of an entry live before and after a concurrent write returns it, old or new, and never reports it absent; get, list, search and the render alike. The reference directory store read an entry as absent when a write's rename landed between its open and its check of the name, so a render racing a write could leave the entry out of the block and its manifest. Annex A says a reader that compares the file it opened with the name opens again when a rename landed, and the reference does so a bounded number of times. |
 
 ## 16. Changes since 0.2

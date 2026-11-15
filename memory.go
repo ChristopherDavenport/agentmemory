@@ -158,8 +158,17 @@ type Store interface {
 	Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error)
 	// Forget writes a tombstone: the entry leaves Get and List, and
 	// the journal keeps its last content, and returns that record. A
-	// missing entry is [ErrNotFound].
-	Forget(ctx context.Context, scope Scope, name string) (*Change, error)
+	// missing entry is [ErrNotFound], whatever the options.
+	//
+	// Under [IfHash] or [IfMetaHash] the forget is conditional, as a Put
+	// is: a live entry whose hash or metadata hash is not the one given
+	// fails with [ErrConflict], a [ConflictError], and nothing is
+	// written; the check and the tombstone are one step with respect to
+	// other writers. A caller that read the entry and decided to forget
+	// it names the hash it read, so a save landing in between is not
+	// forgotten unseen. [BasedOn] does nothing here: a tombstone's
+	// [Change.Prev] is the hash it removed.
+	Forget(ctx context.Context, scope Scope, name string, opts ...PutOption) (*Change, error)
 	// Search returns the live entries of the scopes that match query,
 	// at most limit of them when limit is positive. What matches and
 	// in what order is the store's: the in-memory store and filestore

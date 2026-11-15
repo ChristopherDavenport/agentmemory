@@ -821,6 +821,71 @@ func TestSaveBasedOnTheRender(t *testing.T) {
 	}
 }
 
+// TestForgetBasedOnTheRender is #53's tool half: under WithRendered,
+// memory_forget forgets an entry the block showed only while it holds
+// what the block showed, so a save another session made after the
+// render is not forgotten unseen; the call fails and says the entry
+// changed. An entry the block did not show, and a tool set without
+// WithRendered, forget unconditionally as before.
+func TestForgetBasedOnTheRender(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore(WithMaxEntryBytes(256))
+	scopes := []Scope{"user"}
+	for _, e := range []Entry{
+		{Scope: "user", Name: "a", Content: filler(200, 'a')},
+		{Scope: "user", Name: "b", Content: filler(200, 'b')},
+		{Scope: "user", Name: "c", Content: filler(200, 'c')},
+	} {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, man, err := Render(ctx, store, scopes, WithMaxTotalBytes(700))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(man.Entries) < 2 || len(man.Omitted) == 0 {
+		t.Fatalf("the fixture shows and omits nothing: %+v", man)
+	}
+	tools := Tools(store, scopes, WithRendered(func() Manifest { return man }))
+	changed, unchanged, omitted := man.Entries[0], man.Entries[1], man.Omitted[0]
+
+	// Another session saves the first shown entry after the render.
+	later := "changed after the render"
+	if _, err := store.Put(WithSession(ctx, "other"), Entry{Scope: "user", Name: changed.Name, Content: later}); err != nil {
+		t.Fatal(err)
+	}
+	n := journalLen(store)
+	out, err := call(t, tools, ForgetTool, fmt.Sprintf(`{"name":%q}`, changed.Name))
+	if err == nil {
+		t.Fatalf("forget of an entry changed after the render = %q, want a failure", out)
+	}
+	if !strings.Contains(err.Error(), "changed after the memory block was rendered") || !strings.Contains(err.Error(), Hash(later)) {
+		t.Errorf("the failure does not say the entry changed: %v", err)
+	}
+	if got, err := store.Get(ctx, "user", changed.Name); err != nil || got.Content != later {
+		t.Errorf("the save made after the render was forgotten: %+v, %v", got, err)
+	}
+	if journalLen(store) != n {
+		t.Errorf("a refused forget wrote to the journal")
+	}
+
+	for _, name := range []string{unchanged.Name, omitted.Name} {
+		if out, err := call(t, tools, ForgetTool, fmt.Sprintf(`{"name":%q}`, name)); err != nil {
+			t.Errorf("forget %s = %q, %v", name, out, err)
+		}
+		if _, err := store.Get(ctx, "user", name); !errors.Is(err, ErrNotFound) {
+			t.Errorf("forget %s left it live: %v", name, err)
+		}
+	}
+
+	// Without WithRendered the tool knows nothing the model was shown.
+	plain := Tools(store, scopes)
+	if out, err := call(t, plain, ForgetTool, fmt.Sprintf(`{"name":%q}`, changed.Name)); err != nil {
+		t.Errorf("forget without WithRendered = %q, %v", out, err)
+	}
+}
+
 // TestFixedNames is #48's first half: a scope whose names the product
 // fixed takes a save of those names alone, and none of them is
 // forgotten, each refusal naming the fixed entries.
@@ -1137,6 +1202,12 @@ func TestWritersReadTheManifestOnce(t *testing.T) {
 		{InsertTool, `{"content":"a note"}`},
 		{ForgetTool, `{"name":"prefs"}`},
 	} {
+		// Rendered again before each call, as a product that re-renders
+		// before every model call does, so memory_forget forgets the
+		// prefs the block shows.
+		if _, man, err = Render(ctx, store, []Scope{"user"}); err != nil {
+			t.Fatal(err)
+		}
 		reads.Store(0)
 		if _, err := call(t, tools, c.tool, c.args); err != nil {
 			t.Fatalf("%s: %v", c.tool, err)

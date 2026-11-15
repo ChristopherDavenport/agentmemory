@@ -337,8 +337,9 @@ func (s *Store) noteOutside(st *journalState, scope agentmemory.Scope, name stri
 
 // Forget implements agentmemory.Store: the file is removed, the index
 // rewritten, and a tombstone with the last content appended to the
-// journal.
-func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string) (*agentmemory.Change, error) {
+// journal. [agentmemory.IfHash] and [agentmemory.IfMetaHash] are
+// checked against the file under the lock, as Put checks them.
+func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string, opts ...agentmemory.PutOption) (*agentmemory.Change, error) {
 	if err := check(scope, name); err != nil {
 		return nil, err
 	}
@@ -353,6 +354,9 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	}
 	if stored == nil {
 		return nil, fmt.Errorf("%w: %s/%s", agentmemory.ErrNotFound, scope, name)
+	}
+	if err := agentmemory.ResolvePutOptions(opts...).Check(scope, name, stored); err != nil {
+		return nil, err
 	}
 	now := s.now()
 	st, err := s.loadState()

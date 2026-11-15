@@ -431,8 +431,10 @@ func (s *Store) Put(ctx context.Context, e agentmemory.Entry, opts ...agentmemor
 	return c, nil
 }
 
-// Forget implements agentmemory.Store.
-func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string) (*agentmemory.Change, error) {
+// Forget implements agentmemory.Store: one transaction reads the
+// stored entry, checks [agentmemory.IfHash] and [agentmemory.IfMetaHash]
+// against it, removes the row and appends the tombstone.
+func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string, opts ...agentmemory.PutOption) (*agentmemory.Change, error) {
 	if err := check(scope, name); err != nil {
 		return nil, err
 	}
@@ -447,6 +449,9 @@ func (s *Store) Forget(ctx context.Context, scope agentmemory.Scope, name string
 	}
 	if stored == nil {
 		return nil, fmt.Errorf("%w: %s/%s", agentmemory.ErrNotFound, scope, name)
+	}
+	if err := agentmemory.ResolvePutOptions(opts...).Check(scope, name, stored); err != nil {
+		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_entries WHERE scope = ? AND name = ?`, string(scope), name); err != nil {
 		return nil, fmt.Errorf("sqlite: remove %s/%s: %w", scope, name, err)

@@ -129,15 +129,16 @@ func WithSearchBytes(n int) ToolOption {
 	return func(o *toolOptions) { o.searchBytes = n }
 }
 
-// WithRendered tells memory_save what the model was shown: fn returns
-// the [Manifest] of the render the model is composing from, which is the
-// last one the product put in the instructions. A save of an entry that
-// manifest holds names the hash the block showed as the write's base,
-// through [BasedOn], so a write another session made after the render
-// and this save replaced is a record [LostUpdates] reports, rather than
-// a base the save claimed by reading it. An entry the manifest does not
-// hold, a create or one the block omitted, is based on the save's own
-// read, as it is without the option. The result line says which base
+// WithRendered tells memory_save and memory_forget what the model was
+// shown: fn returns the [Manifest] of the render the model is composing
+// from, which is the last one the product put in the instructions. A
+// save of an entry that manifest holds names the hash the block showed
+// as the write's base, through [BasedOn], so a write another session
+// made after the render and this save replaced is a record
+// [LostUpdates] reports, rather than a base the save claimed by reading
+// it. An entry the manifest does not hold, a create or one the block
+// omitted, is based on the save's own read, as it is without the
+// option. The result line says which base
 // the write took, and says so to the model when the entry changed after
 // the render.
 //
@@ -148,8 +149,12 @@ func WithSearchBytes(n int) ToolOption {
 // call, in BeforeModelCall, keeps it so; one that renders once per turn
 // has a second save of an entry in that turn based on the block rather
 // than on the model's own first save, and reported as a lost update.
-// memory_patch is unchanged: its edit is anchored in the stored text,
-// so it merges with a concurrent write or fails when the anchor is gone.
+// memory_forget of an entry the manifest holds is conditional on the
+// hash the block showed, through [IfHash]: an entry another session
+// changed after the render is not forgotten, and the call fails saying
+// so. memory_patch is unchanged: its edit is anchored in the stored
+// text, so it merges with a concurrent write or fails when the anchor
+// is gone.
 //
 // When the manifest records a block left out whole, [Manifest.Dropped],
 // the model was shown no memory, and every writer, memory_save,
@@ -613,7 +618,11 @@ func (t *toolset) patchDescription() string {
 }
 
 func (t *toolset) forgetDescription() string {
-	return "Remove a memory entry. The store's journal keeps its last content. " + t.writerScopes()
+	note := ""
+	if t.opts.rendered != nil {
+		note = "An entry the memory block shows is removed only while it holds what the block shows; when it changed since, the call fails and says so. "
+	}
+	return "Remove a memory entry. The store's journal keeps its last content. " + note + t.writerScopes()
 }
 
 func (t *toolset) insertDescription() string {
@@ -940,12 +949,39 @@ func (t *toolset) forget(ctx context.Context, a forgetArgs) (agenttool.Result, e
 	if err := t.fixedForget(scope, a.Name); err != nil {
 		return agenttool.Result{}, err
 	}
-	c, err := t.store.Forget(ctx, scope, a.Name)
+	// The model chose to forget what the block showed it, so the forget
+	// holds only while the entry is still that: a save another session
+	// made after the render is not forgotten unseen.
+	var opts []PutOption
+	shown, fromBlock := t.shown(ctx, scope, a.Name)
+	if fromBlock {
+		opts = append(opts, IfHash(shown))
+	}
+	c, err := t.store.Forget(ctx, scope, a.Name, opts...)
+	var ce *ConflictError
+	if fromBlock && errors.As(err, &ce) && !ce.Meta {
+		return agenttool.Result{}, &forgetChanged{ce, shown}
+	}
 	if err != nil {
 		return agenttool.Result{}, err
 	}
 	return wrote(ForgetTool, c, "Forgot %s/%s", scope, a.Name)
 }
+
+// forgetChanged is memory_forget's failure when the entry changed after
+// the block the model read was rendered. It is the store's
+// [ConflictError], told in terms of the block.
+type forgetChanged struct {
+	*ConflictError
+	shown string
+}
+
+func (e *forgetChanged) Error() string {
+	return fmt.Sprintf("%s/%s changed after the memory block was rendered, from %s to %s, so it was not forgotten; read it with memory_search, and forget it again if it should still go",
+		e.Scope, e.Name, e.shown, e.Have)
+}
+
+func (e *forgetChanged) Unwrap() error { return e.ConflictError }
 
 // insertEntry creates an entry under a name of its own, from the time
 // and the content's hash, taking the next suffix while the name is

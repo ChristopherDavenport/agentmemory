@@ -80,7 +80,7 @@ type Store interface {
     Get(ctx context.Context, scope Scope, name string) (*Entry, error)
     List(ctx context.Context, scope Scope) ([]Entry, error)          // live entries, by name
     Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error)  // create or replace; appends and returns the record
-    Forget(ctx context.Context, scope Scope, name string) (*Change, error) // writes a tombstone, returns the record
+    Forget(ctx context.Context, scope Scope, name string, opts ...PutOption) (*Change, error) // writes a tombstone, returns the record; IfHash, IfMetaHash make it conditional
     Search(ctx context.Context, scopes []Scope, query string, limit int) ([]Entry, error)
     Journal(ctx context.Context, after uint64) iter.Seq2[Change, error] // records with Seq > after
     MaxEntryBytes() int                                              // the bound Put enforces

@@ -7,6 +7,35 @@ versions may break the API.
 
 ## Unreleased
 
+### Changed
+
+- **Breaking:** `Store.Forget` takes put options,
+  `Forget(ctx, scope, name, opts ...PutOption)`, in `MemStore`,
+  `filestore` and `sqlite` (#53). Under `IfHash` or `IfMetaHash` a
+  forget is conditional, as a `Put` is: a live entry whose hash or
+  metadata hash is not the one named fails with `ErrConflict`, a
+  `ConflictError`, and nothing is written; the check and the tombstone
+  are one step under the store's write lock or transaction. A missing
+  entry is still `ErrNotFound`, and `BasedOn` does nothing on a forget.
+  A store outside this repository adds the parameter; a caller that
+  reads an entry, compares its hash and forgets it passes
+  `IfHash(seen)` instead, so a save landing in between is not
+  forgotten. `storetest` has a `ForgetIf` case.
+- Under `WithRendered`, `memory_forget` forgets an entry the block
+  showed only while it holds the hash the block showed (#53). When
+  another session changed it after the render, the call fails with
+  `<scope>/<name> changed after the memory block was rendered, from
+  <shown> to <held>, so it was not forgotten; read it with
+  memory_search, and forget it again if it should still go`, which
+  unwraps to the `ConflictError`. An entry the block did not show, and
+  a tool set without `WithRendered`, forget as before. The tool's
+  description says so under the option.
+- RFC 0001 draft 0.4: §3.4 gains the conditional forget (if-hash and
+  if-meta-hash, *conflict*, one step with the tombstone), §3.3 and
+  §3.7 name the forget beside the put, §6.4 and §6.8 the tool's
+  condition on the block's hash, and the bindings and conformance
+  follow; "Changes since 0.3" lists it as breaking.
+
 ### Fixed
 
 - `filestore` no longer reports a live entry as not found when a write

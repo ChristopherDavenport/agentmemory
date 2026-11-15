@@ -40,6 +40,7 @@ func Run(t *testing.T, opts Options) {
 	t.Run("IfHash", func(t *testing.T) { testIfHash(t, opts) })
 	t.Run("MetaHash", func(t *testing.T) { testMetaHash(t, opts) })
 	t.Run("Forget", func(t *testing.T) { testForget(t, opts) })
+	t.Run("ForgetIf", func(t *testing.T) { testForgetIf(t, opts) })
 	t.Run("Journal", func(t *testing.T) { testJournal(t, opts) })
 	t.Run("LostUpdates", func(t *testing.T) { testLostUpdates(t, opts) })
 	t.Run("LastSeq", func(t *testing.T) { testLastSeq(t, opts) })
@@ -432,6 +433,100 @@ func testForget(t *testing.T, opts Options) {
 	}
 	if changes := collect(t, st, 3); len(changes) != 1 || changes[0].Prev != "" || changes[0].Replaced != "" || changes[0].Entry.Deleted {
 		t.Errorf("record after recreate = %+v", changes)
+	}
+}
+
+// testForgetIf holds a conditional forget to RFC 0001 §3.4: under
+// IfHash or IfMetaHash it forgets only the state the caller names, fails
+// with a ConflictError and writes nothing otherwise, and its check and
+// its tombstone are one step, so a save racing it is never lost.
+func testForgetIf(t *testing.T, opts Options) {
+	ctx := context.Background()
+	st := opts.New(t)
+	e := agentmemory.Entry{Scope: "user", Name: "tz", Content: "Europe/London", Meta: map[string]string{"description": "Timezone"}}
+	if _, err := st.Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := st.Get(ctx, "user", "tz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := agentmemory.Hash("Europe/Paris")
+	refused := []struct {
+		name string
+		opts []agentmemory.PutOption
+		want agentmemory.ConflictError
+	}{
+		{"stale hash", []agentmemory.PutOption{agentmemory.IfHash(stale)}, agentmemory.ConflictError{Scope: "user", Name: "tz", Want: stale, Have: cur.Hash}},
+		{"must not exist", []agentmemory.PutOption{agentmemory.IfHash("")}, agentmemory.ConflictError{Scope: "user", Name: "tz", Want: "", Have: cur.Hash}},
+		{"stale meta hash", []agentmemory.PutOption{agentmemory.IfHash(cur.Hash), agentmemory.IfMetaHash("")}, agentmemory.ConflictError{Scope: "user", Name: "tz", Want: "", Have: cur.MetaHash, Meta: true}},
+	}
+	for _, tt := range refused {
+		rec, err := st.Forget(ctx, "user", "tz", tt.opts...)
+		var ce *agentmemory.ConflictError
+		if !errors.Is(err, agentmemory.ErrConflict) || !errors.As(err, &ce) || rec != nil {
+			t.Errorf("%s: Forget = %+v, %v, want nil, ErrConflict", tt.name, rec, err)
+			continue
+		}
+		if *ce != tt.want {
+			t.Errorf("%s: conflict = %+v, want %+v", tt.name, *ce, tt.want)
+		}
+	}
+	if got, err := st.Get(ctx, "user", "tz"); err != nil || got.Hash != cur.Hash {
+		t.Fatalf("after refused forgets Get = %+v, %v; a refused forget removed the entry", got, err)
+	}
+	if n := count(t, st, 0); n != 1 {
+		t.Errorf("journal = %d records after refused forgets, want 1", n)
+	}
+	// BasedOn names no condition, and a tombstone's base is the state it
+	// removed, so it does not move Prev.
+	tomb, err := st.Forget(ctx, "user", "tz", agentmemory.IfHash(cur.Hash), agentmemory.IfMetaHash(cur.MetaHash), agentmemory.BasedOn(stale))
+	if err != nil {
+		t.Fatalf("Forget(IfHash current): %v", err)
+	}
+	if !tomb.Entry.Deleted || tomb.Prev != cur.Hash || tomb.Replaced != cur.Hash || tomb.Entry.Content != e.Content {
+		t.Errorf("tombstone = %+v, want Deleted with Prev and Replaced %s", tomb, cur.Hash)
+	}
+	if _, err := st.Get(ctx, "user", "tz"); !errors.Is(err, agentmemory.ErrNotFound) {
+		t.Errorf("Get after conditional Forget = %v, want ErrNotFound", err)
+	}
+	// An entry that is not live is not found, whatever the condition.
+	if _, err := st.Forget(ctx, "user", "tz", agentmemory.IfHash(cur.Hash)); !errors.Is(err, agentmemory.ErrNotFound) {
+		t.Errorf("Forget(IfHash) of a forgotten entry = %v, want ErrNotFound", err)
+	}
+
+	// A save racing a forget conditional on the state before it: in
+	// either order the save survives, since a forget after it no longer
+	// holds and a save after the forget creates the entry again.
+	const rounds = 16
+	for i := 0; i < rounds; i++ {
+		name := fmt.Sprintf("race-%d", i)
+		base, err := st.Put(ctx, agentmemory.Entry{Scope: "user", Name: name, Content: "before"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		var saveErr, forgetErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, saveErr = st.Put(ctx, agentmemory.Entry{Scope: "user", Name: name, Content: "after"})
+		}()
+		go func() {
+			defer wg.Done()
+			_, forgetErr = st.Forget(ctx, "user", name, agentmemory.IfHash(base.Entry.Hash))
+		}()
+		wg.Wait()
+		if saveErr != nil {
+			t.Fatalf("%s: save: %v", name, saveErr)
+		}
+		if forgetErr != nil && !errors.Is(forgetErr, agentmemory.ErrConflict) {
+			t.Fatalf("%s: forget: %v", name, forgetErr)
+		}
+		got, err := st.Get(ctx, "user", name)
+		if err != nil || got.Content != "after" {
+			t.Errorf("%s: Get = %+v, %v; the save racing a conditional forget was lost", name, got, err)
+		}
 	}
 }
 
