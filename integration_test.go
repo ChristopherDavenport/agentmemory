@@ -155,10 +155,10 @@ func TestRunUnderAgentturn(t *testing.T) {
 	if !changes[2].Entry.Deleted || changes[1].Prev != changes[0].Entry.Hash {
 		t.Errorf("journal is not a chain ending in a tombstone: %+v", changes)
 	}
-	// The definitions the model was offered are the four tools, and
+	// The definitions the model was offered are the five tools, and
 	// with several scopes each one's schema names them, so the model is
 	// steered by the request rather than by the description alone.
-	if defs := agenttool.Set(tools).Definitions(); len(defs) != 4 {
+	if defs := agenttool.Set(tools).Definitions(); len(defs) != 5 {
 		t.Errorf("definitions = %d", len(defs))
 	}
 	for _, def := range agenttool.Set(agentmemory.Tools(store, []agentmemory.Scope{"user", "channel-slack"})).Definitions() {

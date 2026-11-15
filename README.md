@@ -175,7 +175,11 @@ it; what was left out is listed under its scope so the model knows what
 order given, so a full scope starves the scopes after it;
 `WithScopeMaxBytes(scope, n)` caps what one scope's entries may take
 inside the bound, so a growing scope of facts about the environment
-cannot push the user's preferences out of the block. The output is determined by the store's
+cannot push the user's preferences out of the block.
+`WithScopeIndex(scope)` renders a scope as an index: each entry is its
+heading line alone, with its description or its first non-blank line,
+and the model reads one whole with `memory_read`; the manifest lists
+those entries as omitted with the reason `index`. The output is determined by the store's
 state and the bounds alone, so an unchanged store renders the same
 bytes, and the `Manifest` lists what the block held and omitted, by
 scope, name, hash, size and, for an omission, the reason, for the
@@ -214,7 +218,7 @@ added: `len(EntryPart(e, bound).Text) + len(PartSeparator)`.
 
 ## The tools
 
-`Tools(store, scopes)` returns four tools, five with `WithInsert`,
+`Tools(store, scopes)` returns five tools, six with `WithInsert`,
 restricted to the scopes the
 product allows. The list is in each tool's schema as an enum on
 `scope`, not only in its description, and with more than one scope
@@ -243,7 +247,8 @@ renders in name order, so under the budget the newest inserts are the
 ones left out.
 
 The tools carry `agenttool.Annotations`, so a host can approve the
-search without asking: `memory_search` is read-only, `memory_save` and
+search without asking: `memory_search` and `memory_read` are
+read-only, `memory_save` and
 `memory_forget` destructive, `memory_patch` neither, and none is
 open-world.
 
@@ -253,6 +258,7 @@ open-world.
 | `memory_patch` | `scope`, `name`, `old_text`, `new_text` | replace one exact occurrence |
 | `memory_forget` | `scope`, `name` | write a tombstone |
 | `memory_search` | `query`, `scopes`, `limit` | find entries the block omits |
+| `memory_read` | `scope`, `name` | read one entry whole, with its hash |
 | `memory_insert` | `scope`, `content`, `meta` | create under a name the tool gives |
 
 Each write's result carries the journal record it produced as

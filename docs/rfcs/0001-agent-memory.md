@@ -634,16 +634,17 @@ of **writable scopes**, one or more, and optionally **read scopes**.
 ### 6.1 Common rules
 
 - The tools are named `memory_save`, `memory_patch`, `memory_forget`,
-  `memory_search`, and, when the product offers an insert (6.5),
-  `memory_insert`.
+  `memory_search`, `memory_read` (6.11), and, when the product offers
+  an insert (6.5), `memory_insert`.
 - Writable scopes MUST be distinct names, and there MUST be at least
   one. Read scopes MUST be distinct names and none of them writable.
   A tool set built otherwise is a programming error, not a call error.
 - Each writing tool's parameter schema has a `scope` property whose
   `enum` lists the scopes it writes. With more than one, `scope` is
   required; with one, it MAY be left out and means that one.
-  `memory_search`'s `scopes` items have an `enum` of the writable and
-  read scopes together. Section 6.10 gives every schema.
+  `memory_search`'s `scopes` items, and `memory_read`'s `scope`, have
+  an `enum` of the writable and read scopes together. Section 6.10
+  gives every schema.
 - The tool checks every call against its own schema before it runs,
   so a required property, a type or an enum is enforced, not advisory:
   a `memory_patch` that omits `new_text` is an error, not a deletion,
@@ -666,6 +667,7 @@ Annotations, flow and replay, as agenttool defines them:
 | `memory_patch` | Edit memory entry | no | no | no | no | unknown | not stated |
 | `memory_forget` | Forget memory entry | no | yes | no | no | unknown | not stated |
 | `memory_search` | Search memory | yes | no | (n/a) | no | safe | `untrusted`, unless the product says otherwise |
+| `memory_read` | Read memory entry | yes | no | (n/a) | no | safe | as `memory_search` |
 | `memory_insert` | Insert memory entry | no | no | no | no | unknown | not stated |
 
 No writer is idempotent or safe to run again: a save run again is a
@@ -673,8 +675,9 @@ second write and, anchored in the block, reports the session's own
 first run as lost; a patch run again fails or edits twice; a forget run
 again removes what another session saved in between, unless it is
 conditional on the block (6.4); an insert run
-again inserts again. `memory_search`'s flow declares that its output
-reads `untrusted` content, since it returns memory a model wrote
+again inserts again. `memory_search`'s flow, and `memory_read`'s,
+which returns the same text one entry at a time, declare that the
+output reads `untrusted` content, since it returns memory a model wrote
 (section 10), and sends nothing; a product whose searchable scopes only
 people write MAY narrow it, and SHOULD declare the union of the labels
 it gives the scopes in the block (7.2).
@@ -920,6 +923,15 @@ support is refused by the store (5.1).
  "required":["query"]}
 ```
 
+`memory_read`, over the writable and read scopes:
+
+```json
+{"type":"object","properties":{
+  "scope":{"type":"string","enum":["user","project","rules"],"description":"Which memory the entry belongs to; name one of the values"},
+  "name":{"type":"string","description":"The entry to read"}},
+ "required":["scope","name"]}
+```
+
 `memory_insert`, with one insert scope, so `scope` is optional:
 
 ```json
@@ -930,13 +942,35 @@ support is refused by the store (5.1).
  "required":["content"]}
 ```
 
+### 6.11 `memory_read`
+
+Arguments: `scope`, under the scope rule over the writable and read
+scopes together, and `name` (required). It gets the entry (3.1) and
+returns it as stored, not neutralised: its scope, name, size, the
+store's entry bound, its hash, its description when it has one, and
+its whole content.
+
+- A missing entry fails with *not found*, pointing to `memory_search`.
+- Content over the product's result bound (6.6) fails, saying the size
+  and the bound, rather than filling the transcript.
+- A read writes nothing and carries no record, and stays when the block
+  is left out (6.8), as `memory_search` does.
+
+> A product that renders a scope as an index (7.2) MUST offer
+> `memory_read`.
+
+`memory_search` cannot stand in for it: how a search matches is the
+store's (3.5), so no query is promised to find an entry by its name.
+The reference offers `memory_read` in every tool set.
+
 ## 7. The rendered block
 
 ### 7.1 Inputs
 
 The block is rendered from a store, an ordered list of scopes, a
-**block bound** in bytes, and optionally a **cap** per scope and
-**trust labels** per scope.
+**block bound** in bytes, and optionally a **cap** per scope, **trust
+labels** per scope, and the **index scopes**, those rendered as an
+index (7.2).
 
 - The scopes MUST be distinct names; a renderer refuses a scope given
   twice or not a name with *invalid*, since its parts would collide.
@@ -952,9 +986,13 @@ The block is rendered from a store, an ordered list of scopes, a
 - A scope's trust labels are agentsession's (`untrusted`, `private`,
   or none); a scope without them is `untrusted`. They change no byte.
 
+- An index scope that is not rendered does nothing; naming one twice
+  is naming it once.
+
 The fixtures under `testdata/render` give each input as JSON
-(`<case>.input.json`: `scopes`, `block_bound`, `entry_bound`, `caps`
-and the `entries` put into an empty store) beside its outputs.
+(`<case>.input.json`: `scopes`, `block_bound`, `entry_bound`, `caps`,
+`index`, the index scopes, left out when none, and the `entries` put
+into an empty store) beside its outputs.
 
 ### 7.2 Parts
 
@@ -965,8 +1003,8 @@ agentsession's rule for joining instructions parts. In order:
 | part | `id` | `text` | `trust` |
 |---|---|---|---|
 | title | `memory` | `# Memory` | `{"reads":[]}` |
-| per scope, its heading | `memory/<scope>` | `## <scope>`; for a scope that lists no entries, `## <scope>`, a blank line and `No entries.` | `{"reads":[]}` |
-| per entry shown, in list order | `memory/<scope>/<name>` | the entry part, below | the scope's labels |
+| per scope, its heading | `memory/<scope>` | `## <scope>`; for a scope that lists no entries, `## <scope>`, a blank line and `No entries.`; for an index scope that lists entries, `## <scope>`, a blank line and the index note, below | `{"reads":[]}` |
+| per entry shown, in list order | `memory/<scope>/<name>` | the entry part, or in an index scope the index entry part, below | the scope's labels |
 | per scope that left entries out, after its entries | `memory/<scope>:omitted` | the omission line, below | the scope's labels |
 | summary | `memory:summary` | the summary line, below | `{"reads":[]}` |
 
@@ -978,6 +1016,36 @@ it has one and neutralised, below. `<size>` is the content's byte length
 and `<bound>` the store's entry bound. A description from a read that
 does not validate (3.1) can hold a line end; on the heading line it
 would start a line of its own.
+
+**Index entry parts.**
+
+> A renderer MAY render a scope as an index. An index entry part is
+> the entry part's heading line alone: the description, or, when there
+> is none, the first non-blank line of the content, neutralised and cut
+> to a fixed bound. The content is not shown. The manifest MUST list
+> each index entry under `omitted` with the reason `index`. A product
+> that renders a scope as an index MUST offer `memory_read` (6.11).
+
+The heading line is the entry part's, `### <name> (<size> of <bound>
+bytes)`, then, when the line below is not empty, ` — ` and that line:
+
+- the description, its U+000D and U+000A replaced by U+0020, as on an
+  entry part's heading; or, when the entry has no non-empty
+  description,
+- the content's first line, split as below, whose body holds anything
+  but U+0020 and U+0009, with those removed from both ends of it,
+  neutralised as a content of that one line, and, when longer than 120
+  bytes, cut to its longest prefix of at most 120 bytes that ends at
+  the start of a code point, followed by `…` (U+2026); empty when every
+  line is blank.
+
+The **index note** is `Index: each entry's content is not shown; read
+one whole with memory_read.` It is the one place the block names
+`memory_read`, so a model reading an index knows how to reach an
+entry. An index entry part is packed against the bound and the cap as
+an entry part is (7.3), by its own bytes; one that does not fit is
+left out with the reason `budget` and named on the omission line, as
+any entry is.
 
 **Neutralised content.** The block uses heading levels one to three
 for its own structure, so content MUST NOT open one, nor open an HTML
@@ -1041,8 +1109,9 @@ The **summary** is
 Entries: <shown> shown, <omitted> omitted. Block: <size> of <bound> bytes (<free> free). Entry limit: <limit> bytes.
 ```
 
-where `<size>` is the joined block's own length in bytes, summary
-included, `<free>` is the block bound less `<size>`, right-aligned with
+where `<shown>` and `<omitted>` count the manifest's `entries` and
+`omitted` (7.6), so an index entry counts as omitted, `<size>` is the
+joined block's own length in bytes, summary included, `<free>` is the block bound less `<size>`, right-aligned with
 spaces to the width of the bound's decimal digits, and `<limit>` is the
 store's entry bound. Padding `<free>` makes the summary's width depend
 on `<size>` alone, so the size it states can be its own.
@@ -1081,7 +1150,7 @@ of its own beside these gives them IDs outside it.
 
 The block, its parts and its manifest MUST be a function of the store's
 live entries, the entry bound, the scope list, the block bound, the
-caps and the trust labels, and of nothing else: no time, no randomness,
+caps, the trust labels and the index scopes, and of nothing else: no time, no randomness,
 no state of an earlier render. An unchanged store renders the same
 bytes.
 
@@ -1090,7 +1159,9 @@ bytes.
 A renderer whose blocks are to be byte-identical to the reference's,
 which a session's instructions parts and a prompt cache both reward,
 packs as follows; `cost(t)` is `len(t) + 2`, a part with its separator,
-and an entry part's text is the neutralised one of 7.2.
+an entry part's text is the neutralised one of 7.2, and in an index
+scope an entry's part is its index entry part and a scope heading's
+text holds the index note.
 
 1. `fixed` is `len("# Memory")`, plus `cost` of the summary with
    `<shown>` and `<omitted>` both the total number of entries listed,
@@ -1122,7 +1193,8 @@ parts with their lengths, and the manifest.
 
 A render returns a **manifest**: `entries`, the entries the block
 holds in block order, and `omitted`, the entries the bound or a cap
-left out, in the order they would have appeared. Each element is:
+left out and those an index shows by their heading line alone, in the
+order they would have appeared. Each element is:
 
 | member | type | presence | meaning |
 |---|---|---|---|
@@ -1141,6 +1213,13 @@ Reasons:
 
 - `budget`: the entry's part did not fit in what was left of the bound
   or of its scope's cap. A renderer writes it.
+- `index`: the entry's scope is rendered as an index, and the block
+  holds its index entry part (7.2), not its content. A renderer writes
+  it. An index entry is not in `entries`, so `memory_save` bases a save
+  of it on its own read (6.2, 6.8) and `memory_forget` forgets it
+  unconditionally (6.4): the model was not shown its content. The
+  manifest hash moves between an index and a full render of one
+  store.
 - `block`: the product left the whole block out, having no room for
   memory on this call. A renderer never writes it; a product records a
   manifest with every entry the block would have held and every one it
@@ -1196,7 +1275,10 @@ has, and adds no entry type:
   whose `reason` is the manifest's reason, and whose `size` is what
   agentsession means by it, the bytes the part would have added: the
   length of the entry's part text (7.2) plus 2 for its separator. It is
-  not the manifest's `bytes`, which is the content's size.
+  not the manifest's `bytes`, which is the content's size. An entry
+  omitted with the reason `index` is the exception: the block holds its
+  index entry part under that ID, which is recorded as an instructions
+  part, and no `instructions_omitted` element names it.
 - The manifest is a `custom` entry under `agentmemory:render` (8.4).
 - A write is a function call, and its write record is a `custom`
   entry under `agentmemory:write` beside the call (8.3).
@@ -1451,8 +1533,8 @@ part of this document.
   and refuse read scopes before their schema check (6.1); the scope a
   call names is checked at call time as well as in the schema.
 - **Bounds.** The entry bound, the metadata bound, the block bound and
-  the search result bound keep a model from filling its own context
-  through memory.
+  the search result bound, which `memory_read` keeps too, keep a model
+  from filling its own context through memory.
 
 ## 11. Bindings
 
@@ -1475,14 +1557,14 @@ The root module is the reference binding.
 | record | `Change{Seq, Entry, Prev, Replaced, Session, Source, At}`, `SourceReconciled` |
 | lost updates | `LostUpdates(ctx, store, after)`, `LostUpdate{Change, Over, Break, AfterDamage}` |
 | last sequence number | `LastSeqer`, `LastSeq(ctx, s)` |
-| tools | `Tools(store, scopes, opts...)`; `SaveTool`, `PatchTool`, `ForgetTool`, `SearchTool`, `InsertTool`, `InsertName`; the writers `WriteTools()` |
+| tools | `Tools(store, scopes, opts...)`; `SaveTool`, `PatchTool`, `ForgetTool`, `SearchTool`, `ReadTool`, `InsertTool`, `InsertName`; the writers `WriteTools()` |
 | a block left out (6.8) | `Manifest.Dropped`; `CheckWrite(manifest, tool)` where a call is decided; `ErrBlockDropped`, the message; the writers refuse at execution under `WithRendered` |
 | tool options | `WithReadScopes`, `WithRendered` (6.8), `WithFixedNames`, `WithInsert`, `WithSearchLimit`, `WithSearchBytes`, `WithSearchReads`, `DefaultSearchLimit`, `DefaultSearchBytes` |
 | write record | `WriteRecord{Tool, Change}`, `WriteNS`, as an `agenttool.Recordable` |
 | usage paragraph | `Usage()` |
 | render | `Render`, `RenderParts`, `JoinParts`, `Part{ID, Text, Trust}`, `Trust{Reads}`, `EntryPart`, `PartSeparator`, `TitlePartID`, `SummaryPartID`, `PartID` |
-| render options | `WithMaxTotalBytes`, `WithScopeMaxBytes`, `WithScopeTrust`, `DefaultMaxTotalBytes`, `ErrBudget` |
-| manifest | `Manifest{Entries, Omitted, LeftOut}` (`LeftOut` is `dropped`), `ManifestEntry{Scope, Name, Hash, Bytes, Reason}`, `OmitBudget`, `OmitBlock`, `Manifest.Hash`, `Manifest.LeaveOut` for a block left out |
+| render options | `WithMaxTotalBytes`, `WithScopeMaxBytes`, `WithScopeTrust`, `WithScopeIndex` (index scopes), `DefaultMaxTotalBytes`, `ErrBudget` |
+| manifest | `Manifest{Entries, Omitted, LeftOut}` (`LeftOut` is `dropped`), `ManifestEntry{Scope, Name, Hash, Bytes, Reason}`, `OmitBudget`, `OmitIndex`, `OmitBlock`, `Manifest.Hash`, `Manifest.LeaveOut` for a block left out |
 | render record | `ManifestNS`; `Manifest.Record` (whole), `Manifest.RecordSince` (delta on a base) |
 | fold | `ManifestFold` (`Apply`, `Manifest`, `Record`), `ManifestFoldDepth`; `ApplyManifestRecord` is the single-base reader; `ErrManifestBase` is *unresolved* |
 | stores | `NewMemStore` (in memory), `filestore.Open` (Annex A, with `Reconcile`, `LockHolder`, `BreakLock`, `ErrLocked`), `sqlite.Open` (nested module) |
@@ -1512,17 +1594,21 @@ says, enforces its own schema, refuses read scopes and unlisted scopes,
 anchors every save and patch as sections 6.2 and 6.3 say, forgets an
 entry the block showed on its hash as 6.4 says, keeps fixed
 names and names inserts as 6.5 says, offers only the search options its
-store supports, declares `memory_search`'s flow, refuses every write in
+store supports, offers `memory_read` as 6.11 says, declares the flow of
+`memory_search` and `memory_read`, refuses every write in
 a turn whose block was left out as 6.8 says, reproducing
 `testdata/dropped.json`, and carries the write record of every write
 it makes. **A conforming product** that leaves the block out refuses a
 write where the call is decided, before anyone is asked (6.8).
 
 **A conforming renderer** meets sections 7.1 to 7.4, neutralises
-content and labels every part as 7.2 says, reproducing
+content, renders an index scope's entry parts and labels every part as
+7.2 says, reproducing
 `testdata/neutralise.json` and `testdata/render/trust.json`, and
 returns the manifest of 7.6. A **byte-identical renderer** also
-reproduces every fixture under `testdata/render` from its input.
+reproduces every fixture under `testdata/render` from its input,
+`index` among them. **A conforming product** that renders a scope as an
+index offers `memory_read`.
 
 **The hashes** of sections 1 and 2.3 are pinned by
 `testdata/hashes.json`, content and metadata hashes beside what they
@@ -1593,6 +1679,7 @@ not a new meaning under the old one.
 |---|---|---|
 | #53 | 3.3, 3.4, 3.7, 6.4, 6.8, 11, 12 | Forget takes if-hash and if-meta-hash, as a put does, and fails with *conflict* and writes nothing when the condition does not hold, check and tombstone one step; based-on does nothing on a forget. `memory_forget` forgets an entry the block showed conditionally on the hash the block showed, and fails saying the entry changed since the render. Draft 0.3's forget had no condition, so a writer that read an entry, compared its hash and forgot it forgot a save that landed in between, and the tool forgot whatever the store held. Breaking: a store's forget signature changes in the binding. |
 | #54 | 3.7, Annex A | A read of an entry live before and after a concurrent write returns it, old or new, and never reports it absent; get, list, search and the render alike. The reference directory store read an entry as absent when a write's rename landed between its open and its check of the name, so a render racing a write could leave the entry out of the block and its manifest. Annex A says a reader that compares the file it opened with the name opens again when a rename landed, and the reference does so a bounded number of times. |
+| #55 | 6.1, 6.10, 6.11, 7.1, 7.2, 7.4, 7.5, 7.6, 8.1, 10, 11, 12 | A renderer MAY render a scope as an index: each entry part is its heading line alone, with the description or the content's first non-blank line, neutralised and cut to 120 bytes, under a scope heading that names `memory_read`; the manifest lists each such entry under `omitted` with the new reason `index`, and the summary counts it as omitted. A product that renders an index MUST offer `memory_read` (scope, name), which returns one entry as stored with its hash, read-only and safe to replay; the reference offers it in every tool set. Draft 0.3 rendered every scope whole, about 2.4k tokens a request for three project notes a task never touched, and `memory_search` cannot promise to find an entry by its name. The fixture `testdata/render/index.*` renders one. |
 
 ## 16. Changes since 0.2
 

@@ -30,6 +30,7 @@ type renderInput struct {
 	BlockBound int              `json:"block_bound"`
 	EntryBound int              `json:"entry_bound"`
 	Caps       map[Scope]int    `json:"caps,omitempty"`
+	Index      []Scope          `json:"index,omitempty"`
 	Entries    []renderInputRow `json:"entries"`
 }
 
@@ -41,7 +42,7 @@ type renderInputRow struct {
 }
 
 func inputOf(tc renderCase) renderInput {
-	in := renderInput{Scopes: tc.scopes, BlockBound: tc.maxTotal, EntryBound: tc.max, Caps: tc.scopeMax, Entries: []renderInputRow{}}
+	in := renderInput{Scopes: tc.scopes, BlockBound: tc.maxTotal, EntryBound: tc.max, Caps: tc.scopeMax, Index: tc.index, Entries: []renderInputRow{}}
 	if in.Scopes == nil {
 		in.Scopes = []Scope{}
 	}
@@ -92,6 +93,9 @@ func TestRenderFixtureInputs(t *testing.T) {
 			opts := []RenderOption{WithMaxTotalBytes(in.BlockBound)}
 			for s, n := range in.Caps {
 				opts = append(opts, WithScopeMaxBytes(s, n))
+			}
+			for _, s := range in.Index {
+				opts = append(opts, WithScopeIndex(s))
 			}
 			parts, man, err := RenderParts(ctx, st, in.Scopes, opts...)
 			if err != nil {

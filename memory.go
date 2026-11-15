@@ -9,7 +9,7 @@
 // such as a description. A [Store] holds entries and a journal of every
 // change; [NewMemStore] is the in-memory one, filestore the reference
 // one a person can open, edit and commit, and sqlite the one with
-// full-text search. [Tools] returns the four tools through which the
+// full-text search. [Tools] returns the five tools through which the
 // model reaches a store, so every write is a function call in the
 // transcript. [Render] turns the entries of the scopes a product names
 // into the block it puts in agentturn's Config.Instructions, bounded in

@@ -22,11 +22,12 @@ const (
 	ForgetTool = "memory_forget"
 	SearchTool = "memory_search"
 	InsertTool = "memory_insert"
+	ReadTool   = "memory_read"
 )
 
 // WriteTools returns the names of the tools that write memory:
 // memory_save, memory_patch, memory_forget and memory_insert. Every
-// tool of [Tools] but memory_search is one. A product that leaves the
+// tool of [Tools] but memory_search and memory_read is one. A product that leaves the
 // block out of a request withholds these from it and refuses a call
 // of one, see [CheckWrite].
 func WriteTools() []string {
@@ -278,6 +279,11 @@ type forgetArgs struct {
 	Name  string `json:"name" desc:"The entry to remove"`
 }
 
+type readArgs struct {
+	Scope string `json:"scope,omitempty" desc:"Which memory the entry belongs to"`
+	Name  string `json:"name" desc:"The entry to read"`
+}
+
 type searchArgs struct {
 	Query         string            `json:"query" desc:"Words that must all appear in an entry's name, metadata or content, in any case"`
 	Scopes        []string          `json:"scopes,omitempty" desc:"Which memories to search; all of them when omitted"`
@@ -295,8 +301,12 @@ var searchOptionArgs = []string{SearchAny, SearchMeta, SearchUpdatedAfter, Searc
 
 // Tools returns the tools through which the model reaches store,
 // restricted to the scopes the product allows: memory_save,
-// memory_patch, memory_forget and memory_search, and memory_insert last
-// when [WithInsert] names a scope. A call that names a
+// memory_patch, memory_forget, memory_search and memory_read, and
+// memory_insert last when [WithInsert] names a scope. memory_read reads
+// one entry whole by scope and name, from the writable and the read
+// scopes, for an entry the block shows as an index entry
+// ([WithScopeIndex]) or left out; it is read-only, safe to replay and
+// reads what memory_search reads. A call that names a
 // scope outside the list is an error the model sees, and the list is
 // in the schema as an enum, not only in the description; a call that
 // omits the scope is an error too, unless the product allows one scope
@@ -402,6 +412,9 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, t.read, agenttool.Annotations{Title: "Edit memory entry"}, agenttool.ReplayUnknown, nil),
 		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, t.read, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}, agenttool.ReplayUnknown, nil),
 		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}, agenttool.ReplaySafe, &agenttool.Flow{Reads: t.searchReads()}, t.unsupported()...),
+		// memory_read returns what memory_search does, one entry by
+		// name, so it reads what the search reads.
+		tool(ReadTool, t.readDescription(), t.readEntry, searchable, nil, nil, agenttool.Annotations{Title: "Read memory entry", ReadOnly: true}, agenttool.ReplaySafe, &agenttool.Flow{Reads: t.searchReads()}),
 	}
 	if len(o.insert) > 0 {
 		// An insert never overwrites, so it is not destructive; run
@@ -623,6 +636,22 @@ func (t *toolset) forgetDescription() string {
 		note = "An entry the memory block shows is removed only while it holds what the block shows; when it changed since, the call fails and says so. "
 	}
 	return "Remove a memory entry. The store's journal keeps its last content. " + note + t.writerScopes()
+}
+
+func (t *toolset) readDescription() string {
+	return fmt.Sprintf("Read one memory entry whole by its scope and name: its content as stored, its size and its hash. Use it for an entry the memory block lists without its content, as an index does, or one it left out over the budget. An entry over %d bytes is refused with its size. %s",
+		t.opts.searchBytes, t.readScopeList())
+}
+
+// readScopeList names memory_read's choices: the writable scopes and
+// the read scopes, of which a call names one, or, with one in all,
+// may leave it out.
+func (t *toolset) readScopeList() string {
+	all := names(slices.Concat(t.scopes, t.opts.readScopes))
+	if len(all) == 1 {
+		return fmt.Sprintf("Scope: %s, the only one; the argument may be left out.", all[0])
+	}
+	return fmt.Sprintf("Scopes: %s; name one on every call.", strings.Join(all, ", "))
 }
 
 func (t *toolset) insertDescription() string {
@@ -1093,6 +1122,50 @@ func (t *toolset) search(ctx context.Context, a searchArgs) (agenttool.Result, e
 	if len(unshown) > 0 {
 		fmt.Fprintf(&b, "\nNot shown, over the %d byte result limit; search for them by name: %s\n", t.opts.searchBytes, strings.Join(unshown, ", "))
 	}
+	return agenttool.Text(b.String()), nil
+}
+
+// readEntry is memory_read: one entry whole, as stored, with its hash,
+// so a model can read an entry the block shows as an index entry or
+// left out, by name; memory_search cannot promise to find an entry by
+// its name, since how it matches is the store's.
+func (t *toolset) readEntry(ctx context.Context, a readArgs) (agenttool.Result, error) {
+	all := slices.Concat(t.scopes, t.opts.readScopes)
+	var scope Scope
+	switch {
+	case a.Scope == "" && len(all) == 1:
+		scope = all[0]
+	case a.Scope == "":
+		return agenttool.Result{}, fmt.Errorf("scope is required; name one of: %s", strings.Join(names(all), ", "))
+	default:
+		s, err := t.readScope(a.Scope)
+		if err != nil {
+			return agenttool.Result{}, err
+		}
+		scope = s
+	}
+	e, err := t.store.Get(ctx, scope, a.Name)
+	if errors.Is(err, ErrNotFound) {
+		return agenttool.Result{}, fmt.Errorf("%w; memory_search finds entries by their words", err)
+	}
+	if err != nil {
+		return agenttool.Result{}, err
+	}
+	if e.Size() > t.opts.searchBytes {
+		return agenttool.Result{}, fmt.Errorf("%s/%s is %d bytes, over the %d byte result limit; memory_search shows the entries that fit", scope, a.Name, e.Size(), t.opts.searchBytes)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s/%s (%d of %d bytes) %s", scope, a.Name, e.Size(), t.store.MaxEntryBytes(), e.Hash)
+	if d := e.Description(); d != "" {
+		b.WriteString(": ")
+		b.WriteString(d)
+	}
+	b.WriteString("\n")
+	b.WriteString(e.Content)
+	if !strings.HasSuffix(e.Content, "\n") {
+		b.WriteString("\n")
+	}
+	// A read writes nothing, so its result carries no record.
 	return agenttool.Text(b.String()), nil
 }
 

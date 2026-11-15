@@ -1,0 +1,40 @@
+{
+  "entries": [
+    {
+      "scope": "user",
+      "name": "style",
+      "hash": "sha256:2a4a3dfcafa5394e115d399809518a17f582a9f9a05b4a594a2bc9798280c0b0",
+      "bytes": 27
+    }
+  ],
+  "omitted": [
+    {
+      "scope": "project",
+      "name": "build",
+      "hash": "sha256:23141845f30d0e904878eb2f3eaa178205ed54da422c33c36f8847808c043248",
+      "bytes": 60,
+      "reason": "index"
+    },
+    {
+      "scope": "project",
+      "name": "layout",
+      "hash": "sha256:dfb85c80767a5484bf321ea95b4ec5f3aa39322305513de2eebdcd99ddda3764",
+      "bytes": 59,
+      "reason": "index"
+    },
+    {
+      "scope": "project",
+      "name": "notes",
+      "hash": "sha256:c28eeec2782e05b29d312e5b6ab170657c4ac5524a619fab4ccc12a72b4f96ed",
+      "bytes": 206,
+      "reason": "index"
+    },
+    {
+      "scope": "project",
+      "name": "zz-left-out",
+      "hash": "sha256:99c19a3c44a2b503ff536562c18adb382aac059e572c062a9abbed887a9c4a48",
+      "bytes": 27,
+      "reason": "budget"
+    }
+  ]
+}

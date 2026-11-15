@@ -7,6 +7,41 @@ versions may break the API.
 
 ## Unreleased
 
+### Added
+
+- A scope can render as an index (#55). `WithScopeIndex(scope)` renders
+  each of its entries as the heading line alone, the name, size and
+  limit, then the description or, without one, the content's first
+  non-blank line, neutralised and cut to 120 bytes with `…`; the
+  content is not shown. The scope's heading adds `Index: each entry's
+  content is not shown; read one whole with memory_read.` An index
+  entry is packed against the bound and the cap by its own bytes, and
+  the manifest lists it under `Omitted` with the new reason
+  `OmitIndex` (`index`), so `memory_save` bases a save of it on its own
+  read, `memory_forget` forgets it unconditionally, `Dropped` is
+  unaffected, the manifest hash moves between an index and a full
+  render, and the summary counts it as omitted.
+  `testdata/render/index.*` is its fixture, and a render input's
+  `index` lists the index scopes.
+- `memory_read` (`ReadTool`) reads one entry whole by scope and name,
+  from the writable and the read scopes: its content as stored, its
+  size against the bound, its hash and its description (#55).
+  `memory_search` cannot stand in for it, since how a search matches is
+  the store's. It is read-only, safe to replay, reads what
+  `memory_search` reads (`WithSearchReads`), stays when the block is
+  left out, writes nothing, refuses an entry over the search result
+  bound, and is not one of `WriteTools()`. `Tools` now returns it after
+  `memory_search` in every tool set, so a tool set is five tools, six
+  with `WithInsert`, and `memory_insert` moves to index 5. `Usage()`
+  names it.
+- RFC 0001 draft 0.4: §7.2 gains index entry parts and the index note,
+  with the rule (a renderer MAY render a scope as an index; the
+  manifest MUST list each index entry under `omitted` with reason
+  `index`; a product that does MUST offer `memory_read`); §7.1, §7.4
+  and §7.5 take the index scopes as an input, §7.6 the reason, §8.1
+  records an index entry as a part rather than an omitted element;
+  §6.1, §6.10 and a new §6.11 define `memory_read`.
+
 ### Changed
 
 - **Breaking:** `Store.Forget` takes put options,

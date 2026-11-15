@@ -39,7 +39,7 @@ func TestToolsShape(t *testing.T) {
 	if err := agenttool.Set(tools).Validate(); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{SaveTool, PatchTool, ForgetTool, SearchTool}
+	want := []string{SaveTool, PatchTool, ForgetTool, SearchTool, ReadTool}
 	for i, tool := range tools {
 		if tool.Name() != want[i] {
 			t.Errorf("tool %d = %s, want %s", i, tool.Name(), want[i])
@@ -563,6 +563,7 @@ func TestToolsAnnotations(t *testing.T) {
 		PatchTool:  {Title: "Edit memory entry"},
 		ForgetTool: {Title: "Forget memory entry", Destructive: true},
 		SearchTool: {Title: "Search memory", ReadOnly: true},
+		ReadTool:   {Title: "Read memory entry", ReadOnly: true},
 	}
 	for _, tool := range tools {
 		if _, ok := tool.(agenttool.Annotated); !ok {
@@ -601,12 +602,14 @@ func TestToolsReplay(t *testing.T) {
 		PatchTool:  agenttool.ReplayUnknown,
 		ForgetTool: agenttool.ReplayUnknown,
 		SearchTool: agenttool.ReplaySafe,
+		ReadTool:   agenttool.ReplaySafe,
 	}
 	args := map[string]string{
 		SaveTool:   `{"name":"tz","content":"UTC"}`,
 		PatchTool:  `{"name":"tz","old_text":"UTC","new_text":"CET"}`,
 		ForgetTool: `{"name":"tz"}`,
 		SearchTool: `{"query":"timezone","scopes":["project"]}`,
+		ReadTool:   `{"scope":"project","name":"tz"}`,
 	}
 	for _, tool := range tools {
 		if got := agenttool.ReplayOf(ctx, tool, json.RawMessage(args[tool.Name()])); got != want[tool.Name()] {
@@ -653,6 +656,17 @@ func TestReadScopes(t *testing.T) {
 			}
 			if d := tool.Description(); !strings.Contains(d, "Scopes: user, project; all of them when scopes is left out. Read-only, so for reading: project.") {
 				t.Errorf("search description: %s", d)
+			}
+			continue
+		}
+		if tool.Name() == ReadTool {
+			// memory_read reads every scope, so it names both and asks
+			// for one.
+			if fmt.Sprint(schema.Properties["scope"].Enum) != "[user project]" || !slices.Contains(schema.Required, "scope") {
+				t.Errorf("read scope enum = %v, required %v", schema.Properties["scope"].Enum, schema.Required)
+			}
+			if d := tool.Description(); !strings.Contains(d, "Scopes: user, project; name one on every call.") {
+				t.Errorf("read description: %s", d)
 			}
 			continue
 		}
@@ -886,6 +900,68 @@ func TestForgetBasedOnTheRender(t *testing.T) {
 	}
 }
 
+// TestReadTool is #55's memory_read: it returns one entry by scope and
+// name, its content as stored and its hash, from a writable scope or a
+// read scope, read-only and safe to replay, and it stays when the block
+// was left out, as memory_search does.
+func TestReadTool(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	style := "## Style\n\nShort answers.\n"
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "style", Content: style, Meta: map[string]string{"description": "How to answer"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(ctx, Entry{Scope: "rules", Name: "policy", Content: "No force pushes."}); err != nil {
+		t.Fatal(err)
+	}
+	_, man, err := Render(ctx, store, []Scope{"user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(store, []Scope{"user"}, WithReadScopes("rules"), WithRendered(func() Manifest { return man.LeaveOut() }))
+	out, err := call(t, tools, ReadTool, `{"scope":"user","name":"style"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The stored text, not the block's neutralised one.
+	if !strings.Contains(out, style) || !strings.Contains(out, Hash(style)) || !strings.Contains(out, "How to answer") {
+		t.Errorf("memory_read = %q, want the content as stored, its hash and its description", out)
+	}
+	if out, err := call(t, tools, ReadTool, `{"scope":"rules","name":"policy"}`); err != nil || !strings.Contains(out, "No force pushes.") {
+		t.Errorf("memory_read of a read scope = %q, %v", out, err)
+	}
+	if _, err := call(t, tools, ReadTool, `{"scope":"user","name":"missing"}`); err == nil || !strings.Contains(err.Error(), "no such entry") {
+		t.Errorf("memory_read of a missing entry = %v", err)
+	}
+	if _, err := call(t, tools, ReadTool, `{"scope":"other","name":"style"}`); err == nil {
+		t.Error("memory_read of a scope outside the lists went through")
+	}
+	if _, err := call(t, tools, ReadTool, `{"name":"style"}`); err == nil || !strings.Contains(err.Error(), "scope") {
+		t.Errorf("memory_read without a scope over two scopes = %v", err)
+	}
+	if n := journalLen(store); n != 2 {
+		t.Errorf("memory_read wrote: journal has %d records", n)
+	}
+	var read agenttool.Tool
+	for _, tool := range tools {
+		if tool.Name() == ReadTool {
+			read = tool
+		}
+	}
+	if a := agenttool.AnnotationsOf(read); a != (agenttool.Annotations{Title: "Read memory entry", ReadOnly: true}) {
+		t.Errorf("memory_read annotations = %+v", a)
+	}
+	if f, ok := agenttool.FlowOf(read); !ok || fmt.Sprint(f.Reads) != fmt.Sprint([]agenttool.Label{agenttool.LabelUntrusted}) {
+		t.Errorf("memory_read flow = %+v, %v; want it to read untrusted", f, ok)
+	}
+	if got := agenttool.ReplayOf(ctx, read, json.RawMessage(`{"scope":"user","name":"style"}`)); got != agenttool.ReplaySafe {
+		t.Errorf("memory_read replay = %v, want safe", got)
+	}
+	if slices.Contains(WriteTools(), ReadTool) {
+		t.Error("memory_read is listed as a writer")
+	}
+}
+
 // TestFixedNames is #48's first half: a scope whose names the product
 // fixed takes a save of those names alone, and none of them is
 // forgotten, each refusal naming the fixed entries.
@@ -937,7 +1013,7 @@ func TestInsert(t *testing.T) {
 	store := NewMemStore()
 	at := time.Date(2026, 11, 2, 19, 44, 0, 123, time.UTC)
 	tools := Tools(store, []Scope{"core", "archive"}, WithInsert("archive"), withClock(func() time.Time { return at }))
-	if len(tools) != 5 || tools[4].Name() != InsertTool {
+	if len(tools) != 6 || tools[5].Name() != InsertTool {
 		t.Fatalf("tools = %d, want memory_insert last", len(tools))
 	}
 	if err := agenttool.Set(tools).Validate(); err != nil {
@@ -947,7 +1023,7 @@ func TestInsert(t *testing.T) {
 	stem := "20261102-194400-" + Hash("A passage.")[len("sha256:"):][:8]
 	var names []string
 	for i := range 3 {
-		res, err := tools[4].Execute(ctx, agenttool.Call{ID: "call_1", Args: json.RawMessage(`{"content":"A passage.","meta":{"description":"Kept"}}`)})
+		res, err := tools[5].Execute(ctx, agenttool.Call{ID: "call_1", Args: json.RawMessage(`{"content":"A passage.","meta":{"description":"Kept"}}`)})
 		if err != nil {
 			t.Fatalf("insert %d: %v", i, err)
 		}
@@ -974,7 +1050,7 @@ func TestInsert(t *testing.T) {
 	if _, err := call(t, tools, InsertTool, `{"scope":"core","content":"x"}`); err == nil {
 		t.Error("an insert into a scope without insert was taken")
 	}
-	if a := agenttool.AnnotationsOf(tools[4]); a != (agenttool.Annotations{Title: "Insert memory entry"}) {
+	if a := agenttool.AnnotationsOf(tools[5]); a != (agenttool.Annotations{Title: "Insert memory entry"}) {
 		t.Errorf("memory_insert annotations = %+v", a)
 	}
 }
