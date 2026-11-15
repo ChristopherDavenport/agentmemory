@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ChristopherDavenport/agenttool"
@@ -149,16 +150,20 @@ func WithSearchBytes(n int) ToolOption {
 // fn is called on every save, from the goroutine running the call, so
 // it must be safe to call while the product renders the next turn. A
 // nil fn is the same as no option. The manifest must be the one the
-// model is reading now: a product that re-renders before every model
-// call, in BeforeModelCall, keeps it so; one that renders once per turn
-// has a second save of an entry in that turn based on the block rather
-// than on the model's own first save, and reported as a lost update.
-// memory_forget of an entry the manifest holds is conditional on the
-// hash the block showed, through [IfHash]: an entry another session
-// changed after the render is not forgotten, and the call fails saying
-// so. memory_patch is unchanged: its edit is anchored in the stored
-// text, so it merges with a concurrent write or fails when the anchor
-// is gone.
+// model is reading now, as a product that re-renders before every model
+// call, in BeforeModelCall, keeps it. Until the manifest moves, what it
+// showed of an entry follows the tool set's own writes: the model knows
+// what it wrote, so a second save of an entry in one turn is built on
+// the model's first, and a save then a forget is not refused. A tool
+// set records those writes for itself, so a product gives each session
+// its own.
+//
+// memory_forget of an entry the manifest holds, shown whole or as an
+// index entry, is conditional on the hash the block showed, through
+// [IfHash]: an entry another session changed after the render is not
+// forgotten, and the call fails saying so. memory_patch is unchanged:
+// its edit is anchored in the stored text, so it merges with a
+// concurrent write or fails when the anchor is gone.
 //
 // When the manifest records a block left out whole, [Manifest.Dropped],
 // the model was shown no memory, and every writer, memory_save,
@@ -587,6 +592,70 @@ type toolset struct {
 	store  Store
 	scopes []Scope
 	opts   toolOptions
+
+	// own is what the tool set's own writes left each entry as, since
+	// the block in force was rendered; see [toolset.noteWrite].
+	own ownWrites
+}
+
+// ownWrites is the state each entry the tool set wrote was left in,
+// under the manifest it was written against. What the block showed
+// follows the model's own writes until the block is rendered again:
+// the model knows what it wrote, so a save then a forget of one entry
+// in one turn is not refused as a change made after the render, nor a
+// second save reported as lost. A manifest whose hash moved is a new
+// render, and starts clean.
+type ownWrites struct {
+	mu       sync.Mutex
+	manifest string
+	entries  map[ownKey]ownState
+}
+
+type ownKey struct {
+	scope Scope
+	name  string
+}
+
+type ownState struct {
+	hash string
+	gone bool
+}
+
+// noteWrite records what a write of the tool set's own left the entry
+// as, under the manifest the call read; see [ownWrites].
+func (t *toolset) noteWrite(ctx context.Context, c *Change) {
+	m, ok := t.rendered(ctx)
+	if !ok || c == nil {
+		return
+	}
+	h := m.Hash()
+	t.own.mu.Lock()
+	defer t.own.mu.Unlock()
+	if t.own.manifest != h || t.own.entries == nil {
+		t.own.manifest, t.own.entries = h, map[ownKey]ownState{}
+	}
+	t.own.entries[ownKey{c.Entry.Scope, c.Entry.Name}] = ownState{hash: c.Entry.Hash, gone: c.Entry.Deleted}
+}
+
+// ownWrite returns what the tool set's own write left the entry as
+// under manifest hash h, and whether it wrote it since that render.
+func (t *toolset) ownWrite(h string, scope Scope, name string) (ownState, bool) {
+	t.own.mu.Lock()
+	defer t.own.mu.Unlock()
+	if t.own.manifest != h {
+		return ownState{}, false
+	}
+	st, ok := t.own.entries[ownKey{scope, name}]
+	return st, ok
+}
+
+// reader is the tool that reads an entry by name: memory_read when the
+// tool set offers it, and memory_search, which may find it, otherwise.
+func (t *toolset) reader() string {
+	if t.opts.offersRead() {
+		return ReadTool
+	}
+	return SearchTool
 }
 
 // scopeList names the choices for a tool description. With one scope
@@ -665,7 +734,7 @@ func (t *toolset) saveDescription() string {
 }
 
 func (t *toolset) patchDescription() string {
-	return "Edit a memory entry by replacing old_text with new_text. old_text must appear exactly once in the entry, copied exactly; the call fails and says so when it is absent or repeated. The memory block shows headings of levels one to three at level four and escapes a line that starts with <, so copy such text from memory_search, which shows the entry as stored. Prefer this to memory_save for an edit: the call is the size of the change, and the edit is anchored in the stored text, so a change another session made in the meantime is kept. " + t.writerScopes()
+	return "Edit a memory entry by replacing old_text with new_text. old_text must appear exactly once in the entry, copied exactly; the call fails and says so when it is absent or repeated. The memory block shows headings of levels one to three at level four and escapes a line that starts with <, so copy such text from " + t.reader() + ", which shows the entry as stored. Prefer this to memory_save for an edit: the call is the size of the change, and the edit is anchored in the stored text, so a change another session made in the meantime is kept. " + t.writerScopes()
 }
 
 func (t *toolset) forgetDescription() string {
@@ -815,7 +884,7 @@ func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error
 	if errors.Is(err, ErrNotFound) {
 		stored = nil
 	}
-	shown, fromBlock := t.shown(ctx, scope, a.Name)
+	shown, fromBlock := t.shown(ctx, scope, a.Name, false)
 	var base []PutOption
 	switch {
 	case fromBlock:
@@ -861,6 +930,7 @@ func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error
 	if err != nil {
 		return agenttool.Result{}, err
 	}
+	t.noteWrite(ctx, c)
 	return wrote(SaveTool, c, "Saved %s/%s (%d of %d bytes) %s — %s; %s%s",
 		scope, a.Name, len(a.Content), t.store.MaxEntryBytes(), Hash(a.Content), savedWhat(stored), metaWhat(stored, a.Meta, e.Meta), t.basedWhat(stored, shown, fromBlock))
 }
@@ -899,15 +969,30 @@ func (t *toolset) rendered(ctx context.Context) (Manifest, bool) {
 }
 
 // shown returns the hash the rendered block showed for the entry, and
-// whether it showed the entry at all; see [WithRendered].
-func (t *toolset) shown(ctx context.Context, scope Scope, name string) (string, bool) {
+// whether it showed the entry at all; see [WithRendered]. index counts
+// an index entry, whose heading the block showed and whose content it
+// did not, as shown. The tool set's own writes since the render stand
+// in for what the block showed of the entries they wrote: a write
+// leaves the entry as shown at its new hash, and a forget leaves it not
+// shown.
+func (t *toolset) shown(ctx context.Context, scope Scope, name string, index bool) (string, bool) {
 	m, ok := t.rendered(ctx)
 	if !ok {
 		return "", false
 	}
+	if st, ok := t.ownWrite(m.Hash(), scope, name); ok {
+		return st.hash, !st.gone
+	}
 	for _, me := range m.Entries {
 		if me.Scope == scope && me.Name == name {
 			return me.Hash, true
+		}
+	}
+	if index {
+		for _, me := range m.Omitted {
+			if me.Scope == scope && me.Name == name && me.Reason == OmitIndex {
+				return me.Hash, true
+			}
 		}
 	}
 	return "", false
@@ -927,7 +1012,7 @@ func (t *toolset) basedWhat(stored *Entry, shown string, fromBlock bool) string 
 	case stored == nil:
 		return "; built on the block, but the entry was forgotten after the block was rendered and this write created it again"
 	case stored.Hash != shown:
-		return fmt.Sprintf("; built on the block's %s, but the entry changed to %s after the block was rendered and this write replaced that change; read it with memory_search if the change mattered", shown, stored.Hash)
+		return fmt.Sprintf("; built on the block's %s, but the entry changed to %s after the block was rendered and this write replaced that change; read it with %s if the change mattered", shown, stored.Hash, t.reader())
 	}
 	return "; built on the block"
 }
@@ -984,7 +1069,7 @@ func (t *toolset) patch(ctx context.Context, a patchArgs) (agenttool.Result, err
 		}
 		switch n := strings.Count(cur.Content, a.OldText); {
 		case n == 0:
-			return agenttool.Result{}, fmt.Errorf("old_text does not appear in %s/%s; read the entry with memory_search and copy the text exactly", scope, a.Name)
+			return agenttool.Result{}, fmt.Errorf("old_text does not appear in %s/%s; read the entry with %s and copy the text exactly", scope, a.Name, t.reader())
 		case n > 1:
 			return agenttool.Result{}, fmt.Errorf("old_text appears %d times in %s/%s; include more of the surrounding text so it appears once", n, scope, a.Name)
 		}
@@ -995,6 +1080,7 @@ func (t *toolset) patch(ctx context.Context, a patchArgs) (agenttool.Result, err
 		// otherwise be undone under a content hash that did not move.
 		c, err := t.store.Put(ctx, next, IfHash(cur.Hash), IfMetaHash(MetaHash(cur.Meta)))
 		if err == nil {
+			t.noteWrite(ctx, c)
 			return wrote(PatchTool, c, "Patched %s/%s (%d of %d bytes) %s", scope, a.Name, len(next.Content), t.store.MaxEntryBytes(), Hash(next.Content))
 		}
 		if !errors.Is(err, ErrConflict) {
@@ -1020,18 +1106,19 @@ func (t *toolset) forget(ctx context.Context, a forgetArgs) (agenttool.Result, e
 	// holds only while the entry is still that: a save another session
 	// made after the render is not forgotten unseen.
 	var opts []PutOption
-	shown, fromBlock := t.shown(ctx, scope, a.Name)
+	shown, fromBlock := t.shown(ctx, scope, a.Name, true)
 	if fromBlock {
 		opts = append(opts, IfHash(shown))
 	}
 	c, err := t.store.Forget(ctx, scope, a.Name, opts...)
 	var ce *ConflictError
 	if fromBlock && errors.As(err, &ce) && !ce.Meta {
-		return agenttool.Result{}, &forgetChanged{ce, shown}
+		return agenttool.Result{}, &forgetChanged{ce, shown, t.reader()}
 	}
 	if err != nil {
 		return agenttool.Result{}, err
 	}
+	t.noteWrite(ctx, c)
 	return wrote(ForgetTool, c, "Forgot %s/%s", scope, a.Name)
 }
 
@@ -1040,12 +1127,13 @@ func (t *toolset) forget(ctx context.Context, a forgetArgs) (agenttool.Result, e
 // [ConflictError], told in terms of the block.
 type forgetChanged struct {
 	*ConflictError
-	shown string
+	shown  string
+	reader string
 }
 
 func (e *forgetChanged) Error() string {
-	return fmt.Sprintf("%s/%s changed after the memory block was rendered, from %s to %s, so it was not forgotten; read it with memory_search, and forget it again if it should still go",
-		e.Scope, e.Name, e.shown, e.Have)
+	return fmt.Sprintf("%s/%s changed after the memory block was rendered, from %s to %s, so it was not forgotten; read it with %s, and forget it again if it should still go",
+		e.Scope, e.Name, e.shown, e.Have, e.reader)
 }
 
 func (e *forgetChanged) Unwrap() error { return e.ConflictError }
@@ -1065,6 +1153,7 @@ func (t *toolset) insertEntry(ctx context.Context, a insertArgs) (agenttool.Resu
 		name := InsertName(at, a.Content, n)
 		c, err := t.store.Put(ctx, Entry{Scope: scope, Name: name, Content: a.Content, Meta: a.Meta}, IfHash(""))
 		if err == nil {
+			t.noteWrite(ctx, c)
 			return wrote(InsertTool, c, "Inserted %s/%s (%d of %d bytes) %s", scope, name, len(a.Content), t.store.MaxEntryBytes(), c.Entry.Hash)
 		}
 		if !errors.Is(err, ErrConflict) {
@@ -1190,7 +1279,7 @@ func (t *toolset) readEntry(ctx context.Context, a readArgs) (agenttool.Result, 
 		return agenttool.Result{}, err
 	}
 	if e.Size() > t.opts.searchBytes {
-		return agenttool.Result{}, fmt.Errorf("%s/%s is %d bytes, over the %d byte result limit; memory_search shows the entries that fit", scope, a.Name, e.Size(), t.opts.searchBytes)
+		return agenttool.Result{}, fmt.Errorf("%s/%s is %d bytes, over the %d byte result limit, so it cannot be read whole here", scope, a.Name, e.Size(), t.opts.searchBytes)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s/%s (%d of %d bytes) %s", scope, a.Name, e.Size(), t.store.MaxEntryBytes(), e.Hash)

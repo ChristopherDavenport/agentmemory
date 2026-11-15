@@ -17,6 +17,6 @@ Index: each entry's content is not shown; read one whole with memory_read.
 
 ### notes (206 of 512 bytes) — word word word word word word word word word word word word word word word word word word word word word word word word …
 
-Not shown, over the block budget; fetch with memory_search: zz-left-out (27 bytes)
+Not shown, over the block budget; fetch with memory_read: zz-left-out (27 bytes)
 
-Entries: 1 shown, 4 omitted. Block: 600 of 32768 bytes (32168 free). Entry limit: 512 bytes.
+Entries: 1 shown, 3 indexed, 1 omitted. Block: 609 of 32768 bytes (32159 free). Entry limit: 512 bytes.

@@ -282,8 +282,11 @@ save is then based on the hash the block showed, a write another
 session made after the render is a lost update the journal reports,
 and the result tells the model the entry had changed. Under the same
 option `memory_forget` forgets an entry the block showed only while it
-holds the hash the block showed (`Forget` with `IfHash`), and fails,
-saying the entry changed, when another session saved it since.
+holds the hash the block showed (`Forget` with `IfHash`), an index
+entry included, and fails, saying the entry changed, when it no longer
+does. What the block showed follows the tool set's own writes until
+the next render, so the model's own save is not taken for a change
+since; give each session its own tool set.
 
 A product that leaves the block out of a request, when its share of an
 instruction budget runs out, withholds the writers (`WriteTools()`)

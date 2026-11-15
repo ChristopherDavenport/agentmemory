@@ -965,6 +965,88 @@ func TestReadTool(t *testing.T) {
 	}
 }
 
+// TestForgetAnIndexEntry: an entry the block showed as an index entry
+// is forgotten on the hash the index showed, as one shown whole is, so a
+// rewrite after the render is not forgotten unseen (#53 over #55), and
+// the failure sends the model to memory_read when it is offered.
+func TestForgetAnIndexEntry(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	for _, name := range []string{"build", "layout"} {
+		if _, err := store.Put(ctx, Entry{Scope: "project", Name: name, Content: name + " notes\nmore\n"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, man, err := Render(ctx, store, []Scope{"project"}, WithScopeIndex("project"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(store, []Scope{"project"}, WithIndexScopes("project"), WithRendered(func() Manifest { return man }))
+	if _, err := store.Put(WithSession(ctx, "other"), Entry{Scope: "project", Name: "build", Content: "rewritten\n"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = call(t, tools, ForgetTool, `{"name":"build"}`)
+	if !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "read it with memory_read") {
+		t.Errorf("forget of an index entry rewritten after the render = %v, want a conflict pointing to memory_read", err)
+	}
+	if got, err := store.Get(ctx, "project", "build"); err != nil || got.Content != "rewritten\n" {
+		t.Errorf("the rewrite was forgotten: %+v, %v", got, err)
+	}
+	if _, err := call(t, tools, ForgetTool, `{"name":"layout"}`); err != nil {
+		t.Errorf("forget of an unchanged index entry: %v", err)
+	}
+}
+
+// TestOwnWritesFollowTheBlock: under WithRendered, what the block showed
+// follows the tool set's own writes until the block is rendered again,
+// so a save and then a forget of one entry in one turn is not refused as
+// a change made after the render, nor a second save reported as lost;
+// another session's write after the model's own still is (#53).
+func TestOwnWritesFollowTheBlock(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "tz", Content: "UTC"}); err != nil {
+		t.Fatal(err)
+	}
+	_, man, err := Render(ctx, store, []Scope{"user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(store, []Scope{"user"}, WithRendered(func() Manifest { return man }))
+	if _, err := call(t, tools, SaveTool, `{"name":"tz","content":"CET"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call(t, tools, PatchTool, `{"name":"tz","old_text":"CET","new_text":"CEST"}`); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := call(t, tools, SaveTool, `{"name":"tz","content":"Europe/London"}`); err != nil || strings.Contains(out, "changed to") {
+		t.Errorf("a second save of the model's own entry = %q, %v; want it built on the model's own write", out, err)
+	}
+	if lost, err := LostUpdates(ctx, store, 0); err != nil || len(lost) != 0 {
+		t.Errorf("LostUpdates = %+v, %v; the model's own writes are not lost updates", lost, err)
+	}
+	if _, err := call(t, tools, ForgetTool, `{"name":"tz"}`); err != nil {
+		t.Errorf("forget after the model's own saves = %v", err)
+	}
+	// Saved again, then another session writes: the forget is refused.
+	if _, err := call(t, tools, SaveTool, `{"name":"tz","content":"UTC"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(WithSession(ctx, "other"), Entry{Scope: "user", Name: "tz", Content: "PST"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call(t, tools, ForgetTool, `{"name":"tz"}`); !errors.Is(err, ErrConflict) {
+		t.Errorf("forget over another session's write = %v, want a conflict", err)
+	}
+	// A new render starts from what it shows.
+	if _, man, err = Render(ctx, store, []Scope{"user"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call(t, tools, ForgetTool, `{"name":"tz"}`); err != nil {
+		t.Errorf("forget after a render that shows the other write = %v", err)
+	}
+}
+
 // TestReadOffered: memory_read is offered when the product says a scope
 // renders as an index, or asks for it with WithRead, and not otherwise,
 // so a tool set without an index is the four tools it was (#55).

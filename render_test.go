@@ -1529,6 +1529,9 @@ func TestRenderIndex(t *testing.T) {
 	if !strings.Contains(block, "Short answers.") {
 		t.Errorf("the scope not indexed lost its content:\n%s", block)
 	}
+	if want := "Entries: 1 shown, 3 indexed, 0 omitted."; !strings.HasPrefix(text[SummaryPartID], want) {
+		t.Errorf("summary = %q, want it to start %q", text[SummaryPartID], want)
+	}
 	if !strings.Contains(text["memory/project"], ReadTool) {
 		t.Errorf("the index scope's heading does not point to %s: %q", ReadTool, text["memory/project"])
 	}
@@ -1602,5 +1605,43 @@ func TestEntryPartFor(t *testing.T) {
 	}
 	if p := EntryPartFor(es[1], 512); p.Text != EntryPart(es[1], 512).Text {
 		t.Errorf("without options EntryPartFor = %q, want EntryPart's", p.Text)
+	}
+}
+
+// TestIndexOmissionLine: in a block that renders a scope as an index,
+// memory_read is offered, so the omission line sends the model there for
+// an entry left out over the budget; elsewhere it names memory_search.
+func TestIndexOmissionLine(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore(WithMaxEntryBytes(256))
+	for _, e := range []Entry{
+		{Scope: "user", Name: "a", Content: filler(200, 'a')},
+		{Scope: "user", Name: "b", Content: filler(200, 'b')},
+		{Scope: "project", Name: "c", Content: "c\n"},
+	} {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		opts []RenderOption
+		want string
+	}{
+		{nil, "fetch with memory_search: "},
+		{[]RenderOption{WithScopeIndex("project")}, "fetch with memory_read: "},
+	} {
+		parts, _, err := RenderParts(ctx, store, []Scope{"user", "project"}, append(c.opts, WithScopeMaxBytes("user", 300))...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var line string
+		for _, p := range parts {
+			if p.ID == "memory/user:omitted" {
+				line = p.Text
+			}
+		}
+		if !strings.Contains(line, c.want) {
+			t.Errorf("omission line %q, want it to say %q", line, c.want)
+		}
 	}
 }

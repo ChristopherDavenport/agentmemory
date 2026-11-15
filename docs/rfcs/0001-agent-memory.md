@@ -746,11 +746,15 @@ product fixed the scope's names, a fixed name fails (6.5).
 > since the block was rendered.
 
 The tool reads nothing before it forgets, so it has no hash of its own
-to name; the block's is the state the model chose to remove. A forget
-of an entry the block did not show, or by a tool the product told
-nothing, is unconditional. The failure names the hash the block showed
-and the hash the entry holds, and points to `memory_search`; the next
-render shows the new state, so the model can forget it again on that.
+to name; the block's is the state the model chose to remove. The block
+holds an entry it shows whole, and an index entry (7.2), which the
+model chose by its heading: both are forgotten on the hash the manifest
+names for them. A forget of an entry the block did not show, or by a
+tool the product told nothing, is unconditional. The failure names the
+hash the block showed and the hash the entry holds, and points to
+`memory_read` when the tool set offers it (6.11), `memory_search`
+otherwise; the next render shows the new state, so the model can
+forget it again on that.
 
 ### 6.5 Fixed names and insert
 
@@ -833,6 +837,17 @@ reading; one from earlier in the turn makes a second save of an entry
 read as built on the block rather than on the model's own first save,
 and reported as lost. `memory_forget` likewise forgets an entry the
 manifest holds only while it holds the hash the manifest names (6.4).
+
+**The model's own writes.** The model knows what it wrote. Until the
+block is rendered again, which a manifest whose hash moved says, a
+tool set takes what its own last write of an entry left as what the
+block showed of it: the hash that write stored, or, after its own
+forget, no entry shown. So a save and then a forget of one entry in
+one turn, or a second save, is built on the model's own write and is
+not refused or reported as a change made after the render; a write
+another session made after the model's own still is. A tool set that
+serves several sessions over one manifest shares what it records, so
+a product gives each session its own tool set.
 
 **A block left out.** A manifest records a block **left out whole**
 when its `dropped` is true (7.6), or, for a record written before
@@ -1099,11 +1114,14 @@ changes nothing. `<size>` remains the content's size. The fixture
 
 The model reads the neutralised text, so an `old_text` copied from the
 block may not occur in the stored content (`####` where the entry holds
-`##`, `\<` where it holds `<`); `memory_search` returns the stored text, and `memory_patch`'s
-description says to copy from it.
+`##`, `\<` where it holds `<`); `memory_search` and `memory_read`
+return the stored text, and `memory_patch`'s description says to copy
+from `memory_read` when it is offered, `memory_search` otherwise.
 
 An **omission line** is `Not shown, over the block budget; fetch with
-memory_search: ` followed by `<name> (<size> bytes)` for each entry it
+memory_search: `, or, in a block that renders a scope as an index,
+where `memory_read` is offered (6.11), `Not shown, over the block
+budget; fetch with memory_read: `, followed by `<name> (<size> bytes)` for each entry it
 names, joined by `, `, and `, and <n> more` when it names fewer than
 the scope left out. When there is room for no name it is `Not shown,
 over the block budget: <n> entries.`, and when there is room for
@@ -1115,8 +1133,15 @@ The **summary** is
 Entries: <shown> shown, <omitted> omitted. Block: <size> of <bound> bytes (<free> free). Entry limit: <limit> bytes.
 ```
 
-where `<shown>` and `<omitted>` count the manifest's `entries` and
-`omitted` (7.6), so an index entry counts as omitted, `<size>` is the
+or, in a block that renders a scope as an index,
+
+```
+Entries: <shown> shown, <indexed> indexed, <omitted> omitted. Block: <size> of <bound> bytes (<free> free). Entry limit: <limit> bytes.
+```
+
+where `<shown>` counts the manifest's `entries`, `<indexed>` the
+elements of its `omitted` with the reason `index`, and `<omitted>` the
+other elements of `omitted` (7.6), `<size>` is the
 joined block's own length in bytes, summary included, `<free>` is the block bound less `<size>`, right-aligned with
 spaces to the width of the bound's decimal digits, and `<limit>` is the
 store's entry bound. Padding `<free>` makes the summary's width depend
@@ -1170,7 +1195,8 @@ scope an entry's part is its index entry part and a scope heading's
 text holds the index note.
 
 1. `fixed` is `len("# Memory")`, plus `cost` of the summary with
-   `<shown>` and `<omitted>` both the total number of entries listed,
+   `<shown>`, `<indexed>` and `<omitted>` each the total number of
+   entries listed,
    `<size>` and `<free>` both the bound, plus `cost` of each scope
    heading. If `fixed` exceeds the bound, fail with a budget error.
 2. For each scope in order, with `spent` the bytes the scopes before it
@@ -1222,8 +1248,9 @@ Reasons:
 - `index`: the entry's scope is rendered as an index, and the block
   holds its index entry part (7.2), not its content. A renderer writes
   it. An index entry is not in `entries`, so `memory_save` bases a save
-  of it on its own read (6.2, 6.8) and `memory_forget` forgets it
-  unconditionally (6.4): the model was not shown its content. The
+  of it on its own read (6.2, 6.8), since the model was not shown its
+  content; `memory_forget` forgets it on the hash named here (6.4),
+  since the model chose it by its heading. The
   manifest hash moves between an index and a full render of one
   store.
 - `block`: the product left the whole block out, having no room for
@@ -1683,9 +1710,9 @@ not a new meaning under the old one.
 
 | what | sections | the change |
 |---|---|---|
-| #53 | 3.3, 3.4, 3.7, 6.4, 6.8, 11, 12 | Forget takes if-hash and if-meta-hash, as a put does, and fails with *conflict* and writes nothing when the condition does not hold, check and tombstone one step; based-on does nothing on a forget. `memory_forget` forgets an entry the block showed conditionally on the hash the block showed, and fails saying the entry changed since the render. Draft 0.3's forget had no condition, so a writer that read an entry, compared its hash and forgot it forgot a save that landed in between, and the tool forgot whatever the store held. Breaking: a store's forget signature changes in the binding. |
+| #53 | 3.3, 3.4, 3.7, 6.4, 6.8, 11, 12 | Forget takes if-hash and if-meta-hash, as a put does, and fails with *conflict* and writes nothing when the condition does not hold, check and tombstone one step; based-on does nothing on a forget. `memory_forget` forgets an entry the block showed conditionally on the hash the block showed, and fails saying the entry changed since the render; what the block showed follows the tool set's own writes until the next render, so the model's own save is not taken for a change since. Draft 0.3's forget had no condition, so a writer that read an entry, compared its hash and forgot it forgot a save that landed in between, and the tool forgot whatever the store held. Breaking: a store's forget signature changes in the binding. |
 | #54 | 3.7, Annex A | A read of an entry live before and after a concurrent write returns it, old or new, and never reports it absent; get, list, search and the render alike. The reference directory store read an entry as absent when a write's rename landed between its open and its check of the name, so a render racing a write could leave the entry out of the block and its manifest. Annex A says a reader that compares the file it opened with the name opens again when a rename landed, and the reference does so a bounded number of times, then fails the read with an error rather than report the entry absent. |
-| #55 | 6.1, 6.10, 6.11, 7.1, 7.2, 7.4, 7.5, 7.6, 8.1, 10, 11, 12 | A renderer MAY render a scope as an index: each entry part is its heading line alone, with the description or the content's first non-blank line, neutralised and cut to 120 bytes, under a scope heading that names `memory_read`; the manifest lists each such entry under `omitted` with the new reason `index`, and the summary counts it as omitted. A product that renders an index MUST offer `memory_read` (scope, name), which returns one entry as stored with its hash, read-only and safe to replay, and MAY offer it otherwise; a tool set without it is as before. Draft 0.3 rendered every scope whole, about 2.4k tokens a request for three project notes a task never touched, and `memory_search` cannot promise to find an entry by its name. The fixture `testdata/render/index.*` renders one. |
+| #55 | 6.1, 6.10, 6.11, 7.1, 7.2, 7.4, 7.5, 7.6, 8.1, 10, 11, 12 | A renderer MAY render a scope as an index: each entry part is its heading line alone, with the description or the content's first non-blank line, neutralised and cut to 120 bytes, under a scope heading that names `memory_read`; the manifest lists each such entry under `omitted` with the new reason `index`; the summary of such a block counts index entries apart (`<n> shown, <i> indexed, <k> omitted`), and its omission lines send the model to `memory_read`; `memory_forget` forgets an index entry on the hash the index showed. A product that renders an index MUST offer `memory_read` (scope, name), which returns one entry as stored with its hash, read-only and safe to replay, and MAY offer it otherwise; a tool set without it is as before. Draft 0.3 rendered every scope whole, about 2.4k tokens a request for three project notes a task never touched, and `memory_search` cannot promise to find an entry by its name. The fixture `testdata/render/index.*` renders one. |
 
 ## 16. Changes since 0.2
 

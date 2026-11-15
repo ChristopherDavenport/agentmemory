@@ -40,9 +40,12 @@ type renderOptions struct {
 // entry part is, by the bytes of its heading line, and one that does
 // not fit is [OmitBudget]. One the block holds is listed in the manifest
 // under Omitted with [OmitIndex], not under Entries: the model did not
-// see its content, so memory_save bases a save of it on its own read,
-// and memory_forget forgets it unconditionally, as for any entry the
-// block did not show. The summary counts it as omitted.
+// see its content, so memory_save bases a save of it on its own read.
+// memory_forget forgets it on the hash the index showed, since the model
+// chose it by its heading. In a block that renders a scope as an index,
+// the summary counts index entries apart, "<n> shown, <i> indexed, <k>
+// omitted", and the line naming a scope's omissions sends the model to
+// memory_read.
 //
 // It is for a scope whose entries the task seldom needs, project notes
 // that cost the block their whole content on every request. A scope
@@ -858,7 +861,15 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 	// reports the block's size, and one heading per scope. Taking it off
 	// the bound before anything else means the entries of an early scope
 	// cannot spend what a later scope's heading needs.
-	fixed := len(title) + cost(summary(total, total, o.maxTotal, o.maxTotal, o.maxTotal, limit))
+	// A block that renders a scope as an index counts its index entries
+	// apart in the summary, and sends the model to memory_read, which a
+	// product offers with an index, for an entry left out.
+	indexed := slices.ContainsFunc(scopes, func(s Scope) bool { return o.index[s] })
+	head := omitHead
+	if indexed {
+		head = omitHeadRead
+	}
+	fixed := len(title) + cost(summary(total, total, total, o.maxTotal, o.maxTotal, o.maxTotal, limit, indexed))
 	for i, scope := range scopes {
 		fixed += cost(scopeText(scope, len(lists[i]) == 0, o.index[scope]))
 	}
@@ -894,7 +905,7 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 		// leave more out, so the second pass settles it.
 		in, used := pack(texts, room)
 		if !all(in) {
-			in, used = pack(texts, room-omitLineReserve(es))
+			in, used = pack(texts, room-omitLineReserve(es, head))
 		}
 		var dropped []Entry
 		for j, e := range es {
@@ -914,7 +925,7 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 			dropped = append(dropped, e)
 		}
 		if len(dropped) > 0 {
-			if line := omitLine(dropped, room-used); line != "" {
+			if line := omitLine(dropped, room-used, head); line != "" {
 				parts = append(parts, Part{ID: omittedPartID(scope), Text: line, Trust: o.scopeTrust(scope)})
 				used += cost(line)
 			}
@@ -931,11 +942,17 @@ func RenderParts(ctx context.Context, s Store, scopes []Scope, opts ...RenderOpt
 	// holds. Every pass is inside the bound, since none is wider than
 	// the reservation.
 	shown, left := len(man.Entries), len(man.Omitted)
+	inIndex := 0
+	for _, me := range man.Omitted {
+		if me.Reason == OmitIndex {
+			inIndex++
+		}
+	}
 	rest := len(JoinParts(parts)) + len(PartSeparator) // all but the summary's text
 	size := fixed + spent
 	last := ""
 	for range 8 {
-		last = summary(shown, left, size, o.maxTotal-size, o.maxTotal, limit)
+		last = summary(shown, inIndex, left-inIndex, size, o.maxTotal-size, o.maxTotal, limit, indexed)
 		n := rest + len(last)
 		if n == size {
 			break
@@ -950,9 +967,12 @@ const (
 	title     = "# Memory"
 	noEntries = "No entries."
 	omitHead  = "Not shown, over the block budget; fetch with memory_search: "
-	omitCount = "Not shown, over the block budget: %d entries."
-	indexNote = "Index: each entry's content is not shown; read one whole with memory_read."
-	moreTail  = ", and %d more"
+	// omitHeadRead is the omission line's head in a block that renders a
+	// scope as an index, where memory_read is offered.
+	omitHeadRead = "Not shown, over the block budget; fetch with memory_read: "
+	omitCount    = "Not shown, over the block budget: %d entries."
+	indexNote    = "Index: each entry's content is not shown; read one whole with memory_read."
+	moreTail     = ", and %d more"
 )
 
 // cost is what a part other than the first adds to the block: its text
@@ -999,14 +1019,14 @@ func all(in []bool) bool {
 
 // omitLineReserve is the most the line naming a scope's omissions can
 // take, so a pack that will need one can hold room for it.
-func omitLineReserve(es []Entry) int {
+func omitLineReserve(es []Entry, head string) int {
 	item := 0
 	for _, e := range es {
 		if n := len(omitItem(e)); n > item {
 			item = n
 		}
 	}
-	return cost(omitHead) + item + len(fmt.Sprintf(moreTail, len(es)))
+	return cost(head) + item + len(fmt.Sprintf(moreTail, len(es)))
 }
 
 func omitItem(e Entry) string { return fmt.Sprintf("%s (%d bytes)", e.Name, e.Size()) }
@@ -1016,7 +1036,7 @@ func omitItem(e Entry) string { return fmt.Sprintf("%s (%d bytes)", e.Name, e.Si
 // included: the names that fit, then how many more there are. With room
 // for neither it gives the count alone, and with room for nothing it
 // gives nothing; the manifest carries every omission either way.
-func omitLine(dropped []Entry, room int) string {
+func omitLine(dropped []Entry, room int, head string) string {
 	var b strings.Builder
 	listed := 0
 	for i, e := range dropped {
@@ -1028,7 +1048,7 @@ func omitLine(dropped []Entry, room int) string {
 		if rest := len(dropped) - i - 1; rest > 0 {
 			tail = len(fmt.Sprintf(moreTail, rest))
 		}
-		if cost(omitHead)+b.Len()+len(piece)+tail > room {
+		if cost(head)+b.Len()+len(piece)+tail > room {
 			break
 		}
 		b.WriteString(piece)
@@ -1040,14 +1060,16 @@ func omitLine(dropped []Entry, room int) string {
 		}
 		return ""
 	}
-	out := omitHead + b.String()
+	out := head + b.String()
 	if rest := len(dropped) - listed; rest > 0 {
 		out += fmt.Sprintf(moreTail, rest)
 	}
 	return out
 }
 
-// summary is the block's last line: what it holds and what it cost.
+// summary is the block's last line: what it holds and what it cost. A
+// block that renders a scope as an index, index, counts its index
+// entries apart from those left out.
 //
 // The free count is written at the width of the bound, padded with
 // spaces, so that the summary's own width depends on the size it
@@ -1055,9 +1077,13 @@ func omitLine(dropped []Entry, room int) string {
 // the two swap at a power of ten: the summary is then wider for the
 // smaller size than for the larger, no width is a fixed point of the
 // size it states, and the block reports a length it does not have.
-func summary(shown, omitted, size, free, max, limit int) string {
-	return fmt.Sprintf("Entries: %d shown, %d omitted. Block: %d of %d bytes (%*d free). Entry limit: %d bytes.",
-		shown, omitted, size, max, len(strconv.Itoa(max)), free, limit)
+func summary(shown, indexed, omitted, size, free, max, limit int, index bool) string {
+	counts := fmt.Sprintf("%d shown, %d omitted", shown, omitted)
+	if index {
+		counts = fmt.Sprintf("%d shown, %d indexed, %d omitted", shown, indexed, omitted)
+	}
+	return fmt.Sprintf("Entries: %s. Block: %d of %d bytes (%*d free). Entry limit: %d bytes.",
+		counts, size, max, len(strconv.Itoa(max)), free, limit)
 }
 
 // entryText renders one entry's part: its heading, a blank line, and

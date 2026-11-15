@@ -18,17 +18,15 @@ versions may break the API.
   entry is packed against the bound and the cap by its own bytes, and
   the manifest lists it under `Omitted` with the new reason
   `OmitIndex` (`index`), so `memory_save` bases a save of it on its own
-  read, `memory_forget` forgets it unconditionally, `Dropped` is
-  unaffected, the manifest hash moves between an index and a full
-  render, and the summary counts it as omitted.
-  `testdata/render/index.*` is its fixture, and a render input's
-  `index` lists the index scopes. `EntryPartFor(e, bound, opts...)`
-  gives the part an entry renders as under a render's options, its
-  index entry part in an index scope, so a product sizes an index
-  scope's entry left out over the budget by the part it would have
-  added (§8.1). A product that records the manifest's omissions as
-  instructions omitted elements skips the `OmitIndex` ones: they are
-  in the block, as parts under the same ID.
+  read, `Dropped` is unaffected and the manifest hash moves between an
+  index and a full render. `testdata/render/index.*` is its fixture,
+  and a render input's `index` lists the index scopes.
+- `EntryPartFor(e, bound, opts...)` gives the part an entry renders as
+  under a render's options, its index entry part in an index scope, so
+  a product sizes an index scope's entry left out over the budget by
+  the part it would have added (§8.1) (#55). A product that records the
+  manifest's omissions as instructions omitted elements skips the
+  `OmitIndex` ones: they are in the block, as parts under the same ID.
 - `memory_read` (`ReadTool`) reads one entry whole by scope and name,
   from the writable and the read scopes: its content as stored, its
   size against the bound, its hash and its description (#55).
@@ -40,17 +38,16 @@ versions may break the API.
   `memory_search`, only under the new `WithIndexScopes(scopes...)`,
   which names the scopes the product renders as an index, or
   `WithRead()`, which offers it anyway (a host that leaves the block
-  out, as it keeps `memory_search`); a tool set with neither is the four
-  tools it was. `Usage` takes the same options, `Usage(opts...)`, and
-  names `memory_read` only when they offer it; `Usage()` is the
-  paragraph it was.
+  out, as it keeps `memory_search`). A tool set with neither is the
+  four tools it was.
 - RFC 0001 draft 0.4: §7.2 gains index entry parts and the index note,
   with the rule (a renderer MAY render a scope as an index; the
   manifest MUST list each index entry under `omitted` with reason
   `index`; a product that does MUST offer `memory_read`); §7.1, §7.4
   and §7.5 take the index scopes as an input, §7.6 the reason, §8.1
   records an index entry as a part rather than an omitted element;
-  §6.1, §6.10 and a new §6.11 define `memory_read`.
+  §6.1, §6.10 and a new §6.11 define `memory_read` and when it is
+  offered.
 
 ### Changed
 
@@ -67,19 +64,38 @@ versions may break the API.
   `IfHash(seen)` instead, so a save landing in between is not
   forgotten. `storetest` has a `ForgetIf` case.
 - Under `WithRendered`, `memory_forget` forgets an entry the block
-  showed only while it holds the hash the block showed (#53). When
-  another session changed it after the render, the call fails with
-  `<scope>/<name> changed after the memory block was rendered, from
-  <shown> to <held>, so it was not forgotten; read it with
-  memory_search, and forget it again if it should still go`, which
-  unwraps to the `ConflictError`. An entry the block did not show, and
-  a tool set without `WithRendered`, forget as before. The tool's
-  description says so under the option.
+  showed, whole or as an index entry, only while it holds the hash the
+  block showed (#53). When it changed after the render, the call fails
+  with `<scope>/<name> changed after the memory block was rendered,
+  from <shown> to <held>, so it was not forgotten; read it with
+  <reader>, and forget it again if it should still go`, which unwraps
+  to the `ConflictError`. An entry the block did not show, and a tool
+  set without `WithRendered`, forget as before. The tool's description
+  says so under the option.
+- Under `WithRendered`, what the block showed of an entry follows the
+  tool set's own writes until the manifest moves (#53): a second save
+  of an entry in one turn is built on the model's first, not reported
+  as a lost update, and a save then a forget is not refused. A tool set
+  records its own writes, so a product gives each session its own.
+- `Usage` takes the tool options, `Usage(opts ...ToolOption)`, and names
+  `memory_read` when they offer it (#55). `Usage()` is the paragraph it
+  was; a caller that held `Usage` as a `func() string` value adapts.
+- A message that sends the model to read an entry by name names
+  `memory_read` when the tool set offers it and `memory_search`
+  otherwise: memory_forget's conflict, memory_patch's missing
+  `old_text` and its description, and memory_save's note that the
+  entry changed after the render (#55).
+- In a block that renders a scope as an index, the summary counts index
+  entries apart, `Entries: <n> shown, <i> indexed, <k> omitted.`, and an
+  omission line says `fetch with memory_read:` (#55). A block without an
+  index scope renders byte for byte as before.
 - RFC 0001 draft 0.4: §3.4 gains the conditional forget (if-hash and
   if-meta-hash, *conflict*, one step with the tombstone), §3.3 and
   §3.7 name the forget beside the put, §6.4 and §6.8 the tool's
-  condition on the block's hash, and the bindings and conformance
-  follow; "Changes since 0.3" lists it as breaking.
+  condition on the block's hash and the model's own writes, §7.2 the
+  index forms of the summary and the omission line, and the bindings
+  and conformance follow; "Changes since 0.3" lists the forget as
+  breaking.
 
 ### Fixed
 
