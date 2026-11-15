@@ -88,19 +88,35 @@ func isDir(r *os.Root, name string) (bool, error) {
 // reader of an entry live before and after the write then reads it in
 // one state or the other and never as absent (RFC 0001 §3.7). Reads
 // take no lock, so they never wait behind a writer in another process.
+// A name replaced on every attempt fails with [errReplacedTooOften],
+// which is not [errNotRegular], so the read fails out loud rather than
+// read the entry as absent.
 func openRegular(r *os.Root, name string, flag int, perm fs.FileMode) (*os.File, error) {
 	for attempt := 1; ; attempt++ {
 		f, replaced, err := openRegularOnce(r, name, flag, perm)
-		if !replaced || attempt == openAttempts {
+		if !replaced {
 			return f, err
+		}
+		if attempt == openAttempts {
+			return nil, fmt.Errorf("filestore: %s: %w on each of %d attempts; read again", name, errReplacedTooOften, openAttempts)
 		}
 	}
 }
+
+// errReplacedTooOften is a name a write's rename replaced between the
+// open and the check on every attempt [openRegular] made. It is a
+// failure, not a link, so a read that meets it fails.
+var errReplacedTooOften = errors.New("replaced by a write between the open and the check")
 
 // openAttempts bounds the opens [openRegular] makes of a name a rename
 // keeps replacing. A writer renames once per write, after a write and
 // a sync, so a second attempt almost always finds the name still.
 const openAttempts = 8
+
+// afterOpen, when set, runs in [openRegularOnce] between the open and
+// the name's Lstat, so a test can land a rename in that window on every
+// attempt. It is nil outside tests.
+var afterOpen func(name string)
 
 // openRegularOnce is one attempt of [openRegular]. When it refuses the
 // name because a rename replaced the file between the open and the
@@ -112,6 +128,9 @@ func openRegularOnce(r *os.Root, name string, flag int, perm fs.FileMode) (f *os
 	f, err = r.OpenFile(name, flag|openNonblock, perm)
 	if err != nil {
 		return nil, false, err
+	}
+	if afterOpen != nil {
+		afterOpen(name)
 	}
 	opened, ferr := f.Stat()
 	named, lerr := r.Lstat(name)

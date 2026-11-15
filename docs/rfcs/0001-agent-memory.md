@@ -421,7 +421,9 @@ search and so the render: a read that drops the entry would leave it
 out of the block and out of the block's manifest, a state the store
 held neither before nor after the write. A store whose writes replace
 a file by a rename meets it by reading again when the rename lands
-during its read (Annex A), not by making reads wait for the write lock.
+during its read (Annex A), not by making reads wait for the write lock;
+a read that cannot settle fails with an error rather than report the
+entry absent.
 
 ## 4. The journal
 
@@ -1678,7 +1680,7 @@ not a new meaning under the old one.
 | what | sections | the change |
 |---|---|---|
 | #53 | 3.3, 3.4, 3.7, 6.4, 6.8, 11, 12 | Forget takes if-hash and if-meta-hash, as a put does, and fails with *conflict* and writes nothing when the condition does not hold, check and tombstone one step; based-on does nothing on a forget. `memory_forget` forgets an entry the block showed conditionally on the hash the block showed, and fails saying the entry changed since the render. Draft 0.3's forget had no condition, so a writer that read an entry, compared its hash and forgot it forgot a save that landed in between, and the tool forgot whatever the store held. Breaking: a store's forget signature changes in the binding. |
-| #54 | 3.7, Annex A | A read of an entry live before and after a concurrent write returns it, old or new, and never reports it absent; get, list, search and the render alike. The reference directory store read an entry as absent when a write's rename landed between its open and its check of the name, so a render racing a write could leave the entry out of the block and its manifest. Annex A says a reader that compares the file it opened with the name opens again when a rename landed, and the reference does so a bounded number of times. |
+| #54 | 3.7, Annex A | A read of an entry live before and after a concurrent write returns it, old or new, and never reports it absent; get, list, search and the render alike. The reference directory store read an entry as absent when a write's rename landed between its open and its check of the name, so a render racing a write could leave the entry out of the block and its manifest. Annex A says a reader that compares the file it opened with the name opens again when a rename landed, and the reference does so a bounded number of times, then fails the read with an error rather than report the entry absent. |
 | #55 | 6.1, 6.10, 6.11, 7.1, 7.2, 7.4, 7.5, 7.6, 8.1, 10, 11, 12 | A renderer MAY render a scope as an index: each entry part is its heading line alone, with the description or the content's first non-blank line, neutralised and cut to 120 bytes, under a scope heading that names `memory_read`; the manifest lists each such entry under `omitted` with the new reason `index`, and the summary counts it as omitted. A product that renders an index MUST offer `memory_read` (scope, name), which returns one entry as stored with its hash, read-only and safe to replay; the reference offers it in every tool set. Draft 0.3 rendered every scope whole, about 2.4k tokens a request for three project notes a task never touched, and `memory_search` cannot promise to find an entry by its name. The fixture `testdata/render/index.*` renders one. |
 
 ## 16. Changes since 0.2

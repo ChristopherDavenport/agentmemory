@@ -82,7 +82,9 @@ versions may break the API.
   manifest. The read now opens the name again, up to eight times, when
   the file opened and the file named are both regular files with one
   name that differ; a link, a hard link or anything irregular is still
-  refused. Reads still take no lock.
+  refused. A name replaced on every attempt fails the read with an
+  error, so `Get`, `List`, `Search` and `Render` fail out loud rather
+  than drop the entry. Reads still take no lock.
 - RFC 0001 is draft 0.4. §3.7 gains the rule: a read of an entry live
   before and after a concurrent write returns it, old or new, and never
   reports it absent. Annex A says a reader opens again when a rename

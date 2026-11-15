@@ -1419,3 +1419,68 @@ func TestReadRacingAWrite(t *testing.T) {
 		t.Errorf("%d reads missed a live entry during %d writes", n, writes)
 	}
 }
+
+// TestReadReplacedOnEveryAttempt is the read whose every attempt a
+// rename lands inside: openRegular gives up after its bound, and the
+// read fails out loud rather than report the entry absent, which RFC
+// 0001 §3.7 forbids for an entry live before and after the writes.
+// The rename is injected between the open and the check, so the race
+// is certain.
+func TestReadReplacedOnEveryAttempt(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "hot", Content: "v0"}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(s.Dir(), "user", "hot.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var renames int
+	afterOpen = func(name string) {
+		if name != filepath.Join("user", "hot.md") {
+			return
+		}
+		renames++
+		tmp := filepath.Join(s.Dir(), "user", ".tmp-test")
+		if err := os.WriteFile(tmp, data, 0o600); err != nil {
+			t.Error(err)
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			t.Error(err)
+		}
+	}
+	defer func() { afterOpen = nil }()
+	_, err = s.Get(ctx, "user", "hot")
+	if err == nil || errors.Is(err, agentmemory.ErrNotFound) {
+		t.Errorf("Get replaced on every attempt = %v, want an error that is not ErrNotFound", err)
+	}
+	if renames != openAttempts {
+		t.Errorf("Get made %d attempts, want %d", renames, openAttempts)
+	}
+	if es, err := s.List(ctx, "user"); err == nil {
+		t.Errorf("List replaced on every attempt = %d entries, nil error; want an error", len(es))
+	}
+	if _, _, err := agentmemory.Render(ctx, s, []agentmemory.Scope{"user"}); err == nil {
+		t.Error("Render replaced on every attempt went through")
+	}
+	// One rename is retried past.
+	renames = 0
+	afterOpen = func(name string) {
+		if name != filepath.Join("user", "hot.md") || renames > 0 {
+			return
+		}
+		renames++
+		tmp := filepath.Join(s.Dir(), "user", ".tmp-test")
+		if err := os.WriteFile(tmp, data, 0o600); err != nil {
+			t.Error(err)
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			t.Error(err)
+		}
+	}
+	if e, err := s.Get(ctx, "user", "hot"); err != nil || e.Content != "v0" {
+		t.Errorf("Get replaced once = %+v, %v", e, err)
+	}
+}

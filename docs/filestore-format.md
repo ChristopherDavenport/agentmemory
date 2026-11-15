@@ -524,7 +524,10 @@ rename replaced, and they differ, it opens the name again. An entry
 live before and after a write is then read in one state or the other,
 never as absent, as RFC 0001 section 3.7 requires. The reference tries
 up to eight times in all; a write renames once, after writing and
-syncing the new file, so the second open almost always holds.
+syncing the new file, so the second open almost always holds. A reader
+that runs out of attempts MUST fail the read with an error, never
+report the entry absent: the reference's `Get`, `List`, `Search` and so
+the render then fail, saying the name was replaced on every attempt.
 
 ## The lock
 
