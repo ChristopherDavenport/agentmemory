@@ -30,6 +30,7 @@ type renderCase struct {
 	max      int // the store's entry bound
 	entries  []Entry
 	scopeMax map[Scope]int
+	index    []Scope
 }
 
 // filler returns content of exactly n bytes of one letter, ending in
@@ -96,6 +97,17 @@ func renderCases() []renderCase {
 		}},
 		{name: "scope-cap", scopes: []Scope{"environment", "user"}, maxTotal: 1000, max: 256, scopeMax: map[Scope]int{"environment": 400},
 			entries: append(scopeEntries("environment", 8, 60), scopeEntries("user", 2, 40)...)},
+		// A scope rendered as an index: each entry's heading line alone,
+		// with its description or its first non-blank line, neutralised
+		// and cut, and listed in the manifest as omitted with the reason
+		// index; the cap still leaves one out over the budget.
+		{name: "index", scopes: []Scope{"user", "project"}, max: 512, scopeMax: map[Scope]int{"project": 400}, index: []Scope{"project"}, entries: []Entry{
+			{Scope: "user", Name: "style", Content: "Short answers.\nCode in Go.\n"},
+			{Scope: "project", Name: "build", Content: "Run make check before a commit.\nIt runs lint and the tests.\n", Meta: map[string]string{"description": "How to build and check"}},
+			{Scope: "project", Name: "layout", Content: "\n## Layout\n\nThree modules: the root, filestore and sqlite.\n"},
+			{Scope: "project", Name: "notes", Content: strings.Repeat("word ", 40) + "\nmore\n"},
+			{Scope: "project", Name: "zz-left-out", Content: "Over the cap.\nSecond line.\n", Meta: map[string]string{"description": "A description long enough that this entry's heading line alone does not fit in what the cap leaves after the three entries before it"}},
+		}},
 	}
 }
 
@@ -143,6 +155,9 @@ func TestRenderGolden(t *testing.T) {
 			}
 			for scope, n := range tc.scopeMax {
 				ropts = append(ropts, WithScopeMaxBytes(scope, n))
+			}
+			for _, scope := range tc.index {
+				ropts = append(ropts, WithScopeIndex(scope))
 			}
 			block, man, err := Render(ctx, store, tc.scopes, ropts...)
 			if err != nil {
@@ -203,7 +218,7 @@ func TestRenderGolden(t *testing.T) {
 				t.Errorf("the last line does not state the block's own size (%d of %d):\n%s", len(block), max, lastLine(block))
 			}
 			for _, me := range man.Omitted {
-				if me.Reason != OmitBudget {
+				if me.Reason != OmitBudget && (me.Reason != OmitIndex || !slices.Contains(tc.index, me.Scope)) {
 					t.Errorf("omitted entry %s/%s has reason %q", me.Scope, me.Name, me.Reason)
 				}
 			}
@@ -1467,4 +1482,166 @@ func TestManifestLeftOut(t *testing.T) {
 func mustDelta(next, prev Manifest) []byte {
 	_, data := next.RecordSince(prev)
 	return data
+}
+
+// TestRenderIndex is #55: a scope rendered as an index shows each
+// entry's heading line alone, with the description or, without one,
+// the content's first non-blank line, neutralised and cut to a bound;
+// the content is not shown, and the manifest lists each index entry
+// under Omitted with the reason index (RFC 0001 §7.2, §7.6).
+func TestRenderIndex(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	long := strings.Repeat("x", 200)
+	for _, e := range []Entry{
+		{Scope: "user", Name: "style", Content: "Short answers.\n"},
+		{Scope: "project", Name: "build", Content: "Run make check before a commit.\nMore detail.\n", Meta: map[string]string{"description": "How to build"}},
+		{Scope: "project", Name: "layout", Content: "\n  \n## Layout notes\n\nThe repo has three modules.\n"},
+		{Scope: "project", Name: "long", Content: long + "\n"},
+	} {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parts, man, err := RenderParts(ctx, store, []Scope{"user", "project"}, WithScopeIndex("project"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := JoinParts(parts)
+	text := map[string]string{}
+	for _, p := range parts {
+		text[p.ID] = p.Text
+	}
+	for id, want := range map[string]string{
+		PartID("project", "build"):  "### build (45 of 4096 bytes) — How to build",
+		PartID("project", "layout"): "### layout (49 of 4096 bytes) — #### Layout notes",
+		PartID("project", "long"):   "### long (201 of 4096 bytes) — " + strings.Repeat("x", indexLineBytes) + "…",
+	} {
+		if text[id] != want {
+			t.Errorf("part %s = %q, want %q", id, text[id], want)
+		}
+	}
+	for _, hidden := range []string{"Run make check", "three modules", long} {
+		if strings.Contains(block, hidden) {
+			t.Errorf("the index shows content %q:\n%s", hidden, block)
+		}
+	}
+	if !strings.Contains(block, "Short answers.") {
+		t.Errorf("the scope not indexed lost its content:\n%s", block)
+	}
+	if want := "Entries: 1 shown, 3 indexed, 0 omitted."; !strings.HasPrefix(text[SummaryPartID], want) {
+		t.Errorf("summary = %q, want it to start %q", text[SummaryPartID], want)
+	}
+	if !strings.Contains(text["memory/project"], ReadTool) {
+		t.Errorf("the index scope's heading does not point to %s: %q", ReadTool, text["memory/project"])
+	}
+	if len(man.Entries) != 1 || man.Entries[0].Name != "style" {
+		t.Errorf("manifest entries = %+v, want user/style alone", man.Entries)
+	}
+	var omitted []string
+	for _, me := range man.Omitted {
+		e, err := store.Get(ctx, me.Scope, me.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if me.Reason != OmitIndex || me.Hash != e.Hash || me.Bytes != e.Size() {
+			t.Errorf("omitted %+v, want reason %q with the entry's hash and size", me, OmitIndex)
+		}
+		omitted = append(omitted, string(me.Scope)+"/"+me.Name)
+	}
+	if fmt.Sprint(omitted) != "[project/build project/layout project/long]" {
+		t.Errorf("manifest omitted = %v", omitted)
+	}
+	// The manifest hash moves between an index and a full render.
+	_, full, err := RenderParts(ctx, store, []Scope{"user", "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.Hash() == man.Hash() || len(full.Entries) != 4 {
+		t.Errorf("a full render's manifest %+v hashes as the index's", full)
+	}
+	// An index entry is not a block left out.
+	if man.Dropped() {
+		t.Error("an index render reads as a block left out")
+	}
+}
+
+// TestEntryPartFor is the part an entry renders as under a render's
+// options, whether or not the render holds it, so a product sizes an
+// omitted entry of an index scope by its index entry part (RFC 0001
+// §8.1): the index entry part there, the entry part elsewhere, with the
+// scope's trust either way.
+func TestEntryPartFor(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore(WithMaxEntryBytes(512))
+	es := []Entry{
+		{Scope: "user", Name: "style", Content: "Short answers.\n"},
+		{Scope: "project", Name: "build", Content: "Run make check.\nIt lints.\n", Meta: map[string]string{"description": "How to build"}},
+	}
+	for _, e := range es {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := []RenderOption{WithScopeIndex("project"), WithScopeTrust("project")}
+	parts, _, err := RenderParts(ctx, store, []Scope{"user", "project"}, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Part{}
+	for _, p := range parts {
+		byID[p.ID] = p
+	}
+	for _, e := range es {
+		stored, err := store.Get(ctx, e.Scope, e.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := EntryPartFor(*stored, store.MaxEntryBytes(), opts...)
+		want := byID[got.ID]
+		if got.ID != PartID(e.Scope, e.Name) || got.Text != want.Text || fmt.Sprint(got.Trust) != fmt.Sprint(want.Trust) {
+			t.Errorf("EntryPartFor(%s/%s) = %+v, want the rendered %+v", e.Scope, e.Name, got, want)
+		}
+	}
+	if p := EntryPartFor(es[1], 512); p.Text != EntryPart(es[1], 512).Text {
+		t.Errorf("without options EntryPartFor = %q, want EntryPart's", p.Text)
+	}
+}
+
+// TestIndexOmissionLine: in a block that renders a scope as an index,
+// memory_read is offered, so the omission line sends the model there for
+// an entry left out over the budget; elsewhere it names memory_search.
+func TestIndexOmissionLine(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore(WithMaxEntryBytes(256))
+	for _, e := range []Entry{
+		{Scope: "user", Name: "a", Content: filler(200, 'a')},
+		{Scope: "user", Name: "b", Content: filler(200, 'b')},
+		{Scope: "project", Name: "c", Content: "c\n"},
+	} {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		opts []RenderOption
+		want string
+	}{
+		{nil, "fetch with memory_search: "},
+		{[]RenderOption{WithScopeIndex("project")}, "fetch with memory_read: "},
+	} {
+		parts, _, err := RenderParts(ctx, store, []Scope{"user", "project"}, append(c.opts, WithScopeMaxBytes("user", 300))...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var line string
+		for _, p := range parts {
+			if p.ID == "memory/user:omitted" {
+				line = p.Text
+			}
+		}
+		if !strings.Contains(line, c.want) {
+			t.Errorf("omission line %q, want it to say %q", line, c.want)
+		}
+	}
 }

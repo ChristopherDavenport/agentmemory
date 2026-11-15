@@ -48,7 +48,7 @@ type Store interface {
 	Get(ctx context.Context, scope Scope, name string) (*Entry, error)
 	List(ctx context.Context, scope Scope) ([]Entry, error)
 	Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error)
-	Forget(ctx context.Context, scope Scope, name string) (*Change, error)
+	Forget(ctx context.Context, scope Scope, name string, opts ...PutOption) (*Change, error)
 	Search(ctx context.Context, scopes []Scope, query string, limit int) ([]Entry, error)
 	Journal(ctx context.Context, after uint64) iter.Seq2[Change, error]
 	MaxEntryBytes() int
@@ -62,7 +62,9 @@ beside the call that made it.
 `IfHash(h)` makes a `Put` conditional on the stored hash, `""` meaning
 the entry must not exist, so a write built on a stale read fails with
 `ErrConflict` instead of clobbering. `Forget` writes a tombstone that
-keeps the last content. Every `Change` carries a `Seq` that orders the
+keeps the last content, and takes `IfHash` and `IfMetaHash` the same
+way, so a caller that read an entry and decided to forget it forgets
+that state and not a save that landed in between. Every `Change` carries a `Seq` that orders the
 journal within the store, the `Session` that wrote it, from
 `WithSession(ctx, id)`, and two hashes: `Replaced`, the state the write
 landed on, which chains the records, and `Prev`, the state it was built
@@ -173,7 +175,16 @@ it; what was left out is listed under its scope so the model knows what
 order given, so a full scope starves the scopes after it;
 `WithScopeMaxBytes(scope, n)` caps what one scope's entries may take
 inside the bound, so a growing scope of facts about the environment
-cannot push the user's preferences out of the block. The output is determined by the store's
+cannot push the user's preferences out of the block.
+`WithScopeIndex(scope)` renders a scope as an index: each entry is its
+heading line alone, with its description or its first non-blank line,
+and the model reads one whole with `memory_read`, which `Tools` offers
+when given `WithIndexScopesOf(renderOpts...)`, the render's own
+options, or `WithIndexScopes` with the same scopes (or `WithRead`, to
+offer it anyway); pass the same options to `Usage`. The block names
+`memory_read` whenever it renders an index, so derive the tool options
+from the render's. The manifest lists
+those entries as omitted with the reason `index`. The output is determined by the store's
 state and the bounds alone, so an unchanged store renders the same
 bytes, and the `Manifest` lists what the block held and omitted, by
 scope, name, hash, size and, for an omission, the reason, for the
@@ -212,7 +223,8 @@ added: `len(EntryPart(e, bound).Text) + len(PartSeparator)`.
 
 ## The tools
 
-`Tools(store, scopes)` returns four tools, five with `WithInsert`,
+`Tools(store, scopes)` returns four tools, a fifth, `memory_read`, with
+`WithIndexScopes` or `WithRead`, and `memory_insert` with `WithInsert`,
 restricted to the scopes the
 product allows. The list is in each tool's schema as an enum on
 `scope`, not only in its description, and with more than one scope
@@ -241,7 +253,8 @@ renders in name order, so under the budget the newest inserts are the
 ones left out.
 
 The tools carry `agenttool.Annotations`, so a host can approve the
-search without asking: `memory_search` is read-only, `memory_save` and
+search without asking: `memory_search` and `memory_read` are
+read-only, `memory_save` and
 `memory_forget` destructive, `memory_patch` neither, and none is
 open-world.
 
@@ -251,6 +264,7 @@ open-world.
 | `memory_patch` | `scope`, `name`, `old_text`, `new_text` | replace one exact occurrence |
 | `memory_forget` | `scope`, `name` | write a tombstone |
 | `memory_search` | `query`, `scopes`, `limit` | find entries the block omits |
+| `memory_read` | `scope`, `name` | read one entry whole, with its hash |
 | `memory_insert` | `scope`, `content`, `meta` | create under a name the tool gives |
 
 Each write's result carries the journal record it produced as
@@ -269,7 +283,16 @@ the content from the block, not from the tool's read, so a product
 passes `WithRendered` with the manifest of the block it last sent: the
 save is then based on the hash the block showed, a write another
 session made after the render is a lost update the journal reports,
-and the result tells the model the entry had changed.
+and the result tells the model the entry had changed. Under the same
+option `memory_forget` forgets an entry the block showed only while it
+holds the hash the block showed (`Forget` with `IfHash`), an index
+entry included, and fails, saying the entry changed, when it no longer
+does. What the block showed a session follows that session's own
+writes (`WithSession` on the call's context) until its next render, so
+the model's own save is not taken for a change since, and another
+session's write never is; a call without a session is held to the
+block's hashes alone. One tool set may serve several sessions, as long
+as `WithRendered`'s function returns each one's own manifest.
 
 A product that leaves the block out of a request, when its share of an
 instruction budget runs out, withholds the writers (`WriteTools()`)

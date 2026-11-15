@@ -1,0 +1,47 @@
+{
+  "scopes": [
+    "user",
+    "project"
+  ],
+  "block_bound": 32768,
+  "entry_bound": 512,
+  "caps": {
+    "project": 400
+  },
+  "index": [
+    "project"
+  ],
+  "entries": [
+    {
+      "scope": "user",
+      "name": "style",
+      "content": "Short answers.\nCode in Go.\n"
+    },
+    {
+      "scope": "project",
+      "name": "build",
+      "content": "Run make check before a commit.\nIt runs lint and the tests.\n",
+      "meta": {
+        "description": "How to build and check"
+      }
+    },
+    {
+      "scope": "project",
+      "name": "layout",
+      "content": "\n## Layout\n\nThree modules: the root, filestore and sqlite.\n"
+    },
+    {
+      "scope": "project",
+      "name": "notes",
+      "content": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word \nmore\n"
+    },
+    {
+      "scope": "project",
+      "name": "zz-left-out",
+      "content": "Over the cap.\nSecond line.\n",
+      "meta": {
+        "description": "A description long enough that this entry's heading line alone does not fit in what the cap leaves after the three entries before it"
+      }
+    }
+  ]
+}

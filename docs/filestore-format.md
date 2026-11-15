@@ -135,7 +135,12 @@ The reference opens every path through an `os.Root` on the directory,
 so nothing resolves outside it, and checks each file and scope
 directory with `Lstat`, comparing the file it opened with the name's
 own `Lstat` and checking the opened file is regular, so a link inside
-it is not followed either. A committed `project/x.md` that points at
+it is not followed either. When the two differ and both are regular
+files with one name, or none for the file a write just replaced, a
+write's rename landed between the open and the check: that is not a
+link, and the reference opens the name again, a bounded number of
+times, rather than refusing it (*Durability and the order of a
+write*). A committed `project/x.md` that points at
 `~/.ssh/id_ed25519` is therefore never read, shown to a model or copied
 into the journal.
 
@@ -511,6 +516,18 @@ What a crash at each point leaves:
 Reads take no lock. A rename is atomic, so a reader of an entry file
 sees the file before or after a write, never torn, and a reader of the
 journal sees whole lines and at most one partial one at the end.
+
+A reader that compares the file it opened with the name's `Lstat`
+(*Links*) MUST NOT take a rename between the two for a missing entry:
+when both are regular files with one name, or none for the file the
+rename replaced, and they differ, it opens the name again. An entry
+live before and after a write is then read in one state or the other,
+never as absent, as RFC 0001 section 3.7 requires. The reference tries
+up to eight times in all; a write renames once, after writing and
+syncing the new file, so the second open almost always holds. A reader
+that runs out of attempts MUST fail the read with an error, never
+report the entry absent: the reference's `Get`, `List`, `Search` and so
+the render then fail, saying the name was replaced on every attempt.
 
 ## The lock
 

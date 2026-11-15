@@ -1342,3 +1342,145 @@ func TestFrontmatterRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestReadRacingAWrite holds reads to RFC 0001 §3.7: an entry live
+// before and after a concurrent write is read in its old or its new
+// state and never as absent. A writer saves one entry over and over
+// while readers Get and List it; the rename that replaces the file can
+// land between a reader's open and its check of the name, which the
+// read must not take for a link swapped in (#54).
+func TestReadRacingAWrite(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "hot", Content: "v0"}); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	type miss struct {
+		op  string
+		err error
+	}
+	misses := make(chan miss, 1024)
+	report := func(m miss) {
+		select {
+		case misses <- m:
+		default:
+		}
+	}
+	done := make(chan struct{}, 2)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := s.Get(ctx, "user", "hot"); err != nil {
+				report(miss{"Get", err})
+			}
+		}
+	}()
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			es, err := s.List(ctx, "user")
+			if err != nil {
+				report(miss{"List", err})
+			} else if len(es) != 1 {
+				report(miss{"List", fmt.Errorf("listed %d entries, want 1", len(es))})
+			}
+		}
+	}()
+	const writes = 200
+	for i := 1; i <= writes; i++ {
+		if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "hot", Content: fmt.Sprintf("v%d", i)}); err != nil {
+			t.Error(err)
+			break
+		}
+	}
+	close(stop)
+	<-done
+	<-done
+	close(misses)
+	var n int
+	for m := range misses {
+		if n < 5 {
+			t.Errorf("%s during a write: %v", m.op, m.err)
+		}
+		n++
+	}
+	if n > 0 {
+		t.Errorf("%d reads missed a live entry during %d writes", n, writes)
+	}
+}
+
+// TestReadReplacedOnEveryAttempt is the read whose every attempt a
+// rename lands inside: openRegular gives up after its bound, and the
+// read fails out loud rather than report the entry absent, which RFC
+// 0001 §3.7 forbids for an entry live before and after the writes.
+// The rename is injected between the open and the check, so the race
+// is certain.
+func TestReadReplacedOnEveryAttempt(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	if _, err := s.Put(ctx, agentmemory.Entry{Scope: "user", Name: "hot", Content: "v0"}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(s.Dir(), "user", "hot.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var renames int
+	afterOpen = func(name string) {
+		if name != filepath.Join("user", "hot.md") {
+			return
+		}
+		renames++
+		tmp := filepath.Join(s.Dir(), "user", ".tmp-test")
+		if err := os.WriteFile(tmp, data, 0o600); err != nil {
+			t.Error(err)
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			t.Error(err)
+		}
+	}
+	defer func() { afterOpen = nil }()
+	_, err = s.Get(ctx, "user", "hot")
+	if err == nil || errors.Is(err, agentmemory.ErrNotFound) {
+		t.Errorf("Get replaced on every attempt = %v, want an error that is not ErrNotFound", err)
+	}
+	if renames != openAttempts {
+		t.Errorf("Get made %d attempts, want %d", renames, openAttempts)
+	}
+	if es, err := s.List(ctx, "user"); err == nil {
+		t.Errorf("List replaced on every attempt = %d entries, nil error; want an error", len(es))
+	}
+	if _, _, err := agentmemory.Render(ctx, s, []agentmemory.Scope{"user"}); err == nil {
+		t.Error("Render replaced on every attempt went through")
+	}
+	// One rename is retried past.
+	renames = 0
+	afterOpen = func(name string) {
+		if name != filepath.Join("user", "hot.md") || renames > 0 {
+			return
+		}
+		renames++
+		tmp := filepath.Join(s.Dir(), "user", ".tmp-test")
+		if err := os.WriteFile(tmp, data, 0o600); err != nil {
+			t.Error(err)
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			t.Error(err)
+		}
+	}
+	if e, err := s.Get(ctx, "user", "hot"); err != nil || e.Content != "v0" {
+		t.Errorf("Get replaced once = %+v, %v", e, err)
+	}
+}

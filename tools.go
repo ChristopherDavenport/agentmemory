@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ChristopherDavenport/agenttool"
@@ -22,11 +23,12 @@ const (
 	ForgetTool = "memory_forget"
 	SearchTool = "memory_search"
 	InsertTool = "memory_insert"
+	ReadTool   = "memory_read"
 )
 
 // WriteTools returns the names of the tools that write memory:
 // memory_save, memory_patch, memory_forget and memory_insert. Every
-// tool of [Tools] but memory_search is one. A product that leaves the
+// tool of [Tools] but memory_search and memory_read is one. A product that leaves the
 // block out of a request withholds these from it and refuses a call
 // of one, see [CheckWrite].
 func WriteTools() []string {
@@ -113,6 +115,9 @@ type toolOptions struct {
 
 	searchReads    []agenttool.Label
 	searchReadsSet bool
+
+	indexScopes []Scope
+	read        bool
 }
 
 // WithSearchLimit sets the number of entries memory_search returns
@@ -129,27 +134,38 @@ func WithSearchBytes(n int) ToolOption {
 	return func(o *toolOptions) { o.searchBytes = n }
 }
 
-// WithRendered tells memory_save what the model was shown: fn returns
-// the [Manifest] of the render the model is composing from, which is the
-// last one the product put in the instructions. A save of an entry that
-// manifest holds names the hash the block showed as the write's base,
-// through [BasedOn], so a write another session made after the render
-// and this save replaced is a record [LostUpdates] reports, rather than
-// a base the save claimed by reading it. An entry the manifest does not
-// hold, a create or one the block omitted, is based on the save's own
-// read, as it is without the option. The result line says which base
+// WithRendered tells memory_save and memory_forget what the model was
+// shown: fn returns the [Manifest] of the render the model is composing
+// from, which is the last one the product put in the instructions. A
+// save of an entry that manifest holds names the hash the block showed
+// as the write's base, through [BasedOn], so a write another session
+// made after the render and this save replaced is a record
+// [LostUpdates] reports, rather than a base the save claimed by reading
+// it. An entry the manifest does not hold, a create or one the block
+// omitted, is based on the save's own read, as it is without the
+// option. The result line says which base
 // the write took, and says so to the model when the entry changed after
 // the render.
 //
 // fn is called on every save, from the goroutine running the call, so
 // it must be safe to call while the product renders the next turn. A
 // nil fn is the same as no option. The manifest must be the one the
-// model is reading now: a product that re-renders before every model
-// call, in BeforeModelCall, keeps it so; one that renders once per turn
-// has a second save of an entry in that turn based on the block rather
-// than on the model's own first save, and reported as a lost update.
-// memory_patch is unchanged: its edit is anchored in the stored text,
-// so it merges with a concurrent write or fails when the anchor is gone.
+// model is reading now, as a product that re-renders before every model
+// call, in BeforeModelCall, keeps it. Until the session's next render,
+// what the block showed it of an entry follows that session's own
+// writes, the session being [SessionFrom] the call's context, and the
+// render the manifest [Render] returned, even one that hashes as an
+// earlier render did: the model knows what it wrote, so a second save of an entry in one turn is built on the
+// model's first, and a save then a forget is not refused. Another
+// session's write never stands in for what a session was shown. A call
+// without a session is held to the manifest's hashes alone.
+//
+// memory_forget of an entry the manifest holds, shown whole or as an
+// index entry, is conditional on the hash the block showed, through
+// [IfHash]: an entry another session changed after the render is not
+// forgotten, and the call fails saying so. memory_patch is unchanged:
+// its edit is anchored in the stored text, so it merges with a
+// concurrent write or fails when the anchor is gone.
 //
 // When the manifest records a block left out whole, [Manifest.Dropped],
 // the model was shown no memory, and every writer, memory_save,
@@ -225,6 +241,48 @@ func WithSearchReads(labels ...agenttool.Label) ToolOption {
 	}
 }
 
+// WithIndexScopes tells the tools which scopes the product renders as
+// an index, with [WithScopeIndex]: the block shows those entries by
+// their heading line alone, so the model needs memory_read to read one
+// by name, and [Tools] offers it, as RFC 0001 §6.11 requires. Each scope
+// must be one passed to [Tools] or to [WithReadScopes], given once;
+// [Tools] panics otherwise. Pass the same options to [Usage].
+func WithIndexScopes(scopes ...Scope) ToolOption {
+	return func(o *toolOptions) { o.indexScopes = append(o.indexScopes, scopes...) }
+}
+
+// WithIndexScopesOf is [WithIndexScopes] of the scopes the render
+// options opts render as an index, [WithScopeIndex]: a product passes
+// it the options it passes [Render], so the tools offer memory_read
+// exactly when the block names it, and passes the same tool options to
+// [Usage]. A block that renders a scope as an index names memory_read in
+// its index note and its omission lines, since RFC 0001 §6.11 requires
+// a product that renders an index to offer it; deriving the tool
+// options from the render's keeps the two from drifting apart.
+func WithIndexScopesOf(opts ...RenderOption) ToolOption {
+	var ro renderOptions
+	for _, opt := range opts {
+		opt(&ro)
+	}
+	scopes := make([]Scope, 0, len(ro.index))
+	for s := range ro.index {
+		scopes = append(scopes, s)
+	}
+	slices.Sort(scopes)
+	return WithIndexScopes(scopes...)
+}
+
+// WithRead offers memory_read whether or not a scope renders as an
+// index: a host that leaves the block out, and so the entries it would
+// have shown, gives the model a read by name beside memory_search.
+// Pass the same options to [Usage].
+func WithRead() ToolOption {
+	return func(o *toolOptions) { o.read = true }
+}
+
+// offersRead reports whether a tool set built with o offers memory_read.
+func (o toolOptions) offersRead() bool { return o.read || len(o.indexScopes) > 0 }
+
 // withClock sets the clock memory_insert names entries by, for tests.
 func withClock(now func() time.Time) ToolOption {
 	return func(o *toolOptions) { o.now = now }
@@ -273,6 +331,11 @@ type forgetArgs struct {
 	Name  string `json:"name" desc:"The entry to remove"`
 }
 
+type readArgs struct {
+	Scope string `json:"scope,omitempty" desc:"Which memory the entry belongs to"`
+	Name  string `json:"name" desc:"The entry to read"`
+}
+
 type searchArgs struct {
 	Query         string            `json:"query" desc:"Words that must all appear in an entry's name, metadata or content, in any case"`
 	Scopes        []string          `json:"scopes,omitempty" desc:"Which memories to search; all of them when omitted"`
@@ -290,8 +353,13 @@ var searchOptionArgs = []string{SearchAny, SearchMeta, SearchUpdatedAfter, Searc
 
 // Tools returns the tools through which the model reaches store,
 // restricted to the scopes the product allows: memory_save,
-// memory_patch, memory_forget and memory_search, and memory_insert last
-// when [WithInsert] names a scope. A call that names a
+// memory_patch, memory_forget and memory_search; memory_read after them
+// when [WithIndexScopes] names a scope or [WithRead] is given; and
+// memory_insert last when [WithInsert] names a scope. memory_read reads
+// one entry whole by scope and name, from the writable and the read
+// scopes, for an entry the block shows as an index entry
+// ([WithScopeIndex]) or left out; it is read-only, safe to replay and
+// reads what memory_search reads. A call that names a
 // scope outside the list is an error the model sees, and the list is
 // in the schema as an enum, not only in the description; a call that
 // omits the scope is an error too, unless the product allows one scope
@@ -321,6 +389,18 @@ var searchOptionArgs = []string{SearchAny, SearchMeta, SearchUpdatedAfter, Searc
 // refuse, [WithRendered] anchors memory_save to the block the model
 // read, [WithFixedNames] fixes a scope's entry names, and [WithInsert]
 // adds memory_insert.
+//
+// The tools are safe for concurrent use, and one tool set may serve
+// several sessions at once: each call's session is [SessionFrom] its
+// context, journaled on its writes, and under [WithRendered] the record
+// of a session's own writes is kept per session. What a caller shares
+// by sharing a tool set is what its options say: the store, the
+// scopes, and the one manifest function of [WithRendered], which must
+// then return the manifest of the block the calling session reads,
+// from the context's session if the sessions' blocks differ. A product
+// that cannot tell its sessions' manifests apart in that function
+// gives each session its own tool set. Calls without a session share
+// nothing but the manifest.
 //
 // The schema check is the tools' own, added with [agenttool.Wrap]; a
 // host that unwraps a tool and executes what is inside skips it.
@@ -378,6 +458,17 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 			panic(fmt.Sprintf("agentmemory.Tools: insert into %q, whose names are fixed", s))
 		}
 	}
+	for i, s := range o.indexScopes {
+		if !ValidScope(s) {
+			panic(fmt.Sprintf("agentmemory.Tools: index scope %q is not kebab-case", s))
+		}
+		if slices.Contains(o.indexScopes[:i], s) {
+			panic(fmt.Sprintf("agentmemory.Tools: index scope %q is given twice", s))
+		}
+		if !slices.Contains(scopes, s) && !slices.Contains(o.readScopes, s) {
+			panic(fmt.Sprintf("agentmemory.Tools: index scope %q is neither a writable nor a read scope", s))
+		}
+	}
 	if o.now == nil {
 		o.now = time.Now
 	}
@@ -397,6 +488,11 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 		tool(PatchTool, t.patchDescription(), t.patch, scopes, o.readScopes, t.read, agenttool.Annotations{Title: "Edit memory entry"}, agenttool.ReplayUnknown, nil),
 		tool(ForgetTool, t.forgetDescription(), t.forget, scopes, o.readScopes, t.read, agenttool.Annotations{Title: "Forget memory entry", Destructive: true}, agenttool.ReplayUnknown, nil),
 		tool(SearchTool, t.searchDescription(), t.search, searchable, nil, nil, agenttool.Annotations{Title: "Search memory", ReadOnly: true}, agenttool.ReplaySafe, &agenttool.Flow{Reads: t.searchReads()}, t.unsupported()...),
+	}
+	if o.offersRead() {
+		// memory_read returns what memory_search does, one entry by
+		// name, so it reads what the search reads.
+		out = append(out, tool(ReadTool, t.readDescription(), t.readEntry, searchable, nil, nil, agenttool.Annotations{Title: "Read memory entry", ReadOnly: true}, agenttool.ReplaySafe, &agenttool.Flow{Reads: t.searchReads()}))
 	}
 	if len(o.insert) > 0 {
 		// An insert never overwrites, so it is not destructive; run
@@ -531,6 +627,108 @@ type toolset struct {
 	store  Store
 	scopes []Scope
 	opts   toolOptions
+
+	// own is what each session's own writes left each entry as, since
+	// the block in force for it was rendered; see [toolset.noteWrite].
+	own ownWrites
+}
+
+// ownWrites is, per session, the state each entry the session wrote
+// through the tool set was left in, under the manifest it was written
+// against. What the block showed a session follows that session's own
+// writes until its block is rendered again: the model knows what it
+// wrote, so a save then a forget of one entry in one turn is not
+// refused as a change made after the render, nor a second save reported
+// as lost. Another session's write is never taken for what a session
+// was shown, so one tool set serves several sessions. A manifest whose
+// hash moved is a new render, and starts clean. A call without a
+// session on its context, [SessionFrom] empty, records and reads
+// nothing here: it is held to the block's hashes alone.
+type ownWrites struct {
+	mu       sync.Mutex
+	sessions map[string]*sessionWrites
+}
+
+// sessionWrites is one session's own writes under one render of its
+// block: the render's number, or, for a manifest without one, its hash.
+type sessionWrites struct {
+	render   uint64
+	manifest string
+	entries  map[ownKey]ownState
+}
+
+// under reports whether sw was recorded under the render m is: the same
+// render, or, for a manifest with no render number, one of the same
+// hash h.
+func (sw *sessionWrites) under(m Manifest, h string) bool {
+	if m.render != 0 || sw.render != 0 {
+		return sw.render == m.render
+	}
+	return sw.manifest == h
+}
+
+type ownKey struct {
+	scope Scope
+	name  string
+}
+
+type ownState struct {
+	hash string
+	gone bool
+}
+
+// noteWrite records what a write of the tool set's own left the entry
+// as, under the manifest the call read; see [ownWrites].
+func (t *toolset) noteWrite(ctx context.Context, c *Change) {
+	session := SessionFrom(ctx)
+	m, ok := t.rendered(ctx)
+	if !ok || c == nil || session == "" {
+		return
+	}
+	h := m.Hash()
+	t.own.mu.Lock()
+	defer t.own.mu.Unlock()
+	if t.own.sessions == nil {
+		t.own.sessions = map[string]*sessionWrites{}
+	}
+	sw := t.own.sessions[session]
+	if sw == nil || !sw.under(m, h) {
+		sw = &sessionWrites{render: m.render, manifest: h, entries: map[ownKey]ownState{}}
+		t.own.sessions[session] = sw
+	}
+	sw.entries[ownKey{c.Entry.Scope, c.Entry.Name}] = ownState{hash: c.Entry.Hash, gone: c.Entry.Deleted}
+}
+
+// ownWrite returns what the session's own write left the entry as under
+// the render m, of hash h, and whether it wrote it since that render. A
+// session's record made under another render is dropped: the record
+// lives until the session's next render, so a later render that comes
+// back to an earlier hash does not revive it.
+func (t *toolset) ownWrite(session string, m Manifest, h string, scope Scope, name string) (ownState, bool) {
+	if session == "" {
+		return ownState{}, false
+	}
+	t.own.mu.Lock()
+	defer t.own.mu.Unlock()
+	sw := t.own.sessions[session]
+	if sw == nil {
+		return ownState{}, false
+	}
+	if !sw.under(m, h) {
+		delete(t.own.sessions, session)
+		return ownState{}, false
+	}
+	st, ok := sw.entries[ownKey{scope, name}]
+	return st, ok
+}
+
+// reader is the tool that reads an entry by name: memory_read when the
+// tool set offers it, and memory_search, which may find it, otherwise.
+func (t *toolset) reader() string {
+	if t.opts.offersRead() {
+		return ReadTool
+	}
+	return SearchTool
 }
 
 // scopeList names the choices for a tool description. With one scope
@@ -609,11 +807,31 @@ func (t *toolset) saveDescription() string {
 }
 
 func (t *toolset) patchDescription() string {
-	return "Edit a memory entry by replacing old_text with new_text. old_text must appear exactly once in the entry, copied exactly; the call fails and says so when it is absent or repeated. The memory block shows headings of levels one to three at level four and escapes a line that starts with <, so copy such text from memory_search, which shows the entry as stored. Prefer this to memory_save for an edit: the call is the size of the change, and the edit is anchored in the stored text, so a change another session made in the meantime is kept. " + t.writerScopes()
+	return "Edit a memory entry by replacing old_text with new_text. old_text must appear exactly once in the entry, copied exactly; the call fails and says so when it is absent or repeated. The memory block shows headings of levels one to three at level four and escapes a line that starts with <, so copy such text from " + t.reader() + ", which shows the entry as stored. Prefer this to memory_save for an edit: the call is the size of the change, and the edit is anchored in the stored text, so a change another session made in the meantime is kept. " + t.writerScopes()
 }
 
 func (t *toolset) forgetDescription() string {
-	return "Remove a memory entry. The store's journal keeps its last content. " + t.writerScopes()
+	note := ""
+	if t.opts.rendered != nil {
+		note = "An entry the memory block shows is removed only while it holds what the block shows; when it changed since, the call fails and says so. "
+	}
+	return "Remove a memory entry. The store's journal keeps its last content. " + note + t.writerScopes()
+}
+
+func (t *toolset) readDescription() string {
+	return fmt.Sprintf("Read one memory entry whole by its scope and name: its content as stored, its size and its hash. Use it for an entry the memory block lists without its content, as an index does, or one it left out over the budget. An entry over %d bytes is refused with its size. %s",
+		t.opts.searchBytes, t.readScopeList())
+}
+
+// readScopeList names memory_read's choices: the writable scopes and
+// the read scopes, of which a call names one, or, with one in all,
+// may leave it out.
+func (t *toolset) readScopeList() string {
+	all := names(slices.Concat(t.scopes, t.opts.readScopes))
+	if len(all) == 1 {
+		return fmt.Sprintf("Scope: %s, the only one; the argument may be left out.", all[0])
+	}
+	return fmt.Sprintf("Scopes: %s; name one on every call.", strings.Join(all, ", "))
 }
 
 func (t *toolset) insertDescription() string {
@@ -739,7 +957,7 @@ func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error
 	if errors.Is(err, ErrNotFound) {
 		stored = nil
 	}
-	shown, fromBlock := t.shown(ctx, scope, a.Name)
+	shown, fromBlock := t.shown(ctx, scope, a.Name, false)
 	var base []PutOption
 	switch {
 	case fromBlock:
@@ -785,6 +1003,7 @@ func (t *toolset) save(ctx context.Context, a saveArgs) (agenttool.Result, error
 	if err != nil {
 		return agenttool.Result{}, err
 	}
+	t.noteWrite(ctx, c)
 	return wrote(SaveTool, c, "Saved %s/%s (%d of %d bytes) %s — %s; %s%s",
 		scope, a.Name, len(a.Content), t.store.MaxEntryBytes(), Hash(a.Content), savedWhat(stored), metaWhat(stored, a.Meta, e.Meta), t.basedWhat(stored, shown, fromBlock))
 }
@@ -823,15 +1042,30 @@ func (t *toolset) rendered(ctx context.Context) (Manifest, bool) {
 }
 
 // shown returns the hash the rendered block showed for the entry, and
-// whether it showed the entry at all; see [WithRendered].
-func (t *toolset) shown(ctx context.Context, scope Scope, name string) (string, bool) {
+// whether it showed the entry at all; see [WithRendered]. index counts
+// an index entry, whose heading the block showed and whose content it
+// did not, as shown. The tool set's own writes since the render stand
+// in for what the block showed of the entries they wrote: a write
+// leaves the entry as shown at its new hash, and a forget leaves it not
+// shown.
+func (t *toolset) shown(ctx context.Context, scope Scope, name string, index bool) (string, bool) {
 	m, ok := t.rendered(ctx)
 	if !ok {
 		return "", false
 	}
+	if st, ok := t.ownWrite(SessionFrom(ctx), m, m.Hash(), scope, name); ok {
+		return st.hash, !st.gone
+	}
 	for _, me := range m.Entries {
 		if me.Scope == scope && me.Name == name {
 			return me.Hash, true
+		}
+	}
+	if index {
+		for _, me := range m.Omitted {
+			if me.Scope == scope && me.Name == name && me.Reason == OmitIndex {
+				return me.Hash, true
+			}
 		}
 	}
 	return "", false
@@ -851,7 +1085,7 @@ func (t *toolset) basedWhat(stored *Entry, shown string, fromBlock bool) string 
 	case stored == nil:
 		return "; built on the block, but the entry was forgotten after the block was rendered and this write created it again"
 	case stored.Hash != shown:
-		return fmt.Sprintf("; built on the block's %s, but the entry changed to %s after the block was rendered and this write replaced that change; read it with memory_search if the change mattered", shown, stored.Hash)
+		return fmt.Sprintf("; built on the block's %s, but the entry changed to %s after the block was rendered and this write replaced that change; read it with %s if the change mattered", shown, stored.Hash, t.reader())
 	}
 	return "; built on the block"
 }
@@ -908,7 +1142,7 @@ func (t *toolset) patch(ctx context.Context, a patchArgs) (agenttool.Result, err
 		}
 		switch n := strings.Count(cur.Content, a.OldText); {
 		case n == 0:
-			return agenttool.Result{}, fmt.Errorf("old_text does not appear in %s/%s; read the entry with memory_search and copy the text exactly", scope, a.Name)
+			return agenttool.Result{}, fmt.Errorf("old_text does not appear in %s/%s; read the entry with %s and copy the text exactly", scope, a.Name, t.reader())
 		case n > 1:
 			return agenttool.Result{}, fmt.Errorf("old_text appears %d times in %s/%s; include more of the surrounding text so it appears once", n, scope, a.Name)
 		}
@@ -919,6 +1153,7 @@ func (t *toolset) patch(ctx context.Context, a patchArgs) (agenttool.Result, err
 		// otherwise be undone under a content hash that did not move.
 		c, err := t.store.Put(ctx, next, IfHash(cur.Hash), IfMetaHash(MetaHash(cur.Meta)))
 		if err == nil {
+			t.noteWrite(ctx, c)
 			return wrote(PatchTool, c, "Patched %s/%s (%d of %d bytes) %s", scope, a.Name, len(next.Content), t.store.MaxEntryBytes(), Hash(next.Content))
 		}
 		if !errors.Is(err, ErrConflict) {
@@ -940,12 +1175,41 @@ func (t *toolset) forget(ctx context.Context, a forgetArgs) (agenttool.Result, e
 	if err := t.fixedForget(scope, a.Name); err != nil {
 		return agenttool.Result{}, err
 	}
-	c, err := t.store.Forget(ctx, scope, a.Name)
+	// The model chose to forget what the block showed it, so the forget
+	// holds only while the entry is still that: a save another session
+	// made after the render is not forgotten unseen.
+	var opts []PutOption
+	shown, fromBlock := t.shown(ctx, scope, a.Name, true)
+	if fromBlock {
+		opts = append(opts, IfHash(shown))
+	}
+	c, err := t.store.Forget(ctx, scope, a.Name, opts...)
+	var ce *ConflictError
+	if fromBlock && errors.As(err, &ce) && !ce.Meta {
+		return agenttool.Result{}, &forgetChanged{ce, shown, t.reader()}
+	}
 	if err != nil {
 		return agenttool.Result{}, err
 	}
+	t.noteWrite(ctx, c)
 	return wrote(ForgetTool, c, "Forgot %s/%s", scope, a.Name)
 }
+
+// forgetChanged is memory_forget's failure when the entry changed after
+// the block the model read was rendered. It is the store's
+// [ConflictError], told in terms of the block.
+type forgetChanged struct {
+	*ConflictError
+	shown  string
+	reader string
+}
+
+func (e *forgetChanged) Error() string {
+	return fmt.Sprintf("%s/%s changed after the memory block was rendered, from %s to %s, so it was not forgotten; read it with %s, and forget it again if it should still go",
+		e.Scope, e.Name, e.shown, e.Have, e.reader)
+}
+
+func (e *forgetChanged) Unwrap() error { return e.ConflictError }
 
 // insertEntry creates an entry under a name of its own, from the time
 // and the content's hash, taking the next suffix while the name is
@@ -962,6 +1226,7 @@ func (t *toolset) insertEntry(ctx context.Context, a insertArgs) (agenttool.Resu
 		name := InsertName(at, a.Content, n)
 		c, err := t.store.Put(ctx, Entry{Scope: scope, Name: name, Content: a.Content, Meta: a.Meta}, IfHash(""))
 		if err == nil {
+			t.noteWrite(ctx, c)
 			return wrote(InsertTool, c, "Inserted %s/%s (%d of %d bytes) %s", scope, name, len(a.Content), t.store.MaxEntryBytes(), c.Entry.Hash)
 		}
 		if !errors.Is(err, ErrConflict) {
@@ -1057,6 +1322,50 @@ func (t *toolset) search(ctx context.Context, a searchArgs) (agenttool.Result, e
 	if len(unshown) > 0 {
 		fmt.Fprintf(&b, "\nNot shown, over the %d byte result limit; search for them by name: %s\n", t.opts.searchBytes, strings.Join(unshown, ", "))
 	}
+	return agenttool.Text(b.String()), nil
+}
+
+// readEntry is memory_read: one entry whole, as stored, with its hash,
+// so a model can read an entry the block shows as an index entry or
+// left out, by name; memory_search cannot promise to find an entry by
+// its name, since how it matches is the store's.
+func (t *toolset) readEntry(ctx context.Context, a readArgs) (agenttool.Result, error) {
+	all := slices.Concat(t.scopes, t.opts.readScopes)
+	var scope Scope
+	switch {
+	case a.Scope == "" && len(all) == 1:
+		scope = all[0]
+	case a.Scope == "":
+		return agenttool.Result{}, fmt.Errorf("scope is required; name one of: %s", strings.Join(names(all), ", "))
+	default:
+		s, err := t.readScope(a.Scope)
+		if err != nil {
+			return agenttool.Result{}, err
+		}
+		scope = s
+	}
+	e, err := t.store.Get(ctx, scope, a.Name)
+	if errors.Is(err, ErrNotFound) {
+		return agenttool.Result{}, fmt.Errorf("%w; memory_search finds entries by their words", err)
+	}
+	if err != nil {
+		return agenttool.Result{}, err
+	}
+	if e.Size() > t.opts.searchBytes {
+		return agenttool.Result{}, fmt.Errorf("%s/%s is %d bytes, over the %d byte result limit, so it cannot be read whole here", scope, a.Name, e.Size(), t.opts.searchBytes)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s/%s (%d of %d bytes) %s", scope, a.Name, e.Size(), t.store.MaxEntryBytes(), e.Hash)
+	if d := e.Description(); d != "" {
+		b.WriteString(": ")
+		b.WriteString(d)
+	}
+	b.WriteString("\n")
+	b.WriteString(e.Content)
+	if !strings.HasSuffix(e.Content, "\n") {
+		b.WriteString("\n")
+	}
+	// A read writes nothing, so its result carries no record.
 	return agenttool.Text(b.String()), nil
 }
 

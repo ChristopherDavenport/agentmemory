@@ -19,11 +19,17 @@ import (
 // the model would see, or the error.
 func call(t *testing.T, tools []agenttool.Tool, name, args string) (string, error) {
 	t.Helper()
+	return callIn(t, context.Background(), tools, name, args)
+}
+
+// callIn is call under ctx, which may carry a session.
+func callIn(t *testing.T, ctx context.Context, tools []agenttool.Tool, name, args string) (string, error) {
+	t.Helper()
 	for _, tool := range tools {
 		if tool.Name() != name {
 			continue
 		}
-		res, err := tool.Execute(context.Background(), agenttool.Call{ID: "call_1", Args: json.RawMessage(args)})
+		res, err := tool.Execute(ctx, agenttool.Call{ID: "call_1", Args: json.RawMessage(args)})
 		if err != nil {
 			return "", err
 		}
@@ -40,6 +46,9 @@ func TestToolsShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{SaveTool, PatchTool, ForgetTool, SearchTool}
+	if len(tools) != len(want) {
+		t.Fatalf("Tools offers %d tools, want %d: memory_read only with an index scope or WithRead", len(tools), len(want))
+	}
 	for i, tool := range tools {
 		if tool.Name() != want[i] {
 			t.Errorf("tool %d = %s, want %s", i, tool.Name(), want[i])
@@ -563,6 +572,7 @@ func TestToolsAnnotations(t *testing.T) {
 		PatchTool:  {Title: "Edit memory entry"},
 		ForgetTool: {Title: "Forget memory entry", Destructive: true},
 		SearchTool: {Title: "Search memory", ReadOnly: true},
+		ReadTool:   {Title: "Read memory entry", ReadOnly: true},
 	}
 	for _, tool := range tools {
 		if _, ok := tool.(agenttool.Annotated); !ok {
@@ -601,12 +611,14 @@ func TestToolsReplay(t *testing.T) {
 		PatchTool:  agenttool.ReplayUnknown,
 		ForgetTool: agenttool.ReplayUnknown,
 		SearchTool: agenttool.ReplaySafe,
+		ReadTool:   agenttool.ReplaySafe,
 	}
 	args := map[string]string{
 		SaveTool:   `{"name":"tz","content":"UTC"}`,
 		PatchTool:  `{"name":"tz","old_text":"UTC","new_text":"CET"}`,
 		ForgetTool: `{"name":"tz"}`,
 		SearchTool: `{"query":"timezone","scopes":["project"]}`,
+		ReadTool:   `{"scope":"project","name":"tz"}`,
 	}
 	for _, tool := range tools {
 		if got := agenttool.ReplayOf(ctx, tool, json.RawMessage(args[tool.Name()])); got != want[tool.Name()] {
@@ -653,6 +665,17 @@ func TestReadScopes(t *testing.T) {
 			}
 			if d := tool.Description(); !strings.Contains(d, "Scopes: user, project; all of them when scopes is left out. Read-only, so for reading: project.") {
 				t.Errorf("search description: %s", d)
+			}
+			continue
+		}
+		if tool.Name() == ReadTool {
+			// memory_read reads every scope, so it names both and asks
+			// for one.
+			if fmt.Sprint(schema.Properties["scope"].Enum) != "[user project]" || !slices.Contains(schema.Required, "scope") {
+				t.Errorf("read scope enum = %v, required %v", schema.Properties["scope"].Enum, schema.Required)
+			}
+			if d := tool.Description(); !strings.Contains(d, "Scopes: user, project; name one on every call.") {
+				t.Errorf("read description: %s", d)
 			}
 			continue
 		}
@@ -818,6 +841,271 @@ func TestSaveBasedOnTheRender(t *testing.T) {
 	// state the journal no longer held.
 	if len(lost) != 1 || lost[0].Change.Entry.Name != man.Entries[len(man.Entries)-1].Name || lost[0].Over != "" {
 		t.Errorf("LostUpdates = %+v", lost)
+	}
+}
+
+// TestForgetBasedOnTheRender is #53's tool half: under WithRendered,
+// memory_forget forgets an entry the block showed only while it holds
+// what the block showed, so a save another session made after the
+// render is not forgotten unseen; the call fails and says the entry
+// changed. An entry the block did not show, and a tool set without
+// WithRendered, forget unconditionally as before.
+func TestForgetBasedOnTheRender(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore(WithMaxEntryBytes(256))
+	scopes := []Scope{"user"}
+	for _, e := range []Entry{
+		{Scope: "user", Name: "a", Content: filler(200, 'a')},
+		{Scope: "user", Name: "b", Content: filler(200, 'b')},
+		{Scope: "user", Name: "c", Content: filler(200, 'c')},
+	} {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, man, err := Render(ctx, store, scopes, WithMaxTotalBytes(700))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(man.Entries) < 2 || len(man.Omitted) == 0 {
+		t.Fatalf("the fixture shows and omits nothing: %+v", man)
+	}
+	tools := Tools(store, scopes, WithRendered(func() Manifest { return man }))
+	changed, unchanged, omitted := man.Entries[0], man.Entries[1], man.Omitted[0]
+
+	// Another session saves the first shown entry after the render.
+	later := "changed after the render"
+	if _, err := store.Put(WithSession(ctx, "other"), Entry{Scope: "user", Name: changed.Name, Content: later}); err != nil {
+		t.Fatal(err)
+	}
+	n := journalLen(store)
+	out, err := call(t, tools, ForgetTool, fmt.Sprintf(`{"name":%q}`, changed.Name))
+	if err == nil {
+		t.Fatalf("forget of an entry changed after the render = %q, want a failure", out)
+	}
+	if !strings.Contains(err.Error(), "changed after the memory block was rendered") || !strings.Contains(err.Error(), Hash(later)) {
+		t.Errorf("the failure does not say the entry changed: %v", err)
+	}
+	if got, err := store.Get(ctx, "user", changed.Name); err != nil || got.Content != later {
+		t.Errorf("the save made after the render was forgotten: %+v, %v", got, err)
+	}
+	if journalLen(store) != n {
+		t.Errorf("a refused forget wrote to the journal")
+	}
+
+	for _, name := range []string{unchanged.Name, omitted.Name} {
+		if out, err := call(t, tools, ForgetTool, fmt.Sprintf(`{"name":%q}`, name)); err != nil {
+			t.Errorf("forget %s = %q, %v", name, out, err)
+		}
+		if _, err := store.Get(ctx, "user", name); !errors.Is(err, ErrNotFound) {
+			t.Errorf("forget %s left it live: %v", name, err)
+		}
+	}
+
+	// Without WithRendered the tool knows nothing the model was shown.
+	plain := Tools(store, scopes)
+	if out, err := call(t, plain, ForgetTool, fmt.Sprintf(`{"name":%q}`, changed.Name)); err != nil {
+		t.Errorf("forget without WithRendered = %q, %v", out, err)
+	}
+}
+
+// TestReadTool is #55's memory_read: it returns one entry by scope and
+// name, its content as stored and its hash, from a writable scope or a
+// read scope, read-only and safe to replay, and it stays when the block
+// was left out, as memory_search does.
+func TestReadTool(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	style := "## Style\n\nShort answers.\n"
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "style", Content: style, Meta: map[string]string{"description": "How to answer"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(ctx, Entry{Scope: "rules", Name: "policy", Content: "No force pushes."}); err != nil {
+		t.Fatal(err)
+	}
+	_, man, err := Render(ctx, store, []Scope{"user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(store, []Scope{"user"}, WithReadScopes("rules"), WithIndexScopes("rules"), WithRendered(func() Manifest { return man.LeaveOut() }))
+	out, err := call(t, tools, ReadTool, `{"scope":"user","name":"style"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The stored text, not the block's neutralised one.
+	if !strings.Contains(out, style) || !strings.Contains(out, Hash(style)) || !strings.Contains(out, "How to answer") {
+		t.Errorf("memory_read = %q, want the content as stored, its hash and its description", out)
+	}
+	if out, err := call(t, tools, ReadTool, `{"scope":"rules","name":"policy"}`); err != nil || !strings.Contains(out, "No force pushes.") {
+		t.Errorf("memory_read of a read scope = %q, %v", out, err)
+	}
+	if _, err := call(t, tools, ReadTool, `{"scope":"user","name":"missing"}`); err == nil || !strings.Contains(err.Error(), "no such entry") {
+		t.Errorf("memory_read of a missing entry = %v", err)
+	}
+	if _, err := call(t, tools, ReadTool, `{"scope":"other","name":"style"}`); err == nil {
+		t.Error("memory_read of a scope outside the lists went through")
+	}
+	if _, err := call(t, tools, ReadTool, `{"name":"style"}`); err == nil || !strings.Contains(err.Error(), "scope") {
+		t.Errorf("memory_read without a scope over two scopes = %v", err)
+	}
+	if n := journalLen(store); n != 2 {
+		t.Errorf("memory_read wrote: journal has %d records", n)
+	}
+	var read agenttool.Tool
+	for _, tool := range tools {
+		if tool.Name() == ReadTool {
+			read = tool
+		}
+	}
+	if a := agenttool.AnnotationsOf(read); a != (agenttool.Annotations{Title: "Read memory entry", ReadOnly: true}) {
+		t.Errorf("memory_read annotations = %+v", a)
+	}
+	if f, ok := agenttool.FlowOf(read); !ok || fmt.Sprint(f.Reads) != fmt.Sprint([]agenttool.Label{agenttool.LabelUntrusted}) {
+		t.Errorf("memory_read flow = %+v, %v; want it to read untrusted", f, ok)
+	}
+	if got := agenttool.ReplayOf(ctx, read, json.RawMessage(`{"scope":"user","name":"style"}`)); got != agenttool.ReplaySafe {
+		t.Errorf("memory_read replay = %v, want safe", got)
+	}
+	if slices.Contains(WriteTools(), ReadTool) {
+		t.Error("memory_read is listed as a writer")
+	}
+}
+
+// TestForgetAnIndexEntry: an entry the block showed as an index entry
+// is forgotten on the hash the index showed, as one shown whole is, so a
+// rewrite after the render is not forgotten unseen (#53 over #55), and
+// the failure sends the model to memory_read when it is offered.
+func TestForgetAnIndexEntry(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	for _, name := range []string{"build", "layout"} {
+		if _, err := store.Put(ctx, Entry{Scope: "project", Name: name, Content: name + " notes\nmore\n"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, man, err := Render(ctx, store, []Scope{"project"}, WithScopeIndex("project"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(store, []Scope{"project"}, WithIndexScopes("project"), WithRendered(func() Manifest { return man }))
+	if _, err := store.Put(WithSession(ctx, "other"), Entry{Scope: "project", Name: "build", Content: "rewritten\n"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = call(t, tools, ForgetTool, `{"name":"build"}`)
+	if !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "read it with memory_read") {
+		t.Errorf("forget of an index entry rewritten after the render = %v, want a conflict pointing to memory_read", err)
+	}
+	if got, err := store.Get(ctx, "project", "build"); err != nil || got.Content != "rewritten\n" {
+		t.Errorf("the rewrite was forgotten: %+v, %v", got, err)
+	}
+	if _, err := call(t, tools, ForgetTool, `{"name":"layout"}`); err != nil {
+		t.Errorf("forget of an unchanged index entry: %v", err)
+	}
+}
+
+// TestOwnWritesFollowTheBlock: under WithRendered, what the block showed
+// follows the tool set's own writes until the block is rendered again,
+// so a save and then a forget of one entry in one turn is not refused as
+// a change made after the render, nor a second save reported as lost;
+// another session's write after the model's own still is (#53).
+func TestOwnWritesFollowTheBlock(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "tz", Content: "UTC"}); err != nil {
+		t.Fatal(err)
+	}
+	_, man, err := Render(ctx, store, []Scope{"user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(store, []Scope{"user"}, WithRendered(func() Manifest { return man }))
+	// The calls run in one session, whose own writes the tool set keeps.
+	call := func(t *testing.T, tools []agenttool.Tool, name, args string) (string, error) {
+		t.Helper()
+		return callIn(t, WithSession(ctx, "sess-1"), tools, name, args)
+	}
+	if _, err := call(t, tools, SaveTool, `{"name":"tz","content":"CET"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call(t, tools, PatchTool, `{"name":"tz","old_text":"CET","new_text":"CEST"}`); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := call(t, tools, SaveTool, `{"name":"tz","content":"Europe/London"}`); err != nil || strings.Contains(out, "changed to") {
+		t.Errorf("a second save of the model's own entry = %q, %v; want it built on the model's own write", out, err)
+	}
+	if lost, err := LostUpdates(ctx, store, 0); err != nil || len(lost) != 0 {
+		t.Errorf("LostUpdates = %+v, %v; the model's own writes are not lost updates", lost, err)
+	}
+	if _, err := call(t, tools, ForgetTool, `{"name":"tz"}`); err != nil {
+		t.Errorf("forget after the model's own saves = %v", err)
+	}
+	// Saved again, then another session writes: the forget is refused.
+	if _, err := call(t, tools, SaveTool, `{"name":"tz","content":"UTC"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(WithSession(ctx, "other"), Entry{Scope: "user", Name: "tz", Content: "PST"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call(t, tools, ForgetTool, `{"name":"tz"}`); !errors.Is(err, ErrConflict) {
+		t.Errorf("forget over another session's write = %v, want a conflict", err)
+	}
+	// A new render starts from what it shows.
+	if _, man, err = Render(ctx, store, []Scope{"user"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call(t, tools, ForgetTool, `{"name":"tz"}`); err != nil {
+		t.Errorf("forget after a render that shows the other write = %v", err)
+	}
+}
+
+// TestReadOffered: memory_read is offered when the product says a scope
+// renders as an index, or asks for it with WithRead, and not otherwise,
+// so a tool set without an index is the four tools it was (#55).
+func TestReadOffered(t *testing.T) {
+	store := NewMemStore()
+	has := func(tools []agenttool.Tool) bool {
+		for _, tool := range tools {
+			if tool.Name() == ReadTool {
+				return true
+			}
+		}
+		return false
+	}
+	for _, c := range []struct {
+		name string
+		opts []ToolOption
+		want bool
+	}{
+		{"plain", nil, false},
+		{"read scopes", []ToolOption{WithReadScopes("rules")}, false},
+		{"index", []ToolOption{WithIndexScopes("user")}, true},
+		{"index of a read scope", []ToolOption{WithReadScopes("rules"), WithIndexScopes("rules")}, true},
+		{"explicit", []ToolOption{WithRead()}, true},
+	} {
+		tools := Tools(store, []Scope{"user"}, c.opts...)
+		if has(tools) != c.want {
+			t.Errorf("%s: memory_read offered %v, want %v", c.name, has(tools), c.want)
+		}
+		if err := agenttool.Set(tools).Validate(); err != nil {
+			t.Errorf("%s: %v", c.name, err)
+		}
+		if u := Usage(c.opts...); strings.Contains(u, ReadTool) != c.want {
+			t.Errorf("%s: Usage names memory_read %v, want %v", c.name, strings.Contains(u, ReadTool), c.want)
+		}
+	}
+	for name, opts := range map[string][]ToolOption{
+		"unlisted": {WithIndexScopes("other")},
+		"bad":      {WithIndexScopes("User")},
+		"twice":    {WithIndexScopes("user", "user")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Error("Tools did not panic")
+				}
+			}()
+			Tools(store, []Scope{"user"}, opts...)
+		})
 	}
 }
 
@@ -1137,12 +1425,171 @@ func TestWritersReadTheManifestOnce(t *testing.T) {
 		{InsertTool, `{"content":"a note"}`},
 		{ForgetTool, `{"name":"prefs"}`},
 	} {
+		// Rendered again before each call, as a product that re-renders
+		// before every model call does, so memory_forget forgets the
+		// prefs the block shows.
+		if _, man, err = Render(ctx, store, []Scope{"user"}); err != nil {
+			t.Fatal(err)
+		}
 		reads.Store(0)
 		if _, err := call(t, tools, c.tool, c.args); err != nil {
 			t.Fatalf("%s: %v", c.tool, err)
 		}
 		if n := reads.Load(); n != 1 {
 			t.Errorf("%s read the manifest %d times, want 1", c.tool, n)
+		}
+	}
+}
+
+// TestOwnWritesAreTheSessions: one tool set serving two sessions keeps
+// each session's own writes apart, so a write of one session is not
+// taken for what the other was shown (#53): A patches an entry both
+// were shown, and B's forget, built on the block, conflicts. Without a
+// session on the context the tool set records nothing of its own.
+func TestOwnWritesAreTheSessions(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "x", Content: "one fact"}); err != nil {
+		t.Fatal(err)
+	}
+	_, man, err := Render(ctx, store, []Scope{"user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(store, []Scope{"user"}, WithRendered(func() Manifest { return man }))
+	run := func(session, name, args string) error {
+		for _, tool := range tools {
+			if tool.Name() == name {
+				_, err := tool.Execute(WithSession(ctx, session), agenttool.Call{ID: "call_1", Args: json.RawMessage(args)})
+				return err
+			}
+		}
+		t.Fatalf("no tool %q", name)
+		return nil
+	}
+	if err := run("a", PatchTool, `{"name":"x","old_text":"one","new_text":"two"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := run("b", ForgetTool, `{"name":"x"}`); !errors.Is(err, ErrConflict) {
+		t.Errorf("B's forget of an entry A changed after B's render = %v, want a conflict", err)
+	}
+	if got, err := store.Get(ctx, "user", "x"); err != nil || got.Content != "two fact" {
+		t.Errorf("A's patch was forgotten by B: %+v, %v", got, err)
+	}
+	// A's own forget follows A's own patch.
+	if err := run("a", ForgetTool, `{"name":"x"}`); err != nil {
+		t.Errorf("A's forget after its own patch = %v", err)
+	}
+	// Without a session, nothing of the tool set's own is recorded: a
+	// write is not taken for what the block showed.
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "y", Content: "y fact"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, man, err = Render(ctx, store, []Scope{"user"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call(t, tools, PatchTool, `{"name":"y","old_text":"y","new_text":"z"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call(t, tools, ForgetTool, `{"name":"y"}`); !errors.Is(err, ErrConflict) {
+		t.Errorf("forget without a session after a patch = %v, want a conflict on the block's hash", err)
+	}
+}
+
+// TestOwnWritesEndAtTheNextRender: a session's own writes stand in for
+// what its block showed until that session's block is rendered again,
+// not for as long as the manifest has some hash: a render that comes
+// back to an earlier hash does not revive the record of a write made
+// under it (#53).
+func TestOwnWritesEndAtTheNextRender(t *testing.T) {
+	ctx := context.Background()
+	sess := WithSession(ctx, "sess-1")
+	store := NewMemStore()
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "x", Content: "h0"}); err != nil {
+		t.Fatal(err)
+	}
+	render := func() Manifest {
+		_, m, err := Render(ctx, store, []Scope{"user"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	man := render()
+	m0 := man.Hash()
+	tools := Tools(store, []Scope{"user"}, WithRendered(func() Manifest { return man }))
+	if _, err := callIn(t, sess, tools, SaveTool, `{"name":"x","content":"h1"}`); err != nil {
+		t.Fatal(err)
+	}
+	man = render() // the session's next render shows its own write
+	// Another session puts x back as it was, and the session renders
+	// again: the block shows h0, under the first render's hash.
+	if _, err := store.Put(WithSession(ctx, "other"), Entry{Scope: "user", Name: "x", Content: "h0"}); err != nil {
+		t.Fatal(err)
+	}
+	man = render()
+	if man.Hash() != m0 {
+		t.Fatalf("the fixture does not come back to the first hash")
+	}
+	if _, err := callIn(t, sess, tools, ForgetTool, `{"name":"x"}`); err != nil {
+		t.Errorf("forget of what the latest block shows = %v; a record from an earlier render came back", err)
+	}
+	// A manifest with no render of its own, decoded from a record,
+	// falls back on its hash: a write under it is followed while the
+	// hash holds.
+	if _, err := store.Put(ctx, Entry{Scope: "user", Name: "y", Content: "y0"}); err != nil {
+		t.Fatal(err)
+	}
+	_, data := render().Record()
+	var decoded Manifest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	man = decoded
+	if _, err := callIn(t, sess, tools, SaveTool, `{"name":"y","content":"y1"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callIn(t, sess, tools, ForgetTool, `{"name":"y"}`); err != nil {
+		t.Errorf("forget after the session's own save under a decoded manifest = %v", err)
+	}
+}
+
+// TestReadFollowsTheIndex: the block names memory_read exactly when the
+// tool set built from the same render options offers it, and the usage
+// paragraph with it, so a product that derives the tool options from its
+// render options never shows the model a tool it does not have (#55).
+func TestReadFollowsTheIndex(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore(WithMaxEntryBytes(256))
+	for _, e := range []Entry{
+		{Scope: "user", Name: "a", Content: filler(200, 'a')},
+		{Scope: "user", Name: "b", Content: filler(200, 'b')},
+		{Scope: "project", Name: "c", Content: "c\nmore\n"},
+	} {
+		if _, err := store.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scopes := []Scope{"user", "project"}
+	for _, ropts := range [][]RenderOption{
+		{WithScopeMaxBytes("user", 300)},
+		{WithScopeMaxBytes("user", 300), WithScopeIndex("project")},
+		{WithScopeIndex("user"), WithScopeIndex("project")},
+	} {
+		block, _, err := Render(ctx, store, scopes, ropts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		topts := []ToolOption{WithIndexScopesOf(ropts...)}
+		offered := false
+		for _, tool := range Tools(store, scopes, topts...) {
+			offered = offered || tool.Name() == ReadTool
+		}
+		if named := strings.Contains(block, ReadTool); named != offered {
+			t.Errorf("the block names memory_read %v, the tools offer it %v:\n%s", named, offered, block)
+		}
+		if named := strings.Contains(Usage(topts...), ReadTool); named != offered {
+			t.Errorf("Usage names memory_read %v, the tools offer it %v", named, offered)
 		}
 	}
 }

@@ -5,6 +5,133 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Added
+
+- A scope can render as an index (#55). `WithScopeIndex(scope)` renders
+  each of its entries as the heading line alone, the name, size and
+  limit, then the description or, without one, the content's first
+  non-blank line, neutralised and cut to 120 bytes with `…`; the
+  content is not shown. The scope's heading adds `Index: each entry's
+  content is not shown; read one whole with memory_read.` An index
+  entry is packed against the bound and the cap by its own bytes, and
+  the manifest lists it under `Omitted` with the new reason
+  `OmitIndex` (`index`), so `memory_save` bases a save of it on its own
+  read, `Dropped` is unaffected and the manifest hash moves between an
+  index and a full render. `testdata/render/index.*` is its fixture,
+  and a render input's `index` lists the index scopes.
+- `EntryPartFor(e, bound, opts...)` gives the part an entry renders as
+  under a render's options, its index entry part in an index scope, so
+  a product sizes an index scope's entry left out over the budget by
+  the part it would have added (§8.1) (#55). A product that records the
+  manifest's omissions as instructions omitted elements skips the
+  `OmitIndex` ones: they are in the block, as parts under the same ID.
+- `memory_read` (`ReadTool`) reads one entry whole by scope and name,
+  from the writable and the read scopes: its content as stored, its
+  size against the bound, its hash and its description (#55).
+  `memory_search` cannot stand in for it, since how a search matches is
+  the store's. It is read-only, safe to replay, reads what
+  `memory_search` reads (`WithSearchReads`), stays when the block is
+  left out, writes nothing, refuses an entry over the search result
+  bound, and is not one of `WriteTools()`. `Tools` offers it, after
+  `memory_search`, only under the new `WithIndexScopes(scopes...)`,
+  which names the scopes the product renders as an index, or
+  `WithIndexScopesOf(renderOpts...)`, which takes them from the render
+  options so the block names `memory_read` exactly when the tools offer
+  it, or `WithRead()`, which offers it anyway (a host that leaves the block
+  out, as it keeps `memory_search`). A tool set with neither is the
+  four tools it was.
+- RFC 0001 draft 0.4: §7.2 gains index entry parts and the index note,
+  with the rule (a renderer MAY render a scope as an index; the
+  manifest MUST list each index entry under `omitted` with reason
+  `index`; a product that does MUST offer `memory_read`); §7.1, §7.4
+  and §7.5 take the index scopes as an input, §7.6 the reason, §8.1
+  records an index entry as a part rather than an omitted element;
+  §6.1, §6.10 and a new §6.11 define `memory_read` and when it is
+  offered.
+
+### Changed
+
+- **Breaking:** `Store.Forget` takes put options,
+  `Forget(ctx, scope, name, opts ...PutOption)`, in `MemStore`,
+  `filestore` and `sqlite` (#53). Under `IfHash` or `IfMetaHash` a
+  forget is conditional, as a `Put` is: a live entry whose hash or
+  metadata hash is not the one named fails with `ErrConflict`, a
+  `ConflictError`, and nothing is written; the check and the tombstone
+  are one step under the store's write lock or transaction. A missing
+  entry is still `ErrNotFound`, and `BasedOn` does nothing on a forget.
+  A store outside this repository adds the parameter; a caller that
+  reads an entry, compares its hash and forgets it passes
+  `IfHash(seen)` instead, so a save landing in between is not
+  forgotten. `storetest` has a `ForgetIf` case.
+- Under `WithRendered`, `memory_forget` forgets an entry the block
+  showed, whole or as an index entry, only while it holds the hash the
+  block showed (#53). When it changed after the render, the call fails
+  with `<scope>/<name> changed after the memory block was rendered,
+  from <shown> to <held>, so it was not forgotten; read it with
+  <reader>, and forget it again if it should still go`, which unwraps
+  to the `ConflictError`. An entry the block did not show, and a tool
+  set without `WithRendered`, forget as before. The tool's description
+  says so under the option.
+- Under `WithRendered`, what the block showed a session of an entry
+  follows that session's own writes until that session's next render
+  (#53): a
+  second save of an entry in one turn is built on the model's first,
+  not reported as a lost update, and a save then a forget is not
+  refused. The record is per session, `SessionFrom` the call's
+  context, so one tool set serving several sessions never takes one
+  session's write for what another was shown; a call without a session
+  records nothing and is held to the block's hashes alone. A render
+  ends the record even when its manifest hashes as an earlier one:
+  `Render` numbers each render outside the manifest (not recorded, not
+  hashed), and a manifest decoded from a record falls back on its hash.
+- `Usage` takes the tool options, `Usage(opts ...ToolOption)`, and names
+  `memory_read` when they offer it (#55). `Usage()` is the paragraph it
+  was; a caller that held `Usage` as a `func() string` value adapts.
+- A message that sends the model to read an entry by name names
+  `memory_read` when the tool set offers it and `memory_search`
+  otherwise: memory_forget's conflict, memory_patch's missing
+  `old_text` and its description, and memory_save's note that the
+  entry changed after the render (#55).
+- In a block that renders a scope as an index, the summary counts index
+  entries apart, `Entries: <n> shown, <i> indexed, <k> omitted.`, and an
+  omission line says `fetch with memory_read:` (#55). A block without an
+  index scope renders byte for byte as before.
+- RFC 0001 draft 0.4: §3.4 gains the conditional forget (if-hash and
+  if-meta-hash, *conflict*, one step with the tombstone), §3.3 and
+  §3.7 name the forget beside the put, §6.4 and §6.8 the tool's
+  condition on the block's hash and the model's own writes, §7.2 the
+  index forms of the summary and the omission line, and the bindings
+  and conformance follow; "Changes since 0.3" lists the forget as
+  breaking.
+
+### Fixed
+
+- `filestore` no longer reports a live entry as not found when a write
+  replaces its file during the read (#54). The write's rename could
+  land between a reader's open and its check of the name, which the
+  read took for a link swapped in, so `Get` answered not found, and
+  `List`, `Search` and `Render`, which read through the same path,
+  left the entry out, a render leaving it out of the block and its
+  manifest. The read now opens the name again, up to eight times, when
+  the file opened and the file named are both regular files with one
+  name that differ; a link, a hard link or anything irregular is still
+  refused. A name replaced on every attempt fails the read with an
+  error, so `Get`, `List`, `Search` and `Render` fail out loud rather
+  than drop the entry. Reads still take no lock.
+- RFC 0001 is draft 0.4. §3.7 gains the rule: a read of an entry live
+  before and after a concurrent write returns it, old or new, and never
+  reports it absent. Annex A says a reader opens again when a rename
+  lands between its open and its check. A new section 15, "Changes
+  since 0.3", lists it; the sections after it are renumbered (Changes
+  since 0.2 is 16, Changes from draft 0.1 is 17, Decisions 18).
+
+### Dependencies
+
+- openresponses v0.0.18 to v0.0.20, in the root module and in
+  `sqlite`. No API of this module changes with it.
+
 ## v0.0.12 - 2026-11-03
 
 ### Added
