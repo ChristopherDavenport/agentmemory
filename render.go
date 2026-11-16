@@ -128,7 +128,9 @@ const ManifestNS = "agentmemory:render"
 // is what a product compares to record it only when it has changed,
 // which is what the recorder already does for the block itself, and
 // [Manifest.Record] is the namespace and the bytes to hand to the
-// recorder when it has.
+// recorder when it has. Compare two manifests by [Manifest.Hash], not by
+// reflect.DeepEqual: two renders of one state hash the same and differ
+// in an unexported field.
 type Manifest struct {
 	// Entries are the included entries in block order.
 	Entries []ManifestEntry `json:"entries"`
@@ -148,6 +150,11 @@ type Manifest struct {
 	// and two renders of one state are the same manifest (RFC 0001
 	// §7.4). The tools use it to end a session's record of its own
 	// writes at that session's next render (see [WithRendered]).
+	//
+	// It is a field all the same, so two renders of one store state
+	// are equal by [Manifest.Hash] and by their recorded bytes, and not
+	// by reflect.DeepEqual; go-cmp needs cmpopts.IgnoreUnexported
+	// (Manifest{}) to compare manifests, and panics without it.
 	render uint64
 }
 

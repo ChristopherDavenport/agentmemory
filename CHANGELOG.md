@@ -19,6 +19,35 @@ versions may break the API.
   unwraps a tool and executes the tool inside skips the read, as it
   skips the schema check; that path is outside the promise. A test pins
   the order with a store that logs its calls.
+- The record of each session's own writes under `WithRendered` holds
+  the 1024 sessions that wrote through the tool set most recently, and
+  drops the one that wrote least recently past that (#57). A session's
+  record otherwise ended only when that session called again, so a
+  tool set serving a session per caller, as dax `serve -a2a` runs every
+  A2A caller on one kit, kept one per caller for the life of the
+  process. A dropped session is held to the block's hashes, as a call
+  without a session is: its next save of an entry it wrote says the
+  entry changed after the render and `LostUpdates` reports its own write
+  as lost, and its forget of one is refused as changed since the
+  render. Nothing goes through that the block did not show.
+- RFC 0001 §6.8's rule that a session's record ends at its next render
+  now binds as a tool set can keep it (#57): one that cannot tell two
+  renders of one hash apart MUST end the record when the manifest's
+  hash changes, and SHOULD number renders so a return to an earlier
+  hash ends it too. Draft 0.4 said it ends even then, which the
+  reference does only for the renders `Render` numbered, not for a
+  manifest decoded from a record or folded. §6.8 also lets a tool set
+  bound its records and says what a dropped one costs.
+- `Tools` panics with a message naming `WithIndexScopesOf` when the
+  render options it was given index a scope that is neither a writable
+  nor a read scope (#57). It still panics: that index would send the
+  model to `memory_read` for entries it cannot read (§6.11), and
+  agentkit recovers a `Tools` panic as an error.
+- `Manifest` says, and so does this line, that two renders of one store
+  state are equal by `Manifest.Hash` and by their recorded bytes but
+  not by `reflect.DeepEqual`, since v0.0.13's unexported render number
+  differs; `go-cmp` needs `cmpopts.IgnoreUnexported(Manifest{})` and
+  panics without it (#57).
 
 ### Dependencies
 
