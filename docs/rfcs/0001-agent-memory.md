@@ -1656,10 +1656,12 @@ The root module is the reference binding.
 | stores | `NewMemStore` (in memory), `filestore.Open` (Annex A, with `Reconcile`, `LockHolder`, `BreakLock`, `ErrLocked`), `sqlite.Open` (nested module) |
 | store conformance | `storetest.Run` |
 
-The tools `Tools` returns are wrapped with `agenttool.Wrap`: the
-wrapper reads `WithRendered`'s function once for the call (6.8), then
-checks the scope and the schema, before the tool inside runs. A host
-that unwraps a tool and executes the tool inside skips all three, and
+The tools `Tools` returns are wrapped with `agenttool.Wrap`. A
+writer's wrapper reads `WithRendered`'s function once for the call
+(6.8), then checks the scope and the schema, before the tool inside
+runs; the wrappers of `memory_search` and `memory_read`, which write
+nothing, check the schema alone and never read the function. A host
+that unwraps a writer and executes the tool inside skips all three, and
 the call then reads the function where it needs it, possibly more than
 once and after a store call.
 
