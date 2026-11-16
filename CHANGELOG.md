@@ -53,6 +53,10 @@ versions may break the API.
 
 - openresponses v0.0.20 to v0.0.21, in the root module and in
   `sqlite`. No API of this module changes with it.
+- `sqlite`: modernc.org/sqlite v1.59.0 to v1.62.0 (libc v1.80.1, the
+  pin agentsession's sqlite module uses). It needs Go 1.26, so the
+  `sqlite` module declares `go 1.26.0`; the root stays on `go 1.25` and
+  CI tests it alone on 1.25.x, with every module on 1.26.x and stable.
 
 ## v0.0.13 - 2026-11-15
 

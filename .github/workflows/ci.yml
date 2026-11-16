@@ -15,8 +15,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 1.25 is the floor declared in go.mod; stable is the current release.
-        go: ["1.25.x", "stable"]
+        # 1.26 is the floor the sqlite module declares (modernc.org/sqlite
+        # v1.62.0 needs it), and every job here builds every module; the
+        # root's 1.25 floor is the root job's. stable is the current
+        # release.
+        go: ["1.26.x", "stable"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -36,6 +39,23 @@ jobs:
         run: make vet
       - name: Test (library and nested modules)
         run: make test
+
+  # The root module declares go 1.25, below the sqlite module's 1.26, so
+  # it is tested on its own floor, without the nested modules.
+  root:
+    name: Test root module (Go 1.25.x)
+    runs-on: ubuntu-latest
+    env:
+      # Build with 1.25 itself, not a newer toolchain a go.mod asks for.
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: go.sum
+      - name: Build, vet and test the root module alone
+        run: make build vet test SUBMODULES=
 
   lint:
     name: Lint
@@ -68,7 +88,7 @@ jobs:
   checks:
     name: Checks
     if: always()
-    needs: [test, lint]
+    needs: [test, root, lint]
     runs-on: ubuntu-latest
     steps:
       - name: Verify every job succeeded
