@@ -174,16 +174,21 @@ func WithSearchBytes(n int) ToolOption {
 //
 // The record is kept for the 1024 sessions that wrote through the tool
 // set most recently; past that, the session that wrote least recently
-// is dropped. Dropping fails safe: the dropped session is held to the
-// block's hashes, as a call without a session is, so a forget removes
-// only the state the block showed and a save is based on the block, and
-// another session's change is reported or refused as it would be. What
-// the session loses is its own writes: its next save of an entry it
-// wrote goes through based on the block, says in its result that the
-// entry changed after the render, and leaves a record [LostUpdates]
-// reports as losing the session's own write; its forget of one is
-// refused as changed since the render, and the model is told to read
-// the entry and forget it again.
+// is dropped. The dropped session's calls are then checked as a call
+// without a session is. For an entry the block showed that fails safe:
+// a forget removes only the state the block showed and a save is based
+// on the block, so another session's change is reported or refused as
+// it would be, and what the session loses is its own writes. Its next
+// save of such an entry it wrote goes through based on the block, says
+// in its result that the entry changed after the render, and leaves a
+// record [LostUpdates] reports as losing the session's own write; its
+// forget of one is refused as changed since the render, and the model
+// is told to read the entry and forget it again. For an entry the block
+// did not show, one the session created or inserted after the render,
+// nothing stands in for what it was shown: a forget is unconditional
+// and a save is based on the stored entry, so a change another session
+// made to it in between is forgotten or replaced unreported, as it is
+// for a call without a session.
 //
 // memory_forget of an entry the manifest holds, shown whole or as an
 // index entry, is conditional on the hash the block showed, through
@@ -691,8 +696,10 @@ type toolset struct {
 // again under another render, so a tool set serving a caller per
 // session, as an A2A server running every caller on one tool set does,
 // would keep one per finished caller for the life of the process. A
-// dropped session is held to the block's hashes, as a call without a
-// session is, which is the safe side: see [WithRendered].
+// dropped session is checked as a call without a session is: held to
+// the block's hashes for an entry the block showed, the safe side, and
+// to the stored entry for one it did not, which loses the check of an
+// entry the session created since the render; see [WithRendered].
 type ownWrites struct {
 	mu       sync.Mutex
 	sessions map[string]*sessionWrites

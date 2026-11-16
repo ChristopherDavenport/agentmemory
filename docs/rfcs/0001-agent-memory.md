@@ -884,13 +884,19 @@ saw changed, which is the race 6.4 closes.
 
 A tool set MAY bound the sessions it keeps a record for, and one that
 serves a session per caller should, since a record otherwise ends only
-when its session calls again. A session whose record is dropped is held
-to the manifest's hashes, as a call that names no session is: its forget
-of an entry it wrote is refused as changed since the render, and its
-save is based on the block and reported as replacing a change, its own.
-That costs the session its own writes and lets nothing through that the
-block did not show. The reference keeps the 1024 sessions that wrote
-most recently.
+when its session calls again. A session whose record is dropped is
+checked as a call that names no session is. For an entry the manifest
+holds, it is held to the manifest's hashes: its forget of an entry it
+wrote is refused as changed since the render, and its save is based on
+the block and reported as replacing a change, its own. That costs the
+session its own writes and lets no change of an entry the block showed
+through unseen. For an entry the manifest does not hold, one the
+session created or inserted after the render, nothing says what the
+model was shown: its forget is unconditional and its save is based on
+the stored entry (6.2, 6.4), so a change another session made to that
+entry in between is forgotten or replaced unreported, as it is for a
+call that names no session. The reference keeps the 1024 sessions that
+wrote most recently.
 
 **A block left out.** A manifest records a block **left out whole**
 when its `dropped` is true (7.6), or, for a record written before
@@ -1765,7 +1771,7 @@ not a new meaning under the old one.
 
 | what | sections | the change |
 |---|---|---|
-| #57 | 6.8 | The rule that ends a session's record at its next render binds as a tool set can keep it: one that cannot tell two renders of one hash apart ends the record when the hash changes, and SHOULD number renders so a return to an earlier hash ends it too. Draft 0.4 said the record ends even at a render hashing as an earlier one, which the reference does only for renders it numbered, not for a manifest decoded or folded. A tool set MAY bound its records; a dropped session is held to the block's hashes, which refuses or reports its own writes and lets nothing through the block did not show. The reference keeps 1024 sessions. |
+| #57 | 6.8 | The rule that ends a session's record at its next render binds as a tool set can keep it: one that cannot tell two renders of one hash apart ends the record when the hash changes, and SHOULD number renders so a return to an earlier hash ends it too. Draft 0.4 said the record ends even at a render hashing as an earlier one, which the reference does only for renders it numbered, not for a manifest decoded or folded. A tool set MAY bound its records; a dropped session is checked as a call naming no session: held to the block's hashes for an entry the block showed, which refuses or reports its own writes and lets no change of such an entry through unseen, and to the stored entry for one it created after the render, whose change by another session in between goes unreported. The reference keeps 1024 sessions. |
 | #58 | 6.8, 12 | A tool told what the block showed reads it once per call, before it reads or writes the store, and takes every check and base of the call from that one reading, on success, refusal and a failed schema alike. The reference did so in draft 0.4 and nothing said it, while a product that gives a turn's write lock back on that read relies on it: a second read, or one after a store call, could refuse a call on one render and base it on another. |
 
 ## 16. Changes since 0.3

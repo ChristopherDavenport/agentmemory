@@ -25,11 +25,16 @@ versions may break the API.
   record otherwise ended only when that session called again, so a
   tool set serving a session per caller, as dax `serve -a2a` runs every
   A2A caller on one kit, kept one per caller for the life of the
-  process. A dropped session is held to the block's hashes, as a call
-  without a session is: its next save of an entry it wrote says the
-  entry changed after the render and `LostUpdates` reports its own write
-  as lost, and its forget of one is refused as changed since the
-  render. Nothing goes through that the block did not show.
+  process. A dropped session is checked as a call without a session
+  is. For an entry the block showed it is held to the block's hashes:
+  its next save of one it wrote says the entry changed after the render
+  and `LostUpdates` reports its own write as lost, and its forget of one
+  is refused as changed since the render, so no change of such an entry
+  goes through unseen. For an entry the block did not show, one the
+  session created or inserted after the render, its forget is
+  unconditional and its save is based on the stored entry, so a change
+  another session made to it in between is forgotten or replaced
+  unreported, as for a call without a session.
 - RFC 0001 §6.8's rule that a session's record ends at its next render
   now binds as a tool set can keep it (#57): one that cannot tell two
   renders of one hash apart MUST end the record when the manifest's

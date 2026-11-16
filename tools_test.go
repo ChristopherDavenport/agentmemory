@@ -1775,3 +1775,69 @@ func TestIndexScopesOfPanicNamesTheOption(t *testing.T) {
 	}()
 	Tools(NewMemStore(), []Scope{"user"}, WithIndexScopesOf(WithScopeIndex("notes")))
 }
+
+// TestDroppedSessionOnAnEntryTheBlockDidNotShow pins what #57's bound
+// costs for an entry the session created after the render, which the
+// block did not show: once the session is dropped from the record, a
+// call on that entry is checked as a call without a session is. Its
+// forget runs unconditionally and its save is based on the stored
+// entry, so a change another session made in between is not reported.
+// While the record is kept, the same forget is refused.
+func TestDroppedSessionOnAnEntryTheBlockDidNotShow(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	_, man, err := Render(ctx, store, []Scope{"user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(store, []Scope{"user"}, WithRendered(func() Manifest { return man }))
+	run := func(session, name, args string) (string, error) {
+		t.Helper()
+		return callIn(t, WithSession(ctx, session), tools, name, args)
+	}
+	save := func(session, name, content string) {
+		t.Helper()
+		if _, err := run(session, SaveTool, fmt.Sprintf(`{"name":%q,"content":%q}`, name, content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := func(name, content string) {
+		t.Helper()
+		if _, err := store.Put(WithSession(ctx, "other"), Entry{Scope: "user", Name: name, Content: content}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Kept: a creates k, another session changes it, a's forget is refused.
+	save("a", "k", "k1")
+	other("k", "k2")
+	if _, err := run("a", ForgetTool, `{"name":"k"}`); !errors.Is(err, ErrConflict) {
+		t.Errorf("a's forget of its own entry another session changed, record kept = %v, want a conflict", err)
+	}
+	// Dropped: a creates f and s, 1024 other sessions write, and another
+	// session changes both.
+	save("a", "f", "f1")
+	save("a", "s", "s1")
+	for i := range ownSessionsMax {
+		save(fmt.Sprintf("s%d", i), fmt.Sprintf("e-%d", i), "z")
+	}
+	other("f", "f2")
+	other("s", "s2")
+	before, err := LostUpdates(ctx, store, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run("a", ForgetTool, `{"name":"f"}`); err != nil {
+		t.Errorf("a's forget of f after its record was dropped = %v; a call without a session forgets unconditionally", err)
+	}
+	if _, err := store.Get(ctx, "user", "f"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("f after a's forget = %v, want it forgotten, the other session's change with it", err)
+	}
+	out, err := run("a", SaveTool, `{"name":"s","content":"s3"}`)
+	if err != nil || strings.Contains(out, "after the block was rendered") {
+		t.Errorf("a's save of s after its record was dropped = %q, %v; want it based on the stored entry, unreported", out, err)
+	}
+	after, err := LostUpdates(ctx, store, 0)
+	if err != nil || len(after) != len(before) {
+		t.Errorf("LostUpdates went from %d to %+v, %v; a save based on the stored entry loses nothing it reports", len(before), after, err)
+	}
+}
