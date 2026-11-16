@@ -7,6 +7,19 @@ versions may break the API.
 
 ## Unreleased
 
+### Changed
+
+- RFC 0001 is draft 0.5. §6.8 gains the rule a writer has always
+  followed: a tool told what the block showed reads it once per call,
+  before it reads or writes the store, and takes every check and base
+  of the call from that one reading (#58). `WithRendered` says so: its
+  function is called once per writer's call, before any store call, on
+  success, refusal and a failed schema alike, so a product may give a
+  turn's write lock back on that call, as agentkit does. A host that
+  unwraps a tool and executes the tool inside skips the read, as it
+  skips the schema check; that path is outside the promise. A test pins
+  the order with a store that logs its calls.
+
 ### Dependencies
 
 - openresponses v0.0.20 to v0.0.21, in the root module and in

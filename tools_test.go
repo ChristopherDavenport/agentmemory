@@ -1593,3 +1593,108 @@ func TestReadFollowsTheIndex(t *testing.T) {
 		}
 	}
 }
+
+// logging is a store that logs each call into a log the manifest
+// function writes to as well, so a test sees the order of the two.
+type logging struct {
+	*MemStore
+	log *[]string
+}
+
+func (l logging) Get(ctx context.Context, scope Scope, name string) (*Entry, error) {
+	*l.log = append(*l.log, "get")
+	return l.MemStore.Get(ctx, scope, name)
+}
+
+func (l logging) List(ctx context.Context, scope Scope) ([]Entry, error) {
+	*l.log = append(*l.log, "list")
+	return l.MemStore.List(ctx, scope)
+}
+
+func (l logging) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error) {
+	*l.log = append(*l.log, "put")
+	return l.MemStore.Put(ctx, e, opts...)
+}
+
+func (l logging) Forget(ctx context.Context, scope Scope, name string, opts ...PutOption) (*Change, error) {
+	*l.log = append(*l.log, "forget")
+	return l.MemStore.Forget(ctx, scope, name, opts...)
+}
+
+func (l logging) Search(ctx context.Context, scopes []Scope, query string, limit int) ([]Entry, error) {
+	*l.log = append(*l.log, "search")
+	return l.MemStore.Search(ctx, scopes, query, limit)
+}
+
+// TestWritersReadTheManifestBeforeTheStore pins RFC 0001 §6.8's rule
+// (#58): a writer told what the block showed reads it once per call,
+// before its first store call, whether the call succeeds, is refused or
+// fails its schema. agentkit gives a turn's write lock back on that
+// read, so a second read or one after a store call would let one call
+// run against two renders.
+func TestWritersReadTheManifestBeforeTheStore(t *testing.T) {
+	ctx := context.Background()
+	var log []string
+	mem := NewMemStore()
+	store := logging{mem, &log}
+	for _, e := range []Entry{
+		{Scope: "user", Name: "prefs", Content: "hello world"},
+		{Scope: "persona", Name: "me", Content: "a helper"},
+		{Scope: "rules", Name: "style", Content: "be brief"},
+	} {
+		if _, err := mem.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scopes := []Scope{"user", "persona"}
+	render := func() Manifest {
+		_, m, err := Render(ctx, mem, []Scope{"user", "persona", "rules"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	var man Manifest
+	tools := Tools(store, scopes, WithReadScopes("rules"), WithFixedNames("persona", "me"), WithInsert("user"),
+		WithRendered(func() Manifest {
+			log = append(log, "rendered")
+			return man
+		}))
+	for _, c := range []struct {
+		name, tool, args string
+		dropped, fail    bool
+	}{
+		{"save", SaveTool, `{"scope":"user","name":"prefs","content":"hello there"}`, false, false},
+		{"patch", PatchTool, `{"scope":"user","name":"prefs","old_text":"there","new_text":"you"}`, false, false},
+		{"insert", InsertTool, `{"content":"a note"}`, false, false},
+		{"forget", ForgetTool, `{"scope":"user","name":"prefs"}`, false, false},
+		{"save a read scope", SaveTool, `{"scope":"rules","name":"style","content":"be long"}`, false, true},
+		{"forget a fixed name", ForgetTool, `{"scope":"persona","name":"me"}`, false, true},
+		{"save another name in a fixed scope", SaveTool, `{"scope":"persona","name":"you","content":"x"}`, false, true},
+		{"patch a missing anchor", PatchTool, `{"scope":"persona","name":"me","old_text":"nowhere","new_text":"x"}`, false, true},
+		{"save without content", SaveTool, `{"scope":"user","name":"prefs"}`, false, true},
+		{"patch without new_text", PatchTool, `{"scope":"persona","name":"me","old_text":"a"}`, false, true},
+		{"forget without a name", ForgetTool, `{"scope":"user"}`, false, true},
+		{"insert without content", InsertTool, `{}`, false, true},
+		{"save under a block left out", SaveTool, `{"scope":"user","name":"prefs","content":"x"}`, true, true},
+		{"insert under a block left out", InsertTool, `{"content":"x"}`, true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			man = render()
+			if c.dropped {
+				man = man.LeaveOut()
+			}
+			log = nil
+			_, err := call(t, tools, c.tool, c.args)
+			if (err != nil) != c.fail {
+				t.Fatalf("%s = %v, want failure %v", c.tool, err, c.fail)
+			}
+			if n := slices.Index(log, "rendered"); n != 0 {
+				t.Errorf("calls %v: the manifest was not read first", log)
+			}
+			if n := strings.Count(strings.Join(log, " "), "rendered"); n != 1 {
+				t.Errorf("calls %v: the manifest was read %d times, want 1", log, n)
+			}
+		})
+	}
+}

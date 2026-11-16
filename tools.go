@@ -147,9 +147,17 @@ func WithSearchBytes(n int) ToolOption {
 // the write took, and says so to the model when the entry changed after
 // the render.
 //
-// fn is called on every save, from the goroutine running the call, so
-// it must be safe to call while the product renders the next turn. A
-// nil fn is the same as no option. The manifest must be the one the
+// fn is called once per writer's call, from the goroutine running the
+// call, so it must be safe to call while the product renders the next
+// turn. A nil fn is the same as no option. The one call comes before
+// the call reads or writes the store, whether the call then succeeds,
+// is refused or fails its schema, and every check and base of the call
+// is taken from what it returned (RFC 0001 §6.8): a product may give a
+// turn's write lock back when fn is called. That holds for the tools as
+// [Tools] returns them. A host that unwraps one and executes the tool
+// inside skips the read, as it skips the schema check, and the call
+// then calls fn where it needs it, possibly more than once and after a
+// store call. The manifest must be the one the
 // model is reading now, as a product that re-renders before every model
 // call, in BeforeModelCall, keeps it. Until the session's next render,
 // what the block showed it of an entry follows that session's own
