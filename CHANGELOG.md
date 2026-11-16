@@ -5,6 +5,64 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Changed
+
+- RFC 0001 is draft 0.5. §6.8 gains the rule a writer has always
+  followed: a tool told what the block showed reads it once per call,
+  before it reads or writes the store, and takes every check and base
+  of the call from that one reading (#58). `WithRendered` says so: its
+  function is called once per writer's call, before any store call, on
+  success, refusal and a failed schema alike, so a product may give a
+  turn's write lock back on that call, as agentkit does. A host that
+  unwraps a tool and executes the tool inside skips the read, as it
+  skips the schema check; that path is outside the promise. A test pins
+  the order with a store that logs its calls.
+- The record of each session's own writes under `WithRendered` holds
+  the 1024 sessions that wrote through the tool set most recently, and
+  drops the one that wrote least recently past that (#57). A session's
+  record otherwise ended only when that session called again, so a
+  tool set serving a session per caller, as dax `serve -a2a` runs every
+  A2A caller on one kit, kept one per caller for the life of the
+  process. A dropped session is checked as a call without a session
+  is. For an entry the block showed it is held to the block's hashes:
+  its next save of one it wrote says the entry changed after the render
+  and `LostUpdates` reports its own write as lost, and its forget of one
+  is refused as changed since the render, so no change of such an entry
+  goes through unseen. For an entry the block did not show, one the
+  session created or inserted after the render, its forget is
+  unconditional and its save is based on the stored entry, so a change
+  another session made to it in between is forgotten or replaced
+  unreported, as for a call without a session.
+- RFC 0001 §6.8's rule that a session's record ends at its next render
+  now binds as a tool set can keep it (#57): one that cannot tell two
+  renders of one hash apart MUST end the record when the manifest's
+  hash changes, and SHOULD number renders so a return to an earlier
+  hash ends it too. Draft 0.4 said it ends even then, which the
+  reference does only for the renders `Render` numbered, not for a
+  manifest decoded from a record or folded. §6.8 also lets a tool set
+  bound its records and says what a dropped one costs.
+- `Tools` panics with a message naming `WithIndexScopesOf` when the
+  render options it was given index a scope that is neither a writable
+  nor a read scope (#57). It still panics: that index would send the
+  model to `memory_read` for entries it cannot read (§6.11), and
+  agentkit recovers a `Tools` panic as an error.
+- `Manifest` says, and so does this line, that two renders of one store
+  state are equal by `Manifest.Hash` and by their recorded bytes but
+  not by `reflect.DeepEqual`, since v0.0.13's unexported render number
+  differs; `go-cmp` needs `cmpopts.IgnoreUnexported(Manifest{})` and
+  panics without it (#57).
+
+### Dependencies
+
+- openresponses v0.0.20 to v0.0.21, in the root module and in
+  `sqlite`. No API of this module changes with it.
+- `sqlite`: modernc.org/sqlite v1.59.0 to v1.62.0 (libc v1.80.1, the
+  pin agentsession's sqlite module uses). It needs Go 1.26, so the
+  `sqlite` module declares `go 1.26.0`; the root stays on `go 1.25` and
+  CI tests it alone on 1.25.x, with every module on 1.26.x and stable.
+
 ## v0.0.13 - 2026-11-15
 
 ### Added

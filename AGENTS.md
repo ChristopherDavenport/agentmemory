@@ -9,7 +9,9 @@ manifest for the session's provenance. The design is in
 ## Module
 
 - Module path: `github.com/ChristopherDavenport/agentmemory`.
-- Go 1.25 is the floor. The root package name is `agentmemory`.
+- Go 1.25 is the floor of the root module, and 1.26 of `sqlite`
+  (modernc.org/sqlite needs it); CI tests the root alone on 1.25. The
+  root package name is `agentmemory`.
 - The root module depends on
   `github.com/ChristopherDavenport/openresponses`,
   `github.com/ChristopherDavenport/agenttool` and the standard library.

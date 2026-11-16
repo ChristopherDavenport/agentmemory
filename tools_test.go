@@ -1593,3 +1593,251 @@ func TestReadFollowsTheIndex(t *testing.T) {
 		}
 	}
 }
+
+// logging is a store that logs each call into a log the manifest
+// function writes to as well, so a test sees the order of the two.
+type logging struct {
+	*MemStore
+	log *[]string
+}
+
+func (l logging) Get(ctx context.Context, scope Scope, name string) (*Entry, error) {
+	*l.log = append(*l.log, "get")
+	return l.MemStore.Get(ctx, scope, name)
+}
+
+func (l logging) List(ctx context.Context, scope Scope) ([]Entry, error) {
+	*l.log = append(*l.log, "list")
+	return l.MemStore.List(ctx, scope)
+}
+
+func (l logging) Put(ctx context.Context, e Entry, opts ...PutOption) (*Change, error) {
+	*l.log = append(*l.log, "put")
+	return l.MemStore.Put(ctx, e, opts...)
+}
+
+func (l logging) Forget(ctx context.Context, scope Scope, name string, opts ...PutOption) (*Change, error) {
+	*l.log = append(*l.log, "forget")
+	return l.MemStore.Forget(ctx, scope, name, opts...)
+}
+
+func (l logging) Search(ctx context.Context, scopes []Scope, query string, limit int) ([]Entry, error) {
+	*l.log = append(*l.log, "search")
+	return l.MemStore.Search(ctx, scopes, query, limit)
+}
+
+// TestWritersReadTheManifestBeforeTheStore pins RFC 0001 §6.8's rule
+// (#58): a writer told what the block showed reads it once per call,
+// before its first store call, whether the call succeeds, is refused or
+// fails its schema. agentkit gives a turn's write lock back on that
+// read, so a second read or one after a store call would let one call
+// run against two renders.
+func TestWritersReadTheManifestBeforeTheStore(t *testing.T) {
+	ctx := context.Background()
+	var log []string
+	mem := NewMemStore()
+	store := logging{mem, &log}
+	for _, e := range []Entry{
+		{Scope: "user", Name: "prefs", Content: "hello world"},
+		{Scope: "persona", Name: "me", Content: "a helper"},
+		{Scope: "rules", Name: "style", Content: "be brief"},
+	} {
+		if _, err := mem.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scopes := []Scope{"user", "persona"}
+	render := func() Manifest {
+		_, m, err := Render(ctx, mem, []Scope{"user", "persona", "rules"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	var man Manifest
+	tools := Tools(store, scopes, WithReadScopes("rules"), WithFixedNames("persona", "me"), WithInsert("user"),
+		WithRendered(func() Manifest {
+			log = append(log, "rendered")
+			return man
+		}))
+	for _, c := range []struct {
+		name, tool, args string
+		dropped, fail    bool
+	}{
+		{"save", SaveTool, `{"scope":"user","name":"prefs","content":"hello there"}`, false, false},
+		{"patch", PatchTool, `{"scope":"user","name":"prefs","old_text":"there","new_text":"you"}`, false, false},
+		{"insert", InsertTool, `{"content":"a note"}`, false, false},
+		{"forget", ForgetTool, `{"scope":"user","name":"prefs"}`, false, false},
+		{"save a read scope", SaveTool, `{"scope":"rules","name":"style","content":"be long"}`, false, true},
+		{"forget a fixed name", ForgetTool, `{"scope":"persona","name":"me"}`, false, true},
+		{"save another name in a fixed scope", SaveTool, `{"scope":"persona","name":"you","content":"x"}`, false, true},
+		{"patch a missing anchor", PatchTool, `{"scope":"persona","name":"me","old_text":"nowhere","new_text":"x"}`, false, true},
+		{"save without content", SaveTool, `{"scope":"user","name":"prefs"}`, false, true},
+		{"patch without new_text", PatchTool, `{"scope":"persona","name":"me","old_text":"a"}`, false, true},
+		{"forget without a name", ForgetTool, `{"scope":"user"}`, false, true},
+		{"insert without content", InsertTool, `{}`, false, true},
+		{"save under a block left out", SaveTool, `{"scope":"user","name":"prefs","content":"x"}`, true, true},
+		{"insert under a block left out", InsertTool, `{"content":"x"}`, true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			man = render()
+			if c.dropped {
+				man = man.LeaveOut()
+			}
+			log = nil
+			_, err := call(t, tools, c.tool, c.args)
+			if (err != nil) != c.fail {
+				t.Fatalf("%s = %v, want failure %v", c.tool, err, c.fail)
+			}
+			if n := slices.Index(log, "rendered"); n != 0 {
+				t.Errorf("calls %v: the manifest was not read first", log)
+			}
+			if n := strings.Count(strings.Join(log, " "), "rendered"); n != 1 {
+				t.Errorf("calls %v: the manifest was read %d times, want 1", log, n)
+			}
+		})
+	}
+}
+
+// TestOwnWritesAreBounded: the record of sessions' own writes holds the
+// 1024 sessions that wrote most recently, and drops the one that wrote
+// least recently past that, so a tool set serving a caller per session
+// does not grow with every caller (#57). Dropping fails safe: the
+// dropped session is held to the block's hashes, so its forget of an
+// entry it wrote is refused as changed since the render, and its save
+// is reported against the block.
+func TestOwnWritesAreBounded(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	for _, name := range []string{"x", "y"} {
+		if _, err := store.Put(ctx, Entry{Scope: "user", Name: name, Content: name + "0"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, man, err := Render(ctx, store, []Scope{"user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(store, []Scope{"user"}, WithRendered(func() Manifest { return man }))
+	save := func(session, name, content string) {
+		t.Helper()
+		if _, err := callIn(t, WithSession(ctx, session), tools, SaveTool, fmt.Sprintf(`{"name":%q,"content":%q}`, name, content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("a", "x", "x1")
+	save("b", "y", "y1")
+	// 1022 more sessions fill the record to 1024 without dropping one.
+	for i := range 1022 {
+		save(fmt.Sprintf("s%d", i), fmt.Sprintf("e-%d", i), "z")
+	}
+	// The 1025th drops a, which wrote least recently.
+	save("last", "e-last", "z")
+
+	_, err = callIn(t, WithSession(ctx, "a"), tools, ForgetTool, `{"name":"x"}`)
+	if !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "changed after the memory block was rendered") {
+		t.Errorf("a's forget of its own save after its record was dropped = %v, want refused as changed since the render", err)
+	}
+	if got, err := store.Get(ctx, "user", "x"); err != nil || got.Content != "x1" {
+		t.Errorf("a's refused forget changed x: %+v, %v", got, err)
+	}
+	// b, the least recent session kept, still follows its own write. (a's
+	// save below records a again, which then drops another.)
+	if _, err := callIn(t, WithSession(ctx, "b"), tools, ForgetTool, `{"name":"y"}`); err != nil {
+		t.Errorf("b's forget of its own save, its record kept = %v", err)
+	}
+	out, err := callIn(t, WithSession(ctx, "a"), tools, SaveTool, `{"name":"x","content":"x2"}`)
+	if err != nil || !strings.Contains(out, "changed to "+Hash("x1")+" after the block was rendered") {
+		t.Errorf("a's save after its record was dropped = %q, %v; want it reported against the block", out, err)
+	}
+	// The journal shows a's own first write as the one lost: reported,
+	// not hidden.
+	lost, err := LostUpdates(ctx, store, 0)
+	if err != nil || len(lost) != 1 || lost[0].Change.Entry.Name != "x" || lost[0].Over != Hash("x1") {
+		t.Errorf("LostUpdates = %+v, %v; want a's second save reported over its first", lost, err)
+	}
+}
+
+// TestIndexScopesOfPanicNamesTheOption: an index scope the render
+// options name and the tool set neither writes nor reads would send the
+// model to memory_read for an entry it cannot read, so Tools panics, as
+// it does on every misconfiguration, and the panic names the option the
+// scope came from (#57).
+func TestIndexScopesOfPanicNamesTheOption(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Tools did not panic")
+		}
+		if msg := fmt.Sprint(r); !strings.Contains(msg, "WithIndexScopesOf") || !strings.Contains(msg, `"notes"`) {
+			t.Errorf("panic = %q, want it to name WithIndexScopesOf and the scope", msg)
+		}
+	}()
+	Tools(NewMemStore(), []Scope{"user"}, WithIndexScopesOf(WithScopeIndex("notes")))
+}
+
+// TestDroppedSessionOnAnEntryTheBlockDidNotShow pins what #57's bound
+// costs for an entry the session created after the render, which the
+// block did not show: once the session is dropped from the record, a
+// call on that entry is checked as a call without a session is. Its
+// forget runs unconditionally and its save is based on the stored
+// entry, so a change another session made in between is not reported.
+// While the record is kept, the same forget is refused.
+func TestDroppedSessionOnAnEntryTheBlockDidNotShow(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	_, man, err := Render(ctx, store, []Scope{"user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(store, []Scope{"user"}, WithRendered(func() Manifest { return man }))
+	run := func(session, name, args string) (string, error) {
+		t.Helper()
+		return callIn(t, WithSession(ctx, session), tools, name, args)
+	}
+	save := func(session, name, content string) {
+		t.Helper()
+		if _, err := run(session, SaveTool, fmt.Sprintf(`{"name":%q,"content":%q}`, name, content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := func(name, content string) {
+		t.Helper()
+		if _, err := store.Put(WithSession(ctx, "other"), Entry{Scope: "user", Name: name, Content: content}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Kept: a creates k, another session changes it, a's forget is refused.
+	save("a", "k", "k1")
+	other("k", "k2")
+	if _, err := run("a", ForgetTool, `{"name":"k"}`); !errors.Is(err, ErrConflict) {
+		t.Errorf("a's forget of its own entry another session changed, record kept = %v, want a conflict", err)
+	}
+	// Dropped: a creates f and s, 1024 other sessions write, and another
+	// session changes both.
+	save("a", "f", "f1")
+	save("a", "s", "s1")
+	for i := range ownSessionsMax {
+		save(fmt.Sprintf("s%d", i), fmt.Sprintf("e-%d", i), "z")
+	}
+	other("f", "f2")
+	other("s", "s2")
+	before, err := LostUpdates(ctx, store, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run("a", ForgetTool, `{"name":"f"}`); err != nil {
+		t.Errorf("a's forget of f after its record was dropped = %v; a call without a session forgets unconditionally", err)
+	}
+	if _, err := store.Get(ctx, "user", "f"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("f after a's forget = %v, want it forgotten, the other session's change with it", err)
+	}
+	out, err := run("a", SaveTool, `{"name":"s","content":"s3"}`)
+	if err != nil || strings.Contains(out, "after the block was rendered") {
+		t.Errorf("a's save of s after its record was dropped = %q, %v; want it based on the stored entry, unreported", out, err)
+	}
+	after, err := LostUpdates(ctx, store, 0)
+	if err != nil || len(after) != len(before) {
+		t.Errorf("LostUpdates went from %d to %+v, %v; a save based on the stored entry loses nothing it reports", len(before), after, err)
+	}
+}

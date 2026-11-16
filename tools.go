@@ -117,6 +117,7 @@ type toolOptions struct {
 	searchReadsSet bool
 
 	indexScopes []Scope
+	indexOf     []Scope
 	read        bool
 }
 
@@ -147,18 +148,47 @@ func WithSearchBytes(n int) ToolOption {
 // the write took, and says so to the model when the entry changed after
 // the render.
 //
-// fn is called on every save, from the goroutine running the call, so
-// it must be safe to call while the product renders the next turn. A
-// nil fn is the same as no option. The manifest must be the one the
+// fn is called once per writer's call, from the goroutine running the
+// call, so it must be safe to call while the product renders the next
+// turn. A nil fn is the same as no option. The one call comes before
+// the call reads or writes the store, whether the call then succeeds,
+// is refused or fails its schema, and every check and base of the call
+// is taken from what it returned (RFC 0001 §6.8): a product may give a
+// turn's write lock back when fn is called. That holds for the tools as
+// [Tools] returns them. A host that unwraps one and executes the tool
+// inside skips the read, as it skips the schema check, and the call
+// then calls fn where it needs it, possibly more than once and after a
+// store call. The manifest must be the one the
 // model is reading now, as a product that re-renders before every model
 // call, in BeforeModelCall, keeps it. Until the session's next render,
 // what the block showed it of an entry follows that session's own
-// writes, the session being [SessionFrom] the call's context, and the
-// render the manifest [Render] returned, even one that hashes as an
-// earlier render did: the model knows what it wrote, so a second save of an entry in one turn is built on the
-// model's first, and a save then a forget is not refused. Another
+// writes, the session being [SessionFrom] the call's context: the model
+// knows what it wrote, so a second save of an entry in one turn is built
+// on the model's first, and a save then a forget is not refused. Another
 // session's write never stands in for what a session was shown. A call
-// without a session is held to the manifest's hashes alone.
+// without a session is held to the manifest's hashes alone. The record
+// ends at the session's next render: for a manifest [Render] returned,
+// any later render, even one that hashes as an earlier render did; for
+// one without a render of its own, decoded from a record or folded, a
+// manifest whose hash moved.
+//
+// The record is kept for the 1024 sessions that wrote through the tool
+// set most recently; past that, the session that wrote least recently
+// is dropped. The dropped session's calls are then checked as a call
+// without a session is. For an entry the block showed that fails safe:
+// a forget removes only the state the block showed and a save is based
+// on the block, so another session's change is reported or refused as
+// it would be, and what the session loses is its own writes. Its next
+// save of such an entry it wrote goes through based on the block, says
+// in its result that the entry changed after the render, and leaves a
+// record [LostUpdates] reports as losing the session's own write; its
+// forget of one is refused as changed since the render, and the model
+// is told to read the entry and forget it again. For an entry the block
+// did not show, one the session created or inserted after the render,
+// nothing stands in for what it was shown: a forget is unconditional
+// and a save is based on the stored entry, so a change another session
+// made to it in between is forgotten or replaced unreported, as it is
+// for a call without a session.
 //
 // memory_forget of an entry the manifest holds, shown whole or as an
 // index entry, is conditional on the hash the block showed, through
@@ -259,6 +289,13 @@ func WithIndexScopes(scopes ...Scope) ToolOption {
 // its index note and its omission lines, since RFC 0001 §6.11 requires
 // a product that renders an index to offer it; deriving the tool
 // options from the render's keeps the two from drifting apart.
+//
+// Every scope the render options index must be one passed to [Tools]
+// or to [WithReadScopes]; [Tools] panics otherwise, naming this option,
+// as it panics on every misconfiguration. Such an index would send the
+// model to memory_read for entries memory_read cannot read (RFC 0001
+// §6.11), so it is refused when the tools are built rather than
+// ignored, as [Render] ignores it.
 func WithIndexScopesOf(opts ...RenderOption) ToolOption {
 	var ro renderOptions
 	for _, opt := range opts {
@@ -269,7 +306,10 @@ func WithIndexScopesOf(opts ...RenderOption) ToolOption {
 		scopes = append(scopes, s)
 	}
 	slices.Sort(scopes)
-	return WithIndexScopes(scopes...)
+	return func(o *toolOptions) {
+		o.indexScopes = append(o.indexScopes, scopes...)
+		o.indexOf = append(o.indexOf, scopes...)
+	}
 }
 
 // WithRead offers memory_read whether or not a scope renders as an
@@ -393,7 +433,9 @@ var searchOptionArgs = []string{SearchAny, SearchMeta, SearchUpdatedAfter, Searc
 // The tools are safe for concurrent use, and one tool set may serve
 // several sessions at once: each call's session is [SessionFrom] its
 // context, journaled on its writes, and under [WithRendered] the record
-// of a session's own writes is kept per session. What a caller shares
+// of a session's own writes is kept per session, for the 1024 sessions
+// that wrote most recently, so a tool set serving a session per caller
+// stays bounded however many callers it serves. What a caller shares
 // by sharing a tool set is what its options say: the store, the
 // scopes, and the one manifest function of [WithRendered], which must
 // then return the manifest of the block the calling session reads,
@@ -403,7 +445,8 @@ var searchOptionArgs = []string{SearchAny, SearchMeta, SearchUpdatedAfter, Searc
 // nothing but the manifest.
 //
 // The schema check is the tools' own, added with [agenttool.Wrap]; a
-// host that unwraps a tool and executes what is inside skips it.
+// host that unwraps a tool and executes what is inside skips it, and
+// the single read of [WithRendered] before the store with it.
 func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 	if len(scopes) == 0 {
 		panic("agentmemory.Tools: no scopes")
@@ -466,6 +509,9 @@ func Tools(store Store, scopes []Scope, opts ...ToolOption) []agenttool.Tool {
 			panic(fmt.Sprintf("agentmemory.Tools: index scope %q is given twice", s))
 		}
 		if !slices.Contains(scopes, s) && !slices.Contains(o.readScopes, s) {
+			if slices.Contains(o.indexOf, s) {
+				panic(fmt.Sprintf("agentmemory.Tools: WithIndexScopesOf: the render options index scope %q, which is neither a writable nor a read scope, so memory_read could not read its entries; pass the scope to Tools or WithReadScopes, or render it whole", s))
+			}
 			panic(fmt.Sprintf("agentmemory.Tools: index scope %q is neither a writable nor a read scope", s))
 		}
 	}
@@ -644,10 +690,26 @@ type toolset struct {
 // hash moved is a new render, and starts clean. A call without a
 // session on its context, [SessionFrom] empty, records and reads
 // nothing here: it is held to the block's hashes alone.
+//
+// It holds the [ownSessionsMax] sessions that wrote most recently. A
+// session's record is otherwise dropped only when that session calls
+// again under another render, so a tool set serving a caller per
+// session, as an A2A server running every caller on one tool set does,
+// would keep one per finished caller for the life of the process. A
+// dropped session is checked as a call without a session is: held to
+// the block's hashes for an entry the block showed, the safe side, and
+// to the stored entry for one it did not, which loses the check of an
+// entry the session created since the render; see [WithRendered].
 type ownWrites struct {
 	mu       sync.Mutex
 	sessions map[string]*sessionWrites
+	// writes numbers the writes recorded, so the session that wrote
+	// least recently is the one with the lowest last.
+	writes uint64
 }
+
+// ownSessionsMax is the most sessions [ownWrites] keeps a record for.
+const ownSessionsMax = 1024
 
 // sessionWrites is one session's own writes under one render of its
 // block: the render's number, or, for a manifest without one, its hash.
@@ -655,6 +717,7 @@ type sessionWrites struct {
 	render   uint64
 	manifest string
 	entries  map[ownKey]ownState
+	last     uint64
 }
 
 // under reports whether sw was recorded under the render m is: the same
@@ -692,11 +755,32 @@ func (t *toolset) noteWrite(ctx context.Context, c *Change) {
 		t.own.sessions = map[string]*sessionWrites{}
 	}
 	sw := t.own.sessions[session]
+	if sw == nil {
+		t.own.evict()
+	}
 	if sw == nil || !sw.under(m, h) {
 		sw = &sessionWrites{render: m.render, manifest: h, entries: map[ownKey]ownState{}}
 		t.own.sessions[session] = sw
 	}
+	t.own.writes++
+	sw.last = t.own.writes
 	sw.entries[ownKey{c.Entry.Scope, c.Entry.Name}] = ownState{hash: c.Entry.Hash, gone: c.Entry.Deleted}
+}
+
+// evict drops the session that wrote least recently when the record is
+// full, to make room for another. The caller holds mu.
+func (o *ownWrites) evict() {
+	if len(o.sessions) < ownSessionsMax {
+		return
+	}
+	var oldest string
+	var at uint64
+	for s, sw := range o.sessions {
+		if oldest == "" || sw.last < at {
+			oldest, at = s, sw.last
+		}
+	}
+	delete(o.sessions, oldest)
 }
 
 // ownWrite returns what the session's own write left the entry as under

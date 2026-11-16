@@ -1,6 +1,6 @@
 # RFC 0001: Agent Memory
 
-Status: draft 0.4
+Status: draft 0.5
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; `filestore` is the reference store,
@@ -38,12 +38,13 @@ The on-disk format of the reference store is Annex A, kept in
 Draft 0.2 states the contract as the code holds it after the fixes for
 #46, #47, #48 and #49, the security fixes of the same batch, and the
 answers to draft 0.1's open questions. [Changes from draft
-0.1](#17-changes-from-draft-01) lists what moved;
+0.1](#18-changes-from-draft-01) lists what moved;
 [Appendix B](#appendix-b-inconsistencies-draft-01-found) says how each
 inconsistency draft 0.1 found was resolved. Draft 0.3 adds the refusal
 of a write in a turn whose block was left out; [Changes since
-0.2](#16-changes-since-02) lists it. Draft 0.4's changes are listed in
-[Changes since 0.3](#15-changes-since-03).
+0.2](#17-changes-since-02) lists it. Draft 0.4's changes are listed in
+[Changes since 0.3](#16-changes-since-03), and draft 0.5's in [Changes
+since 0.4](#15-changes-since-04).
 
 ## Motivation
 
@@ -61,7 +62,7 @@ call with a record beside it. What it lacked was a document saying
 what those records hold and how a reader folds them. agentsession's
 RFC names `agentmemory` as an instruction part's source; this document
 is what that name points at, and stays in this repository
-([section 18](#18-decisions)).
+([section 19](#19-decisions)).
 
 ## Goals
 
@@ -838,6 +839,20 @@ read as built on the block rather than on the model's own first save,
 and reported as lost. `memory_forget` likewise forgets an entry the
 manifest holds only while it holds the hash the manifest names (6.4).
 
+> A tool told what the block showed MUST read it once per call, before
+> it reads or writes the store, and MUST take every check and every
+> base of that call from that one reading.
+
+The refusal of a block left out, the base of a save, the condition of a
+forget and the record of the call's own write below are then one
+render's, whatever the product renders while the call runs. A product
+MAY rely on the read: one that holds a turn's writes until the tool has
+read the manifest gives the turn back on it, and a second read, or one
+after a store call, would let a call be refused on one render and
+based on another. The rule binds the tool as the tool set offers it; a
+host that takes the function out of a tool and calls it directly
+skips the tool's own checks, this read among them (11).
+
 **The model's own writes.** The model knows what it wrote. Until a
 session's block is rendered again, a tool set MAY take what that session's own last write of an
 entry left as what the block showed the session of it: the hash that
@@ -850,8 +865,10 @@ still is.
 > A tool set that follows a session's own writes MUST keep them per
 > session (3.6) and MUST NOT take one session's write for what another
 > session was shown. A call that names no session follows no writes.
-> A session's record ends at its next render, even one whose manifest
-> hashes as an earlier one did.
+> A session's record ends at its next render. A tool set that cannot
+> tell two renders of one hash apart MUST end the record when the
+> manifest's hash changes, and SHOULD number renders so that a return
+> to an earlier hash also ends it.
 
 Two renders of one store state give one manifest and one hash, so a
 hash alone cannot end the record: a render that comes back to an
@@ -859,11 +876,27 @@ earlier hash, after another session put an entry back, would revive a
 write the block no longer shows. The reference numbers its renders
 outside the manifest, which neither records nor hashes the number, and
 falls back on the hash for a manifest that has none, decoded from a
-record or folded.
+record or folded; for such a manifest the revival remains.
 
 A tool set that served several sessions with one record would let one
 session forget, on the strength of another's write, an entry it never
 saw changed, which is the race 6.4 closes.
+
+A tool set MAY bound the sessions it keeps a record for, and one that
+serves a session per caller should, since a record otherwise ends only
+when its session calls again. A session whose record is dropped is
+checked as a call that names no session is. For an entry the manifest
+holds, it is held to the manifest's hashes: its forget of an entry it
+wrote is refused as changed since the render, and its save is based on
+the block and reported as replacing a change, its own. That costs the
+session its own writes and lets no change of an entry the block showed
+through unseen. For an entry the manifest does not hold, one the
+session created or inserted after the render, nothing says what the
+model was shown: its forget is unconditional and its save is based on
+the stored entry (6.2, 6.4), so a change another session made to that
+entry in between is forgotten or replaced unreported, as it is for a
+call that names no session. The reference keeps the 1024 sessions that
+wrote most recently.
 
 **A block left out.** A manifest records a block **left out whole**
 when its `dropped` is true (7.6), or, for a record written before
@@ -1307,7 +1340,7 @@ hash moves records the drop. It records it whole (8.4). The empty manifest's has
 empty string. Two renders that showed the model the same memories hash
 the same, so a product records the manifest only when its hash moves.
 The manifest names content, not metadata: a change to an entry's
-description changes its part and not the manifest (section 18).
+description changes its part and not the manifest (section 19).
 
 ## 8. Session records
 
@@ -1623,6 +1656,15 @@ The root module is the reference binding.
 | stores | `NewMemStore` (in memory), `filestore.Open` (Annex A, with `Reconcile`, `LockHolder`, `BreakLock`, `ErrLocked`), `sqlite.Open` (nested module) |
 | store conformance | `storetest.Run` |
 
+The tools `Tools` returns are wrapped with `agenttool.Wrap`. A
+writer's wrapper reads `WithRendered`'s function once for the call
+(6.8), then checks the scope and the schema, before the tool inside
+runs; the wrappers of `memory_search` and `memory_read`, which write
+nothing, check the schema alone and never read the function. A host
+that unwraps a writer and executes the tool inside skips all three, and
+the call then reads the function where it needs it, possibly more than
+once and after a store call.
+
 The module never imports the loop or the session format. A product
 hands `Manifest.Record`'s namespace and bytes to its session recorder,
 and a recorder that reads `agenttool.Recordable` writes the
@@ -1644,7 +1686,8 @@ it, and a store elsewhere can run it.
 
 **A conforming tool set** names and schemas its tools as section 6
 says, enforces its own schema, refuses read scopes and unlisted scopes,
-anchors every save and patch as sections 6.2 and 6.3 say, forgets an
+anchors every save and patch as sections 6.2 and 6.3 say, reads what
+the block showed once per call before the store as 6.8 says, forgets an
 entry the block showed on its hash as 6.4 says, keeps fixed
 names and names inserts as 6.5 says, offers only the search options its
 store supports, offers `memory_read` as 6.11 says, declares the flow of
@@ -1726,7 +1769,14 @@ not a new meaning under the old one.
   journal is that per entry, with the base recorded so the loss is
   visible without a three-way diff.
 
-## 15. Changes since 0.3
+## 15. Changes since 0.4
+
+| what | sections | the change |
+|---|---|---|
+| #57 | 6.8 | The rule that ends a session's record at its next render binds as a tool set can keep it: one that cannot tell two renders of one hash apart ends the record when the hash changes, and SHOULD number renders so a return to an earlier hash ends it too. Draft 0.4 said the record ends even at a render hashing as an earlier one, which the reference does only for renders it numbered, not for a manifest decoded or folded. A tool set MAY bound its records; a dropped session is checked as a call naming no session: held to the block's hashes for an entry the block showed, which refuses or reports its own writes and lets no change of such an entry through unseen, and to the stored entry for one it created after the render, whose change by another session in between goes unreported. The reference keeps 1024 sessions. |
+| #58 | 6.8, 12 | A tool told what the block showed reads it once per call, before it reads or writes the store, and takes every check and base of the call from that one reading, on success, refusal and a failed schema alike. The reference did so in draft 0.4 and nothing said it, while a product that gives a turn's write lock back on that read relies on it: a second read, or one after a store call, could refuse a call on one render and base it on another. |
+
+## 16. Changes since 0.3
 
 | what | sections | the change |
 |---|---|---|
@@ -1734,14 +1784,14 @@ not a new meaning under the old one.
 | #54 | 3.7, Annex A | A read of an entry live before and after a concurrent write returns it, old or new, and never reports it absent; get, list, search and the render alike. The reference directory store read an entry as absent when a write's rename landed between its open and its check of the name, so a render racing a write could leave the entry out of the block and its manifest. Annex A says a reader that compares the file it opened with the name opens again when a rename landed, and the reference does so a bounded number of times, then fails the read with an error rather than report the entry absent. |
 | #55 | 6.1, 6.10, 6.11, 7.1, 7.2, 7.4, 7.5, 7.6, 8.1, 10, 11, 12 | A renderer MAY render a scope as an index: each entry part is its heading line alone, with the description or the content's first non-blank line, neutralised and cut to 120 bytes, under a scope heading that names `memory_read`; the manifest lists each such entry under `omitted` with the new reason `index`; the summary of such a block counts index entries apart (`<n> shown, <i> indexed, <k> omitted`), and its omission lines send the model to `memory_read`; `memory_forget` forgets an index entry on the hash the index showed. A product that renders an index MUST offer `memory_read` (scope, name), which returns one entry as stored with its hash, read-only and safe to replay, and MAY offer it otherwise; a tool set without it is as before. Draft 0.3 rendered every scope whole, about 2.4k tokens a request for three project notes a task never touched, and `memory_search` cannot promise to find an entry by its name. The fixture `testdata/render/index.*` renders one. |
 
-## 16. Changes since 0.2
+## 17. Changes since 0.2
 
 | what | sections | the change |
 |---|---|---|
 | agentkit#95 | 6.8, 11, 12 | A write in a turn whose block was left out is refused where the call is decided, before any person or reviewer is asked, and again by the writing tool when it runs, with one message; `memory_insert` is a writer as `memory_save`, `memory_patch` and `memory_forget` are. Draft 0.2 said nothing of a dropped block's writes, so a product refused them only when they ran, after asking a person about a call no answer could let through. The fixture `testdata/dropped.json` gives the cases. |
 | agentkit#95 | 7.6, 8.4, 6.8 | A manifest has `dropped`, true for a block the product left out whole, in the whole record and in a delta, which carries its own and never its base's, left out when false; the manifest hash ends with `x block\n` when it is set; and a writer records a manifest whole when it or its base has the flag, so a reader before this draft never meets it in a delta. Draft 0.2 told a block left out only by every element under `omitted` with the reason `block`, so one left out over an empty store was the empty manifest, hashed as a block shown empty, was never recorded, and let a write through. A record without `dropped` is read as before, and every manifest without it hashes as before. The fixture `testdata/manifest/left-out.json` folds it. |
 
-## 17. Changes from draft 0.1
+## 18. Changes from draft 0.1
 
 | what | sections | the change |
 |---|---|---|
@@ -1760,7 +1810,7 @@ not a new meaning under the old one.
 | security | 3.1, 7.2, 8.1, 10, Annex A | Stores follow no link; parts carry trust labels and content headings are neutralised; `memory_search` reads untrusted. |
 | review | 1, 3.1, 3.2, 3.5, 4.3, 6.1, 6.10, 7.6, 8.4, 8.6 | White space and lowercase defined; reads do not validate; the unjournalable file deferred to Annex A; one sequence rule; full schemas, `meta: null`, idempotence; element presence; `base: null`; redaction; fixtures. |
 
-## 18. Decisions
+## 19. Decisions
 
 Draft 0.1's open questions, as answered for draft 0.2:
 

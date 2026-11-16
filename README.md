@@ -33,7 +33,7 @@ go get github.com/ChristopherDavenport/agentmemory
 go get github.com/ChristopherDavenport/agentmemory/sqlite   # optional
 ```
 
-Go 1.25 or later.
+Go 1.25 or later; the `sqlite` module needs Go 1.26 or later.
 
 ## The shape
 
